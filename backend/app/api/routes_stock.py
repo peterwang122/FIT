@@ -4,15 +4,31 @@ from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.common import ApiResponse
-from app.schemas.stock import CollectTaskPayload, StockCandle
+from app.schemas.stock import CollectTaskPayload, StockCandle, StockMetaResponse, StockSymbolResponse
 from app.services.stock_service import StockService
 from app.services.task_idempotency_service import TaskIdempotencyService
 from app.tasks.collector import collect_stock_data
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
+
+
+@router.get("/meta", response_model=ApiResponse[StockMetaResponse])
+def get_stock_meta(db: Session = Depends(get_db)):
+    service = StockService(db)
+    return ApiResponse(
+        data=StockMetaResponse(table_name=settings.stock_table_name, column_mapping=service.available_mapping())
+    )
+
+
+@router.get("/symbols", response_model=ApiResponse[list[StockSymbolResponse]])
+def get_symbols(limit: int = Query(default=200, ge=1, le=2000), db: Session = Depends(get_db)):
+    service = StockService(db)
+    symbols = service.list_symbols(limit=limit)
+    return ApiResponse(data=[StockSymbolResponse(ts_code=item) for item in symbols])
 
 
 @router.get("/{ts_code}/kline", response_model=ApiResponse[list[StockCandle]])
@@ -25,7 +41,7 @@ def get_kline(
 ):
     service = StockService(db)
     rows = service.list_daily_kline(ts_code=ts_code, start_date=start_date, end_date=end_date, limit=limit)
-    return ApiResponse(data=[StockCandle.model_validate(row, from_attributes=True) for row in rows])
+    return ApiResponse(data=[StockCandle.model_validate(row) for row in rows])
 
 
 @router.post("/collect", response_model=ApiResponse[dict])

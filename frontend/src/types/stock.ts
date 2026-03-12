@@ -10,3 +10,12 @@ export interface StockCandle {
   vol: number
   amount: number
 }
+
+export interface StockSymbol {
+  ts_code: string
+}
+
+export interface StockMeta {
+  table_name: string
+  column_mapping: Record<string, string>
+}

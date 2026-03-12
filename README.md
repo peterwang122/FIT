@@ -1,61 +1,48 @@
 # FIT - 股票量化平台（可扩展骨架）
 
-本仓库提供一个前后端分离的初始骨架，满足以下目标：
+本项目定位为**只读展示系统**：读取你已有 MySQL 行情库，展示 K 线与任务状态。
 
-- 前端：Vue3 + TypeScript + Vite + Lightweight Charts。
-- 后端：FastAPI + Celery + MySQL，支持通过任务调用外部数据采集服务。
-- 当前数据表：`stock_data`（日级别后复权数据）已作为核心数据模型接入。
-- 预留模块：量化策略、回测系统、用户管理、相关性分析与深度学习分析。
+- 前端：Vue3 + TypeScript + Vite + Lightweight Charts
+- 后端：FastAPI + Celery + Redis
+- 监控：Flower（任务管理页面）
 
-## 目录结构
+## 关键改进
 
-```text
-backend/
-  app/
-    api/           # 路由层
-    core/          # 配置与基础组件（Redis 客户端）
-    db/            # 数据库连接
-    models/        # ORM 模型
-    schemas/       # Pydantic 模型
-    services/      # 业务逻辑
-    tasks/         # Celery 任务定义
-    workers/       # Celery 启动入口
-frontend/
-  src/
-    api/           # HTTP 请求封装
-    views/         # 页面
-    components/    # 图表组件
-```
+1. 前端主页升级为“行情中心 / 任务监控（Flower）”双 Tab。
+2. 后端支持**现有数据库字段映射配置**，不再强绑定固定 ORM 字段。
+3. 新增接口：
+   - `GET /api/v1/stocks/symbols` 自动列出可选股票代码
+   - `GET /api/v1/stocks/meta` 返回当前字段映射
+4. Flower 通过 `docker compose` 一键启动，前端 Tab 可直接跳转。
 
-## 已实现能力（本次迭代）
+## 配置（重点）
 
-1. **采集任务健壮性增强**
-   - Celery 自动重试（HTTP 异常/超时）
-   - 任务软超时/硬超时
-   - 任务 payload 级去重锁（短时间并发幂等）
-   - 接口层 `Idempotency-Key` 幂等（同 key 返回同 task_id）
-
-2. **前端真实 K 线图**
-   - 使用 Lightweight Charts 展示蜡烛图
-   - 支持按股票代码刷新并实时更新图表数据
-
-## 快速开始
-
-### 后端
-
-1. 复制环境变量模板：
+复制环境变量模板：
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-2. 启动依赖（MySQL/Redis，可按需修改）：
+请根据你真实数据库字段名修改这些配置（否则可能查不到数据）：
+
+- `STOCK_TABLE_NAME`
+- `STOCK_CODE_COLUMN`
+- `STOCK_DATE_COLUMN`
+- `STOCK_OPEN_COLUMN`
+- `STOCK_HIGH_COLUMN`
+- `STOCK_LOW_COLUMN`
+- `STOCK_CLOSE_COLUMN`
+- 其他可选字段：`PRE_CLOSE/CHANGE/PCT_CHG/VOL/AMOUNT`
+
+## 启动
+
+### 1) 启动基础依赖（MySQL/Redis/Flower）
 
 ```bash
 docker compose up -d
 ```
 
-3. 安装依赖并运行：
+### 2) 启动后端 API
 
 ```bash
 cd backend
@@ -65,14 +52,14 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-4. 启动 Celery Worker：
+### 3) 启动 Celery Worker
 
 ```bash
 cd backend
 celery -A app.workers.celery_app worker --loglevel=info
 ```
 
-### 前端
+### 4) 启动前端
 
 ```bash
 cd frontend
@@ -80,8 +67,7 @@ npm install
 npm run dev
 ```
 
-## 开发规划建议
+## Flower
 
-- V1：股票搜索、日 K、基础指标（MA）、任务触发采集、任务状态查询。
-- V2：策略管理、回测执行队列、结果可视化。
-- V3：用户体系（鉴权、订阅、自选股）、分析任务（相关性、因子、深度学习实验）。
+- 默认地址：`http://127.0.0.1:5555`
+- 前端“任务监控（Flower）”Tab 提供跳转按钮。

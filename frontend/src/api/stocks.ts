@@ -1,10 +1,20 @@
 import { http } from './client'
-import type { StockCandle } from '../types/stock'
+import type { StockCandle, StockMeta, StockSymbol } from '../types/stock'
 
 interface ApiResponse<T> {
   code: number
   message: string
   data: T
+}
+
+export async function fetchSymbols(limit = 200) {
+  const { data } = await http.get<ApiResponse<StockSymbol[]>>('/stocks/symbols', { params: { limit } })
+  return data.data
+}
+
+export async function fetchMeta() {
+  const { data } = await http.get<ApiResponse<StockMeta>>('/stocks/meta')
+  return data.data
 }
 
 export async function fetchKline(tsCode: string) {

@@ -45,7 +45,7 @@ function renderChart() {
     },
   })
 
-  candleSeries = chart.addCandlestickSeries({
+  candleSeries = (chart as any).addCandlestickSeries({
     upColor: '#ef4444',
     downColor: '#10b981',
     borderVisible: false,
@@ -53,7 +53,7 @@ function renderChart() {
     wickDownColor: '#10b981',
   })
 
-  candleSeries.setData(klineData.value)
+  if (candleSeries) candleSeries.setData(klineData.value)
 }
 
 watch(klineData, (next) => {
@@ -75,6 +75,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="card">
     <h3>股票日K线图（Lightweight Charts）</h3>
+    <p v-if="candles.length === 0" class="muted">当前没有查到K线数据，请检查股票代码与数据库字段映射配置。</p>
     <div ref="containerRef" class="kline-container" />
   </div>
 </template>
@@ -83,5 +84,11 @@ onBeforeUnmount(() => {
 .kline-container {
   width: 100%;
   height: 520px;
+}
+
+.muted {
+  color: #64748b;
+  font-size: 13px;
+  margin-bottom: 8px;
 }
 </style>
