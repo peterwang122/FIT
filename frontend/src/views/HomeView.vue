@@ -6,12 +6,17 @@ import KlineChart from '../components/KlineChart.vue'
 import { useStockStore } from '../stores/stock'
 
 const stockStore = useStockStore()
-const { tsCode, symbols, candles, loading, collectTaskId, collectState, meta, error } = storeToRefs(stockStore)
+const { tsCode, symbols, candles, loading, collectTaskId, collectState, meta, dbStatus, error } = storeToRefs(stockStore)
 
 const activeTab = ref<'market' | 'monitor'>('market')
 const flowerUrl = import.meta.env.VITE_FLOWER_URL ?? 'http://127.0.0.1:5555'
 
 const latestSnapshot = computed(() => (candles.value.length ? candles.value[candles.value.length - 1] : undefined))
+
+function openFlowerTab() {
+  activeTab.value = 'monitor'
+  window.open(flowerUrl, '_blank', 'noopener,noreferrer')
+}
 
 onMounted(async () => {
   await stockStore.initialize()
@@ -22,12 +27,35 @@ onMounted(async () => {
   <div class="page-wrap">
     <div class="tab-bar card">
       <button class="tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">行情中心</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'monitor' }" @click="activeTab = 'monitor'">任务监控（Flower）</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'monitor' }" @click="openFlowerTab">任务监控（Flower）</button>
     </div>
 
     <section v-if="activeTab === 'market'" class="market-grid">
       <aside class="card panel-left">
         <h3>股票选择</h3>
+
+        <div class="db-check" v-if="dbStatus">
+          <div class="db-row">
+            <span>数据库连接</span>
+            <strong :class="dbStatus.connected ? 'ok' : 'bad'">{{ dbStatus.connected ? '已连接' : '未连接' }}</strong>
+          </div>
+          <div class="db-row">
+            <span>数据表</span>
+            <strong>{{ dbStatus.table_name }}</strong>
+          </div>
+          <div class="db-row">
+            <span>总记录</span>
+            <strong>{{ dbStatus.row_count }}</strong>
+          </div>
+          <div class="db-row">
+            <span>股票数量</span>
+            <strong>{{ dbStatus.symbol_count }}</strong>
+          </div>
+          <p v-if="dbStatus.sample_symbols.length" class="muted">样例代码：{{ dbStatus.sample_symbols.join(', ') }}</p>
+          <p v-if="dbStatus.error" class="error">{{ dbStatus.error }}</p>
+          <button class="btn" @click="stockStore.refreshDbStatus">刷新连接状态</button>
+        </div>
+
         <select v-model="tsCode" class="input" @change="stockStore.loadKline">
           <option value="" disabled>请选择股票代码</option>
           <option v-for="item in symbols" :key="item.ts_code" :value="item.ts_code">{{ item.ts_code }}</option>

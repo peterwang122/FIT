@@ -9,11 +9,17 @@
 ## 关键改进
 
 1. 前端主页升级为“行情中心 / 任务监控（Flower）”双 Tab。
-2. 后端支持**现有数据库字段映射配置**，不再强绑定固定 ORM 字段。
-3. 新增接口：
+2. “任务监控”Tab 点击会直接打开 Flower 页面。
+3. 后端支持**现有数据库字段映射配置**，不再强绑定固定 ORM 字段。
+4. 新增数据库连接检查接口：`GET /api/v1/stocks/db-status`，可确认是否连上你的现有库。
+5. 新增接口：
    - `GET /api/v1/stocks/symbols` 自动列出可选股票代码
    - `GET /api/v1/stocks/meta` 返回当前字段映射
-4. Flower 通过 `docker compose` 一键启动，前端 Tab 可直接跳转。
+
+## 关于 SQL 初始化文件
+
+本项目是只读展示系统，不负责创建你的业务行情表。
+因此原先示例 `backend/sql/init.sql` 已移除（非必须）。
 
 ## 配置（重点）
 
@@ -36,7 +42,7 @@ cp backend/.env.example backend/.env
 
 ## 启动
 
-### 1) 启动基础依赖（MySQL/Redis/Flower）
+### 1) 启动基础依赖（Redis/Flower）
 
 ```bash
 docker compose up -d
@@ -67,7 +73,16 @@ npm install
 npm run dev
 ```
 
+## 连接确认（你关心）
+
+启动后访问：
+
+- `GET http://127.0.0.1:8000/api/v1/stocks/db-status`
+
+当返回 `connected=true` 且 `symbol_count > 0`，说明本项目已经连接上你现有数据库并可读取股票数据。
+前端“行情中心”左侧也会显示同样的连接状态与样例代码。
+
 ## Flower
 
 - 默认地址：`http://127.0.0.1:5555`
-- 前端“任务监控（Flower）”Tab 提供跳转按钮。
+- 前端“任务监控（Flower）”Tab 点击会直接打开该地址。

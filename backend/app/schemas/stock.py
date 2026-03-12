@@ -29,3 +29,15 @@ class StockMetaResponse(BaseModel):
 
 class StockSymbolResponse(BaseModel):
     ts_code: str
+
+
+class DbStatusResponse(BaseModel):
+    connected: bool
+    table_name: str
+    table_exists: bool
+    has_required_mapping: bool
+    row_count: int
+    symbol_count: int
+    sample_symbols: list[str]
+    mapping: dict[str, str]
+    error: str | None = None

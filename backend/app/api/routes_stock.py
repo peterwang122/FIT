@@ -7,13 +7,26 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.common import ApiResponse
-from app.schemas.stock import CollectTaskPayload, StockCandle, StockMetaResponse, StockSymbolResponse
+from app.schemas.stock import (
+    CollectTaskPayload,
+    DbStatusResponse,
+    StockCandle,
+    StockMetaResponse,
+    StockSymbolResponse,
+)
 from app.services.stock_service import StockService
 from app.services.task_idempotency_service import TaskIdempotencyService
 from app.tasks.collector import collect_stock_data
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
+
+
+@router.get("/db-status", response_model=ApiResponse[DbStatusResponse])
+def get_db_status(db: Session = Depends(get_db)):
+    service = StockService(db)
+    status = service.connection_status()
+    return ApiResponse(data=DbStatusResponse.model_validate(status))
 
 
 @router.get("/meta", response_model=ApiResponse[StockMetaResponse])

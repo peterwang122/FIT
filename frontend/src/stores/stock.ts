@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 
-import { fetchKline, fetchMeta, fetchSymbols, fetchTaskStatus, submitCollectTask } from '../api/stocks'
-import type { StockCandle, StockMeta, StockSymbol } from '../types/stock'
+import { fetchDbStatus, fetchKline, fetchMeta, fetchSymbols, fetchTaskStatus, submitCollectTask } from '../api/stocks'
+import type { DbStatus, StockCandle, StockMeta, StockSymbol } from '../types/stock'
 
 function buildIdempotencyKey(tsCode: string): string {
   return `collect:${tsCode}:${new Date().toISOString().slice(0, 10)}`
@@ -13,6 +13,7 @@ export const useStockStore = defineStore('stock', {
     symbols: [] as StockSymbol[],
     candles: [] as StockCandle[],
     meta: null as StockMeta | null,
+    dbStatus: null as DbStatus | null,
     loading: false,
     collectTaskId: '' as string,
     collectState: '' as string,
@@ -22,7 +23,8 @@ export const useStockStore = defineStore('stock', {
     async initialize() {
       this.error = ''
       try {
-        const [symbols, meta] = await Promise.all([fetchSymbols(), fetchMeta()])
+        const [dbStatus, symbols, meta] = await Promise.all([fetchDbStatus(), fetchSymbols(), fetchMeta()])
+        this.dbStatus = dbStatus
         this.symbols = symbols
         this.meta = meta
         if (!this.tsCode && symbols.length > 0) {
@@ -34,6 +36,9 @@ export const useStockStore = defineStore('stock', {
       } catch (error) {
         this.error = `初始化失败：${String(error)}`
       }
+    },
+    async refreshDbStatus() {
+      this.dbStatus = await fetchDbStatus()
     },
     async loadKline() {
       if (!this.tsCode) return

@@ -1,10 +1,15 @@
 import { http } from './client'
-import type { StockCandle, StockMeta, StockSymbol } from '../types/stock'
+import type { DbStatus, StockCandle, StockMeta, StockSymbol } from '../types/stock'
 
 interface ApiResponse<T> {
   code: number
   message: string
   data: T
+}
+
+export async function fetchDbStatus() {
+  const { data } = await http.get<ApiResponse<DbStatus>>('/stocks/db-status')
+  return data.data
 }
 
 export async function fetchSymbols(limit = 200) {
