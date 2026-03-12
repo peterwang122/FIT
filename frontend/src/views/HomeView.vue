@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 
-import KlineTable from '../components/KlineTable.vue'
+import KlineChart from '../components/KlineChart.vue'
 import { useStockStore } from '../stores/stock'
 
 const stockStore = useStockStore()
 const { tsCode, candles, loading, collectTaskId, collectState } = storeToRefs(stockStore)
+
+const latestSnapshot = computed(() => candles.value.at(-1))
 
 onMounted(async () => {
   await stockStore.loadKline()
@@ -16,7 +18,7 @@ onMounted(async () => {
 <template>
   <section class="card" style="margin-bottom: 12px">
     <h2>数据采集任务（Celery）</h2>
-    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom: 8px">
       <label>
         股票代码：
         <input v-model="tsCode" />
@@ -25,8 +27,11 @@ onMounted(async () => {
       <button @click="stockStore.triggerCollect">触发采集</button>
       <button @click="stockStore.refreshTaskStatus" :disabled="!collectTaskId">刷新任务状态</button>
     </div>
-    <p style="margin-top:8px">任务ID：{{ collectTaskId || '-' }}，状态：{{ collectState || '-' }}</p>
+    <p>任务ID：{{ collectTaskId || '-' }}，状态：{{ collectState || '-' }}</p>
+    <p v-if="latestSnapshot">
+      最新：{{ latestSnapshot.trade_date }} 收盘 {{ latestSnapshot.close }} / 涨跌幅 {{ latestSnapshot.pct_chg }}%
+    </p>
   </section>
 
-  <KlineTable :candles="candles" />
+  <KlineChart :candles="candles" />
 </template>

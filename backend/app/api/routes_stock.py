@@ -1,13 +1,14 @@
 from datetime import date
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.common import ApiResponse
 from app.schemas.stock import CollectTaskPayload, StockCandle
 from app.services.stock_service import StockService
+from app.services.task_idempotency_service import TaskIdempotencyService
 from app.tasks.collector import collect_stock_data
 from app.workers.celery_app import celery_app
 
@@ -28,12 +29,22 @@ def get_kline(
 
 
 @router.post("/collect", response_model=ApiResponse[dict])
-def submit_collect_task(payload: CollectTaskPayload):
+def submit_collect_task(payload: CollectTaskPayload, idempotency_key: str | None = Header(default=None)):
+    idempotency_service = TaskIdempotencyService()
+    if idempotency_key:
+        existing_task_id = idempotency_service.get_existing_task_id(idempotency_key)
+        if existing_task_id:
+            return ApiResponse(data={"task_id": existing_task_id, "status": "deduplicated"})
+
     task = collect_stock_data.delay(
         ts_code=payload.ts_code,
         start_date=payload.start_date.isoformat() if payload.start_date else None,
         end_date=payload.end_date.isoformat() if payload.end_date else None,
     )
+
+    if idempotency_key:
+        idempotency_service.bind_task_id(idempotency_key, task.id)
+
     return ApiResponse(data={"task_id": task.id, "status": "submitted"})
 
 

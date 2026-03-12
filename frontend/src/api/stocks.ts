@@ -12,10 +12,18 @@ export async function fetchKline(tsCode: string) {
   return data.data
 }
 
-export async function submitCollectTask(tsCode: string) {
-  const { data } = await http.post<ApiResponse<{ task_id: string; status: string }>>('/stocks/collect', {
-    ts_code: tsCode,
-  })
+export async function submitCollectTask(tsCode: string, idempotencyKey: string) {
+  const { data } = await http.post<ApiResponse<{ task_id: string; status: string }>>(
+    '/stocks/collect',
+    {
+      ts_code: tsCode,
+    },
+    {
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    },
+  )
   return data.data
 }
 

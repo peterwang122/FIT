@@ -1,7 +1,11 @@
 import { defineStore } from 'pinia'
 
-import type { StockCandle } from '../types/stock'
 import { fetchKline, fetchTaskStatus, submitCollectTask } from '../api/stocks'
+import type { StockCandle } from '../types/stock'
+
+function buildIdempotencyKey(tsCode: string): string {
+  return `collect:${tsCode}:${new Date().toISOString().slice(0, 10)}`
+}
 
 export const useStockStore = defineStore('stock', {
   state: () => ({
@@ -21,7 +25,7 @@ export const useStockStore = defineStore('stock', {
       }
     },
     async triggerCollect() {
-      const result = await submitCollectTask(this.tsCode)
+      const result = await submitCollectTask(this.tsCode, buildIdempotencyKey(this.tsCode))
       this.collectTaskId = result.task_id
       this.collectState = result.status
     },

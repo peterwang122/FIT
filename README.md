@@ -2,7 +2,7 @@
 
 本仓库提供一个前后端分离的初始骨架，满足以下目标：
 
-- 前端：Vue3 + TypeScript + Vite，面向 K 线展示与后续策略/回测模块扩展。
+- 前端：Vue3 + TypeScript + Vite + Lightweight Charts。
 - 后端：FastAPI + Celery + MySQL，支持通过任务调用外部数据采集服务。
 - 当前数据表：`stock_data`（日级别后复权数据）已作为核心数据模型接入。
 - 预留模块：量化策略、回测系统、用户管理、相关性分析与深度学习分析。
@@ -13,7 +13,7 @@
 backend/
   app/
     api/           # 路由层
-    core/          # 配置
+    core/          # 配置与基础组件（Redis 客户端）
     db/            # 数据库连接
     models/        # ORM 模型
     schemas/       # Pydantic 模型
@@ -24,8 +24,20 @@ frontend/
   src/
     api/           # HTTP 请求封装
     views/         # 页面
-    components/    # 组件
+    components/    # 图表组件
 ```
+
+## 已实现能力（本次迭代）
+
+1. **采集任务健壮性增强**
+   - Celery 自动重试（HTTP 异常/超时）
+   - 任务软超时/硬超时
+   - 任务 payload 级去重锁（短时间并发幂等）
+   - 接口层 `Idempotency-Key` 幂等（同 key 返回同 task_id）
+
+2. **前端真实 K 线图**
+   - 使用 Lightweight Charts 展示蜡烛图
+   - 支持按股票代码刷新并实时更新图表数据
 
 ## 快速开始
 
