@@ -1,0 +1,13 @@
+services:
+  redis:
+    image: redis:7.4
+    ports:
+      - "6379:6379"
+
+  flower:
+    image: mher/flower:2.0.1
+    command: ["celery", "--broker=redis://redis:6379/0", "flower", "--port=5555"]
+    depends_on:
+      - redis
+    ports:
+      - "5555:5555"
