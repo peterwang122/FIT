@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     collector_dedupe_lock_ttl_seconds: int = 120
 
     flower_url: str = "http://127.0.0.1:5555"
+    cors_allow_origins: str = "*"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

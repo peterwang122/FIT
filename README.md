@@ -87,3 +87,18 @@ npm run dev
 
 - 默认地址：`http://127.0.0.1:5555`
 - 前端“任务监控（Flower）”Tab 点击会直接打开该地址。
+
+
+## 前端 Network Error 说明
+
+若出现 `AxiosError: Network Error`，通常是跨域或前端直接请求错误地址导致。
+
+当前默认已处理：
+
+- 前端默认请求同源 `/api/v1`
+- Vite 开发服务器代理 `/api -> http://127.0.0.1:8000`
+- 后端已开启 CORS（`CORS_ALLOW_ORIGINS`）
+
+如需手动指定后端地址，可设置：
+
+- `VITE_API_BASE_URL=http://你的地址:8000/api/v1`
