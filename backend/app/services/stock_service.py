@@ -124,11 +124,20 @@ class StockService:
             f"`{mapping['low']}` AS low",
             f"`{mapping['close']}` AS close",
         ]
+        output_alias = {
+            "pre_close": "pre_close",
+            "change": "change_value",
+            "pct_chg": "pct_chg",
+            "vol": "vol",
+            "amount": "amount",
+        }
+
         for field in ["pre_close", "change", "pct_chg", "vol", "amount"]:
+            alias = output_alias[field]
             if field in mapping:
-                select_parts.append(f"`{mapping[field]}` AS {field}")
+                select_parts.append(f"`{mapping[field]}` AS {alias}")
             else:
-                select_parts.append(f"{optional_defaults[field]} AS {field}")
+                select_parts.append(f"{optional_defaults[field]} AS {alias}")
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
@@ -148,4 +157,10 @@ class StockService:
         sql += f" ORDER BY `{mapping['trade_date']}` DESC LIMIT :limit"
 
         rows = self.db.execute(text(sql), params).mappings().all()
-        return list(reversed([dict(row) for row in rows]))
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["change"] = item.pop("change_value", 0)
+            result.append(item)
+
+        return list(reversed(result))

@@ -10,19 +10,19 @@ class Settings(BaseSettings):
     database_url: str = "mysql+pymysql://root:root@127.0.0.1:3306/fit"
     redis_url: str = "redis://127.0.0.1:6379/0"
 
-    # read-only existing table mapping
+    # read-only existing table mapping (defaults aligned with current DB)
     stock_table_name: str = "stock_data"
-    stock_code_column: str = "ts_code"
-    stock_date_column: str = "trade_date"
-    stock_open_column: str = "open"
-    stock_high_column: str = "high"
-    stock_low_column: str = "low"
-    stock_close_column: str = "close"
+    stock_code_column: str = "stock_code"
+    stock_date_column: str = "date"
+    stock_open_column: str = "open_price"
+    stock_high_column: str = "high_price"
+    stock_low_column: str = "low_price"
+    stock_close_column: str = "close_price"
     stock_pre_close_column: str = "pre_close"
-    stock_change_column: str = "change"
+    stock_change_column: str = "price_change_rate"
     stock_pct_chg_column: str = "pct_chg"
-    stock_vol_column: str = "vol"
-    stock_amount_column: str = "amount"
+    stock_vol_column: str = "volume"
+    stock_amount_column: str = "turnover"
 
     collector_base_url: str = "http://127.0.0.1:9000"
     collector_timeout_seconds: int = 30

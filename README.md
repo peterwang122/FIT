@@ -30,16 +30,9 @@
 cp backend/.env.example backend/.env
 ```
 
-请根据你真实数据库字段名修改这些配置（否则可能查不到数据）：
+当前已内置你提供的字段映射（`stock_code/date/open_price/high_price/low_price/close_price/price_change_rate/volume/turnover`），通常**不需要**在 `.env` 再配置映射字段。
 
-- `STOCK_TABLE_NAME`
-- `STOCK_CODE_COLUMN`
-- `STOCK_DATE_COLUMN`
-- `STOCK_OPEN_COLUMN`
-- `STOCK_HIGH_COLUMN`
-- `STOCK_LOW_COLUMN`
-- `STOCK_CLOSE_COLUMN`
-- 其他可选字段：`PRE_CLOSE/CHANGE/PCT_CHG/VOL/AMOUNT`
+只有当数据库结构变化时，才需要在 `.env` 中覆盖 `STOCK_*` 配置。
 
 ## 启动
 
