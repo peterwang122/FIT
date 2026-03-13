@@ -12,9 +12,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { StockCandle } from '../types/stock'
 
-const props = defineProps<{ candles: StockCandle[] }>()
+const props = defineProps<{ candles: StockCandle[]; symbolName: string; symbolCode: string }>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
+const tooltipRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 
 let chart: IChartApi | null = null
@@ -31,6 +32,12 @@ const klineData = computed(() =>
     }))
     .filter((item) => Number.isFinite(item.open) && Number.isFinite(item.high) && Number.isFinite(item.low) && Number.isFinite(item.close)),
 )
+
+const dataMap = computed(() => {
+  const result = new Map<string, StockCandle>()
+  for (const item of props.candles) result.set(item.trade_date, item)
+  return result
+})
 
 function buildSeries(targetChart: IChartApi): ISeriesApi<'Candlestick'> {
   const anyChart = targetChart as any
@@ -50,6 +57,37 @@ function buildSeries(targetChart: IChartApi): ISeriesApi<'Candlestick'> {
     borderVisible: false,
     wickUpColor: '#ef4444',
     wickDownColor: '#10b981',
+  })
+}
+
+function bindCrosshairTooltip() {
+  if (!chart || !tooltipRef.value || !containerRef.value) return
+
+  chart.subscribeCrosshairMove((param: any) => {
+    if (!param?.time || !param?.point) {
+      tooltipRef.value!.style.display = 'none'
+      return
+    }
+
+    const key = String(param.time)
+    const row = dataMap.value.get(key)
+    if (!row) {
+      tooltipRef.value!.style.display = 'none'
+      return
+    }
+
+    tooltipRef.value!.style.display = 'block'
+    tooltipRef.value!.style.left = `${Math.min(param.point.x + 16, containerRef.value!.clientWidth - 220)}px`
+    tooltipRef.value!.style.top = `${Math.max(param.point.y - 10, 10)}px`
+    tooltipRef.value!.innerHTML = `
+      <div><b>${props.symbolName} (${props.symbolCode})</b></div>
+      <div>日期: ${row.trade_date}</div>
+      <div>开: ${row.open} 高: ${row.high} 低: ${row.low} 收: ${row.close}</div>
+      <div>涨跌幅: ${row.pct_chg}% 成交量: ${row.vol}</div>
+      <div>PE: ${row.pe_ttm} PB: ${row.pb}</div>
+      <div>总市值: ${row.total_market_value}</div>
+      <div>流通市值: ${row.circulating_market_value}</div>
+    `
   })
 }
 
@@ -83,6 +121,7 @@ function renderChart() {
     candleSeries = buildSeries(chart)
     candleSeries.setData(klineData.value as (WhitespaceData<Time> | any)[])
     chart.timeScale().fitContent()
+    bindCrosshairTooltip()
   } catch (error) {
     renderError.value = `K线渲染失败：${String(error)}`
     console.error(error)
@@ -108,17 +147,41 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="card">
-    <h3>股票日K线图（Lightweight Charts）</h3>
+    <div class="chart-head">{{ symbolName }}（{{ symbolCode }}）</div>
     <p v-if="candles.length === 0" class="muted">当前没有查到K线数据，请检查股票代码与数据库字段映射配置。</p>
     <p v-if="renderError" class="error">{{ renderError }}</p>
-    <div ref="containerRef" class="kline-container" />
+    <div ref="containerRef" class="kline-container">
+      <div ref="tooltipRef" class="kline-tooltip"></div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.chart-head {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
 .kline-container {
+  position: relative;
   width: 100%;
   height: 520px;
+}
+
+.kline-tooltip {
+  position: absolute;
+  z-index: 10;
+  min-width: 220px;
+  max-width: 280px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.96);
+  font-size: 12px;
+  line-height: 1.5;
+  display: none;
+  pointer-events: none;
 }
 
 .muted {

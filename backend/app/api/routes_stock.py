@@ -39,13 +39,13 @@ def get_stock_meta(db: Session = Depends(get_db)):
 
 @router.get("/symbols", response_model=ApiResponse[list[StockSymbolResponse]])
 def get_symbols(
-    limit: int = Query(default=200, ge=1, le=2000),
+    limit: int = Query(default=200, ge=1, le=5000),
     keyword: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     service = StockService(db)
-    symbols = service.list_symbols(limit=limit, keyword=keyword)
-    return ApiResponse(data=[StockSymbolResponse(ts_code=item) for item in symbols])
+    symbols = service.search_symbols(limit=limit, keyword=keyword)
+    return ApiResponse(data=[StockSymbolResponse.model_validate(item) for item in symbols])
 
 
 @router.get("/{ts_code}/kline", response_model=ApiResponse[list[StockCandle]])
@@ -53,11 +53,10 @@ def get_kline(
     ts_code: str,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    limit: int = Query(default=240, le=3000),
     db: Session = Depends(get_db),
 ):
     service = StockService(db)
-    rows = service.list_daily_kline(ts_code=ts_code, start_date=start_date, end_date=end_date, limit=limit)
+    rows = service.list_daily_kline(ts_code=ts_code, start_date=start_date, end_date=end_date)
     return ApiResponse(data=[StockCandle.model_validate(row) for row in rows])
 
 

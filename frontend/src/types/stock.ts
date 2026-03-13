@@ -9,10 +9,15 @@ export interface StockCandle {
   pct_chg: number
   vol: number
   amount: number
+  pe_ttm: number
+  pb: number
+  total_market_value: number
+  circulating_market_value: number
 }
 
 export interface StockSymbol {
   ts_code: string
+  stock_name: string
 }
 
 export interface StockMeta {

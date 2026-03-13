@@ -20,23 +20,25 @@ export const useStockStore = defineStore('stock', {
     collectState: '' as string,
     error: '' as string,
   }),
+  getters: {
+    selectedSymbolName(state): string {
+      return state.symbols.find((item) => item.ts_code === state.tsCode)?.stock_name ?? ''
+    },
+  },
   actions: {
     async initialize() {
       this.error = ''
       try {
-        const [dbStatus, meta] = await Promise.all([fetchDbStatus(), fetchMeta()])
+        const [dbStatus, meta, symbols] = await Promise.all([fetchDbStatus(), fetchMeta(), fetchSymbols()])
         this.dbStatus = dbStatus
         this.meta = meta
-        await this.searchSymbols()
+        this.symbols = symbols
+        if (!this.symbols.find((item) => item.ts_code === this.tsCode) && this.symbols.length > 0) {
+          this.tsCode = this.symbols[0].ts_code
+        }
         await this.loadKline()
       } catch (error) {
         this.error = `初始化失败：${String(error)}`
-      }
-    },
-    async searchSymbols() {
-      this.symbols = await fetchSymbols(200, this.searchKeyword)
-      if (!this.symbols.find((item) => item.ts_code === this.tsCode) && this.symbols.length > 0) {
-        this.tsCode = this.symbols[0].ts_code
       }
     },
     async refreshDbStatus() {

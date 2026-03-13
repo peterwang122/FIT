@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     stock_pct_chg_column: str = "pct_chg"
     stock_vol_column: str = "volume"
     stock_amount_column: str = "turnover"
+    stock_pe_ttm_column: str = "pe_ttm"
+    stock_pb_column: str = "pb"
+    stock_total_market_value_column: str = "total_market_value"
+    stock_circulating_market_value_column: str = "circulating_market_value"
+
+    stock_basic_info_table_name: str = "stock_basic_info"
+    stock_basic_info_code_column: str = "stock_code"
+    stock_basic_info_name_column: str = "stock_name"
+    stock_basic_cache_key: str = "fit:stock_basic_info:all"
+    stock_basic_cache_ttl_seconds: int = 86400
 
     collector_base_url: str = "http://127.0.0.1:9000"
     collector_timeout_seconds: int = 30

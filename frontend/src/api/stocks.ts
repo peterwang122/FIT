@@ -12,7 +12,7 @@ export async function fetchDbStatus() {
   return data.data
 }
 
-export async function fetchSymbols(limit = 200, keyword = '') {
+export async function fetchSymbols(limit = 5000, keyword = '') {
   const { data } = await http.get<ApiResponse<StockSymbol[]>>('/stocks/symbols', { params: { limit, keyword } })
   return data.data
 }

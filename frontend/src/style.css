@@ -180,3 +180,47 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+
+.search-wrap {
+  position: relative;
+}
+
+.suggest-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  z-index: 20;
+  padding: 4px;
+  margin: 0;
+  list-style: none;
+}
+
+.suggest-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.suggest-list li:hover {
+  background: #eff6ff;
+}
+
+.symbol-head {
+  grid-column: 1 / -1;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.value.small {
+  font-size: 14px;
+}

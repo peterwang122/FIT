@@ -11,21 +11,36 @@ const { tsCode, searchKeyword, symbols, candles, loading, collectTaskId, collect
 
 const activeTab = ref<'market' | 'monitor'>('market')
 const flowerUrl = import.meta.env.VITE_FLOWER_URL ?? 'http://127.0.0.1:5555'
+const showSuggestions = ref(false)
 
 const latestSnapshot = computed(() => (candles.value.length ? candles.value[candles.value.length - 1] : undefined))
+const selectedName = computed(() => stockStore.selectedSymbolName)
+
+const filteredSymbols = computed(() => {
+  const key = searchKeyword.value.trim().toLowerCase()
+  if (!key) return symbols.value.slice(0, 30)
+  return symbols.value
+    .filter((item) => item.ts_code.toLowerCase().includes(key) || item.stock_name.toLowerCase().includes(key))
+    .slice(0, 30)
+})
 
 function openFlowerTab() {
   activeTab.value = 'monitor'
   window.open(flowerUrl, '_blank', 'noopener,noreferrer')
 }
 
-async function onSearch() {
-  await stockStore.searchSymbols()
+async function pickSymbol(code: string, name: string) {
+  tsCode.value = code
+  searchKeyword.value = `${code} ${name}`
+  showSuggestions.value = false
   await stockStore.loadKline()
 }
 
 onMounted(async () => {
   await stockStore.initialize()
+  if (selectedName.value) {
+    searchKeyword.value = `${tsCode.value} ${selectedName.value}`
+  }
 })
 </script>
 
@@ -53,19 +68,24 @@ onMounted(async () => {
             <span>股票数量</span>
             <strong>{{ dbStatus.symbol_count }}</strong>
           </div>
-          <p v-if="dbStatus.sample_symbols.length" class="muted">样例代码：{{ dbStatus.sample_symbols.join(', ') }}</p>
           <button class="btn" @click="stockStore.refreshDbStatus">刷新连接状态</button>
         </div>
 
-        <div class="search-row">
-          <input v-model="searchKeyword" class="input" placeholder="输入股票代码搜索，如 002594" @keyup.enter="onSearch" />
-          <button class="btn" @click="onSearch">搜索</button>
+        <div class="search-wrap">
+          <input
+            v-model="searchKeyword"
+            class="input"
+            placeholder="输入股票代码或股票名称"
+            @focus="showSuggestions = true"
+            @input="showSuggestions = true"
+          />
+          <ul v-if="showSuggestions" class="suggest-list">
+            <li v-for="item in filteredSymbols" :key="item.ts_code" @mousedown.prevent="pickSymbol(item.ts_code, item.stock_name)">
+              <span>{{ item.ts_code }}</span>
+              <strong>{{ item.stock_name }}</strong>
+            </li>
+          </ul>
         </div>
-
-        <select v-model="tsCode" class="input" @change="stockStore.loadKline">
-          <option value="" disabled>请选择股票代码</option>
-          <option v-for="item in symbols" :key="item.ts_code" :value="item.ts_code">{{ item.ts_code }}</option>
-        </select>
 
         <div class="btn-group">
           <button @click="stockStore.loadKline" :disabled="loading" class="btn primary">刷新K线</button>
@@ -81,6 +101,7 @@ onMounted(async () => {
 
       <main>
         <section class="card summary" v-if="latestSnapshot">
+          <div class="symbol-head">{{ selectedName }} ({{ tsCode }})</div>
           <div>
             <div class="label">交易日</div>
             <div class="value">{{ latestSnapshot.trade_date }}</div>
@@ -97,9 +118,25 @@ onMounted(async () => {
             <div class="label">成交量</div>
             <div class="value">{{ latestSnapshot.vol }}</div>
           </div>
+          <div>
+            <div class="label">PE(TTM)</div>
+            <div class="value small">{{ latestSnapshot.pe_ttm }}</div>
+          </div>
+          <div>
+            <div class="label">PB</div>
+            <div class="value small">{{ latestSnapshot.pb }}</div>
+          </div>
+          <div>
+            <div class="label">总市值</div>
+            <div class="value small">{{ latestSnapshot.total_market_value }}</div>
+          </div>
+          <div>
+            <div class="label">流通市值</div>
+            <div class="value small">{{ latestSnapshot.circulating_market_value }}</div>
+          </div>
         </section>
 
-        <KlineChart :candles="candles" />
+        <KlineChart :candles="candles" :symbol-name="selectedName" :symbol-code="tsCode" />
 
         <section class="card meta" v-if="meta">
           <h3>数据库字段映射（只读）</h3>

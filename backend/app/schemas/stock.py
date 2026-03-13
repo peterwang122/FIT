@@ -14,6 +14,10 @@ class StockCandle(BaseModel):
     pct_chg: float = 0
     vol: float = 0
     amount: float = 0
+    pe_ttm: float = 0
+    pb: float = 0
+    total_market_value: float = 0
+    circulating_market_value: float = 0
 
 
 class CollectTaskPayload(BaseModel):
@@ -29,6 +33,7 @@ class StockMetaResponse(BaseModel):
 
 class StockSymbolResponse(BaseModel):
     ts_code: str
+    stock_name: str
 
 
 class DbStatusResponse(BaseModel):

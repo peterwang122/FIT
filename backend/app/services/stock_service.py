@@ -1,9 +1,11 @@
+import json
 from datetime import date
 
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.redis_client import redis_client
 
 
 class StockService:
@@ -24,6 +26,10 @@ class StockService:
             "pct_chg": settings.stock_pct_chg_column,
             "vol": settings.stock_vol_column,
             "amount": settings.stock_amount_column,
+            "pe_ttm": settings.stock_pe_ttm_column,
+            "pb": settings.stock_pb_column,
+            "total_market_value": settings.stock_total_market_value_column,
+            "circulating_market_value": settings.stock_circulating_market_value_column,
         }
 
     def get_table_columns(self) -> set[str]:
@@ -83,39 +89,64 @@ class StockService:
                 "error": str(exc),
             }
 
-    def list_symbols(self, limit: int = 200, keyword: str | None = None) -> list[str]:
-        cols = self.get_table_columns()
-        if settings.stock_code_column not in cols:
-            return []
-
-        base_sql = (
-            f"SELECT DISTINCT `{settings.stock_code_column}` AS ts_code "
-            f"FROM `{settings.stock_table_name}`"
+    def _query_stock_basics_from_db(self) -> list[dict]:
+        sql = text(
+            f"SELECT `{settings.stock_basic_info_code_column}` AS ts_code, "
+            f"`{settings.stock_basic_info_name_column}` AS stock_name "
+            f"FROM `{settings.stock_basic_info_table_name}` "
+            f"ORDER BY `{settings.stock_basic_info_code_column}`"
         )
-        params: dict = {"limit": limit}
+        return [dict(row) for row in self.db.execute(sql).mappings().all()]
 
+    def load_stock_basics_to_cache(self) -> list[dict]:
+        items = self._query_stock_basics_from_db()
+        redis_client.set(settings.stock_basic_cache_key, json.dumps(items, ensure_ascii=False), ex=settings.stock_basic_cache_ttl_seconds)
+        return items
+
+    def get_stock_basics(self) -> list[dict]:
+        cached = redis_client.get(settings.stock_basic_cache_key)
+        if cached:
+            try:
+                data = json.loads(cached)
+                if isinstance(data, list):
+                    return data
+            except json.JSONDecodeError:
+                pass
+        return self.load_stock_basics_to_cache()
+
+    def search_symbols(self, keyword: str | None = None, limit: int = 200) -> list[dict]:
+        items = self.get_stock_basics()
         if keyword:
-            base_sql += f" WHERE `{settings.stock_code_column}` LIKE :keyword"
-            params["keyword"] = f"%{keyword}%"
-
-        base_sql += f" ORDER BY `{settings.stock_code_column}` LIMIT :limit"
-
-        rows = self.db.execute(text(base_sql), params).mappings().all()
-        return [str(row["ts_code"]) for row in rows]
+            key = keyword.strip().lower()
+            items = [
+                item
+                for item in items
+                if key in str(item.get("ts_code", "")).lower() or key in str(item.get("stock_name", "")).lower()
+            ]
+        return items[:limit]
 
     def list_daily_kline(
         self,
         ts_code: str,
         start_date: date | None = None,
         end_date: date | None = None,
-        limit: int = 500,
     ) -> list[dict]:
         mapping = self.available_mapping()
         required = {"ts_code", "trade_date", "open", "high", "low", "close"}
         if not required.issubset(mapping):
             return []
 
-        optional_defaults = {"pre_close": 0, "change": 0, "pct_chg": 0, "vol": 0, "amount": 0}
+        optional_defaults = {
+            "pre_close": 0,
+            "change": 0,
+            "pct_chg": 0,
+            "vol": 0,
+            "amount": 0,
+            "pe_ttm": 0,
+            "pb": 0,
+            "total_market_value": 0,
+            "circulating_market_value": 0,
+        }
 
         select_parts = [
             f"`{mapping['trade_date']}` AS trade_date",
@@ -130,10 +161,13 @@ class StockService:
             "pct_chg": "pct_chg",
             "vol": "vol",
             "amount": "amount",
+            "pe_ttm": "pe_ttm",
+            "pb": "pb",
+            "total_market_value": "total_market_value",
+            "circulating_market_value": "circulating_market_value",
         }
 
-        for field in ["pre_close", "change", "pct_chg", "vol", "amount"]:
-            alias = output_alias[field]
+        for field, alias in output_alias.items():
             if field in mapping:
                 select_parts.append(f"`{mapping[field]}` AS {alias}")
             else:
@@ -145,7 +179,7 @@ class StockService:
             f"WHERE `{mapping['ts_code']}` = :ts_code"
         )
 
-        params: dict = {"ts_code": ts_code, "limit": limit}
+        params: dict = {"ts_code": ts_code}
 
         if start_date:
             sql += f" AND `{mapping['trade_date']}` >= :start_date"
@@ -154,7 +188,7 @@ class StockService:
             sql += f" AND `{mapping['trade_date']}` <= :end_date"
             params["end_date"] = end_date
 
-        sql += f" ORDER BY `{mapping['trade_date']}` DESC LIMIT :limit"
+        sql += f" ORDER BY `{mapping['trade_date']}` ASC"
 
         rows = self.db.execute(text(sql), params).mappings().all()
         result: list[dict] = []
@@ -162,5 +196,4 @@ class StockService:
             item = dict(row)
             item["change"] = item.pop("change_value", 0)
             result.append(item)
-
-        return list(reversed(result))
+        return result
