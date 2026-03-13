@@ -53,7 +53,7 @@ def get_kline(
     ts_code: str,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    limit: int = Query(default=500, le=3000),
+    limit: int = Query(default=240, le=3000),
     db: Session = Depends(get_db),
 ):
     service = StockService(db)
