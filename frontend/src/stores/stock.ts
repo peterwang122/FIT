@@ -9,7 +9,8 @@ function buildIdempotencyKey(tsCode: string): string {
 
 export const useStockStore = defineStore('stock', {
   state: () => ({
-    tsCode: '',
+    tsCode: '002594',
+    searchKeyword: '',
     symbols: [] as StockSymbol[],
     candles: [] as StockCandle[],
     meta: null as StockMeta | null,
@@ -23,18 +24,19 @@ export const useStockStore = defineStore('stock', {
     async initialize() {
       this.error = ''
       try {
-        const [dbStatus, symbols, meta] = await Promise.all([fetchDbStatus(), fetchSymbols(), fetchMeta()])
+        const [dbStatus, meta] = await Promise.all([fetchDbStatus(), fetchMeta()])
         this.dbStatus = dbStatus
-        this.symbols = symbols
         this.meta = meta
-        if (!this.tsCode && symbols.length > 0) {
-          this.tsCode = symbols[0].ts_code
-        }
-        if (this.tsCode) {
-          await this.loadKline()
-        }
+        await this.searchSymbols()
+        await this.loadKline()
       } catch (error) {
         this.error = `初始化失败：${String(error)}`
+      }
+    },
+    async searchSymbols() {
+      this.symbols = await fetchSymbols(200, this.searchKeyword)
+      if (!this.symbols.find((item) => item.ts_code === this.tsCode) && this.symbols.length > 0) {
+        this.tsCode = this.symbols[0].ts_code
       }
     },
     async refreshDbStatus() {

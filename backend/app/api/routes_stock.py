@@ -38,9 +38,13 @@ def get_stock_meta(db: Session = Depends(get_db)):
 
 
 @router.get("/symbols", response_model=ApiResponse[list[StockSymbolResponse]])
-def get_symbols(limit: int = Query(default=200, ge=1, le=2000), db: Session = Depends(get_db)):
+def get_symbols(
+    limit: int = Query(default=200, ge=1, le=2000),
+    keyword: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
     service = StockService(db)
-    symbols = service.list_symbols(limit=limit)
+    symbols = service.list_symbols(limit=limit, keyword=keyword)
     return ApiResponse(data=[StockSymbolResponse(ts_code=item) for item in symbols])
 
 

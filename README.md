@@ -13,8 +13,9 @@
 3. 后端支持**现有数据库字段映射配置**，不再强绑定固定 ORM 字段。
 4. 新增数据库连接检查接口：`GET /api/v1/stocks/db-status`，可确认是否连上你的现有库。
 5. 新增接口：
-   - `GET /api/v1/stocks/symbols` 自动列出可选股票代码
+   - `GET /api/v1/stocks/symbols` 支持按关键字搜索股票代码
    - `GET /api/v1/stocks/meta` 返回当前字段映射
+6. 前端首页默认展示代码 `002594`，其他代码可搜索后展示。
 
 ## 关于 SQL 初始化文件
 

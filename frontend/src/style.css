@@ -97,6 +97,12 @@ body {
   font-weight: 700;
 }
 
+.search-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
 .input {
   width: 100%;
   border: 1px solid #cbd5e1;

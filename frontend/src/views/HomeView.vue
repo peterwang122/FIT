@@ -6,7 +6,8 @@ import KlineChart from '../components/KlineChart.vue'
 import { useStockStore } from '../stores/stock'
 
 const stockStore = useStockStore()
-const { tsCode, symbols, candles, loading, collectTaskId, collectState, meta, dbStatus, error } = storeToRefs(stockStore)
+const { tsCode, searchKeyword, symbols, candles, loading, collectTaskId, collectState, meta, dbStatus, error } =
+  storeToRefs(stockStore)
 
 const activeTab = ref<'market' | 'monitor'>('market')
 const flowerUrl = import.meta.env.VITE_FLOWER_URL ?? 'http://127.0.0.1:5555'
@@ -16,6 +17,11 @@ const latestSnapshot = computed(() => (candles.value.length ? candles.value[cand
 function openFlowerTab() {
   activeTab.value = 'monitor'
   window.open(flowerUrl, '_blank', 'noopener,noreferrer')
+}
+
+async function onSearch() {
+  await stockStore.searchSymbols()
+  await stockStore.loadKline()
 }
 
 onMounted(async () => {
@@ -40,10 +46,6 @@ onMounted(async () => {
             <strong :class="dbStatus.connected ? 'ok' : 'bad'">{{ dbStatus.connected ? '已连接' : '未连接' }}</strong>
           </div>
           <div class="db-row">
-            <span>数据表</span>
-            <strong>{{ dbStatus.table_name }}</strong>
-          </div>
-          <div class="db-row">
             <span>总记录</span>
             <strong>{{ dbStatus.row_count }}</strong>
           </div>
@@ -52,8 +54,12 @@ onMounted(async () => {
             <strong>{{ dbStatus.symbol_count }}</strong>
           </div>
           <p v-if="dbStatus.sample_symbols.length" class="muted">样例代码：{{ dbStatus.sample_symbols.join(', ') }}</p>
-          <p v-if="dbStatus.error" class="error">{{ dbStatus.error }}</p>
           <button class="btn" @click="stockStore.refreshDbStatus">刷新连接状态</button>
+        </div>
+
+        <div class="search-row">
+          <input v-model="searchKeyword" class="input" placeholder="输入股票代码搜索，如 002594" @keyup.enter="onSearch" />
+          <button class="btn" @click="onSearch">搜索</button>
         </div>
 
         <select v-model="tsCode" class="input" @change="stockStore.loadKline">
@@ -67,6 +73,7 @@ onMounted(async () => {
           <button @click="stockStore.refreshTaskStatus" :disabled="!collectTaskId" class="btn">刷新任务状态</button>
         </div>
 
+        <p class="muted">当前代码：{{ tsCode || '-' }}</p>
         <p class="muted">任务ID：{{ collectTaskId || '-' }}</p>
         <p class="muted">状态：{{ collectState || '-' }}</p>
         <p v-if="error" class="error">{{ error }}</p>

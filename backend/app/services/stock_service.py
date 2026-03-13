@@ -42,7 +42,6 @@ class StockService:
             required = {"ts_code", "trade_date", "open", "high", "low", "close"}
             has_required_mapping = required.issubset(mapping)
 
-            rows_count = None
             symbol_count = 0
             sample_symbols: list[str] = []
 
@@ -84,17 +83,24 @@ class StockService:
                 "error": str(exc),
             }
 
-    def list_symbols(self, limit: int = 200) -> list[str]:
+    def list_symbols(self, limit: int = 200, keyword: str | None = None) -> list[str]:
         cols = self.get_table_columns()
         if settings.stock_code_column not in cols:
             return []
 
-        query = text(
+        base_sql = (
             f"SELECT DISTINCT `{settings.stock_code_column}` AS ts_code "
-            f"FROM `{settings.stock_table_name}` "
-            f"ORDER BY `{settings.stock_code_column}` LIMIT :limit"
+            f"FROM `{settings.stock_table_name}`"
         )
-        rows = self.db.execute(query, {"limit": limit}).mappings().all()
+        params: dict = {"limit": limit}
+
+        if keyword:
+            base_sql += f" WHERE `{settings.stock_code_column}` LIKE :keyword"
+            params["keyword"] = f"%{keyword}%"
+
+        base_sql += f" ORDER BY `{settings.stock_code_column}` LIMIT :limit"
+
+        rows = self.db.execute(text(base_sql), params).mappings().all()
         return [str(row["ts_code"]) for row in rows]
 
     def list_daily_kline(
