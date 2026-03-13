@@ -192,8 +192,26 @@ class StockService:
 
         rows = self.db.execute(text(sql), params).mappings().all()
         result: list[dict] = []
+        numeric_fields = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "pre_close",
+            "change",
+            "pct_chg",
+            "vol",
+            "amount",
+            "pe_ttm",
+            "pb",
+            "total_market_value",
+            "circulating_market_value",
+        ]
         for row in rows:
             item = dict(row)
             item["change"] = item.pop("change_value", 0)
+            for field in numeric_fields:
+                if item.get(field) is None:
+                    item[field] = 0
             result.append(item)
         return result
