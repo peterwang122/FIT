@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     app_debug: bool = True
     api_prefix: str = "/api/v1"
 
-    database_url: str = "mysql+pymysql://root:root@127.0.0.1:3306/fit"
+    database_url: str = "mysql+pymysql://root:865418267@127.0.0.1:3306/stock_info"
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     # read-only existing table mapping (defaults aligned with current DB)
@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     stock_high_column: str = "high_price"
     stock_low_column: str = "low_price"
     stock_close_column: str = "close_price"
-    stock_pre_close_column: str = "pre_close"
-    stock_change_column: str = "price_change_rate"
-    stock_pct_chg_column: str = "pct_chg"
+    stock_pre_close_column: str = "0"
+    stock_change_column: str = "price_change_amount"
+    stock_pct_chg_column: str = "price_change_rate"
     stock_vol_column: str = "volume"
     stock_amount_column: str = "turnover"
     stock_pe_ttm_column: str = "pe_ttm"
