@@ -53,6 +53,9 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
+如果 MySQL 账号认证方式是 `caching_sha2_password` 或 `sha256_password`，后端还需要依赖 `cryptography`。
+当前它已经加入 [backend/requirements.txt](C:/Users/Administrator/PycharmProjects/FIT/backend/requirements.txt)，重新执行一次安装依赖即可。
+
 ### 3) 启动 Celery Worker
 
 ```bash

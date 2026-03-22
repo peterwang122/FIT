@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { StockCandle } from '../types/stock'
+import type { KlineCandle } from '../types/stock'
 
-defineProps<{ candles: StockCandle[] }>()
+defineProps<{ candles: KlineCandle[] }>()
 </script>
 
 <template>

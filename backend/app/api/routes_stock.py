@@ -1,7 +1,7 @@
 from datetime import date
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -10,6 +10,10 @@ from app.schemas.common import ApiResponse
 from app.schemas.stock import (
     CollectTaskPayload,
     DbStatusResponse,
+    IndexEmotionPointResponse,
+    MarketOptionResponse,
+    NetPositionSeriesResponse,
+    NetPositionTablesResponse,
     StockCandle,
     StockMetaResponse,
     StockSymbolResponse,
@@ -46,6 +50,71 @@ def get_symbols(
     service = StockService(db)
     symbols = service.search_symbols(limit=limit, keyword=keyword)
     return ApiResponse(data=[StockSymbolResponse.model_validate(item) for item in symbols])
+
+
+@router.get("/index-emotions", response_model=ApiResponse[list[IndexEmotionPointResponse]])
+def get_index_emotions(db: Session = Depends(get_db)):
+    service = StockService(db)
+    items = service.list_excel_index_emotions()
+    return ApiResponse(data=[IndexEmotionPointResponse.model_validate(item) for item in items])
+
+
+@router.get("/cffex/net-positions", response_model=ApiResponse[NetPositionTablesResponse])
+def get_cffex_net_positions(
+    trade_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    service = StockService(db)
+    try:
+        items = service.get_cffex_net_position_tables(trade_date=trade_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ApiResponse(data=NetPositionTablesResponse.model_validate(items))
+
+
+@router.get("/cffex/net-position-series", response_model=ApiResponse[NetPositionSeriesResponse])
+def get_cffex_net_position_series(db: Session = Depends(get_db)):
+    service = StockService(db)
+    items = service.get_cffex_net_position_series()
+    return ApiResponse(data=NetPositionSeriesResponse.model_validate(items))
+
+
+@router.get("/indexes/options", response_model=ApiResponse[list[MarketOptionResponse]])
+def get_index_options(db: Session = Depends(get_db)):
+    service = StockService(db)
+    items = service.list_index_options()
+    return ApiResponse(data=[MarketOptionResponse.model_validate(item) for item in items])
+
+
+@router.get("/indexes/{index_code}/kline", response_model=ApiResponse[list[StockCandle]])
+def get_index_kline(
+    index_code: str,
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    service = StockService(db)
+    rows = service.list_index_daily_kline(index_code=index_code, start_date=start_date, end_date=end_date)
+    return ApiResponse(data=[StockCandle.model_validate(row) for row in rows])
+
+
+@router.get("/forex/options", response_model=ApiResponse[list[MarketOptionResponse]])
+def get_forex_options(db: Session = Depends(get_db)):
+    service = StockService(db)
+    items = service.list_forex_options()
+    return ApiResponse(data=[MarketOptionResponse.model_validate(item) for item in items])
+
+
+@router.get("/forex/{symbol_code}/kline", response_model=ApiResponse[list[StockCandle]])
+def get_forex_kline(
+    symbol_code: str,
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    service = StockService(db)
+    rows = service.list_forex_daily_kline(symbol_code=symbol_code, start_date=start_date, end_date=end_date)
+    return ApiResponse(data=[StockCandle.model_validate(row) for row in rows])
 
 
 @router.get("/{ts_code}/kline", response_model=ApiResponse[list[StockCandle]])

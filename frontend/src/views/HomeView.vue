@@ -1,20 +1,79 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
+import AppSidebar from '../components/AppSidebar.vue'
+import IndexEmotionChart from '../components/IndexEmotionChart.vue'
 import KlineChart from '../components/KlineChart.vue'
+import NetPositionLineChart from '../components/NetPositionLineChart.vue'
+import NetPositionTable from '../components/NetPositionTable.vue'
 import { useStockStore } from '../stores/stock'
+import type { CffexSeriesKey } from '../types/stock'
+
+const NET_POSITION_VIEW_OPTIONS = [
+  { value: 'table', label: '表格' },
+  { value: 'chart', label: '折线图' },
+] as const
+
+const NET_POSITION_SERIES_OPTIONS: { value: CffexSeriesKey; label: string }[] = [
+  { value: 'OVERALL', label: '总体' },
+  { value: 'IF', label: 'IF' },
+  { value: 'IH', label: 'IH' },
+  { value: 'IC', label: 'IC' },
+  { value: 'IM', label: 'IM' },
+]
 
 const stockStore = useStockStore()
-const { tsCode, searchKeyword, symbols, candles, loading, collectTaskId, collectState, meta, dbStatus, error } =
-  storeToRefs(stockStore)
+const route = useRoute()
+const {
+  tsCode,
+  searchKeyword,
+  netPositionDate,
+  symbols,
+  candles,
+  indexEmotionPoints,
+  netPositionTables,
+  netPositionSeries,
+  indexCode,
+  indexOptions,
+  indexCandles,
+  forexCode,
+  forexOptions,
+  forexCandles,
+  loading,
+  indexLoading,
+  forexLoading,
+  netPositionSeriesLoading,
+  collectTaskId,
+  collectState,
+  error,
+  indexEmotionLoading,
+  netPositionLoading,
+} = storeToRefs(stockStore)
 
-const activeTab = ref<'market' | 'monitor'>('market')
-const flowerUrl = import.meta.env.VITE_FLOWER_URL ?? 'http://127.0.0.1:5555'
 const showSuggestions = ref(false)
+const netPositionDateInput = ref('')
+const stockSectionRef = ref<HTMLElement | null>(null)
+const netPositionViewMode = ref<'table' | 'chart'>('table')
+const netPositionSeriesKey = ref<CffexSeriesKey>('OVERALL')
 
-const latestSnapshot = computed(() => (candles.value.length ? candles.value[candles.value.length - 1] : undefined))
+const latestStockSnapshot = computed(() => (candles.value.length ? candles.value[candles.value.length - 1] : undefined))
+const latestIndexSnapshot = computed(() =>
+  indexCandles.value.length ? indexCandles.value[indexCandles.value.length - 1] : undefined,
+)
+const latestForexSnapshot = computed(() =>
+  forexCandles.value.length ? forexCandles.value[forexCandles.value.length - 1] : undefined,
+)
 const selectedName = computed(() => stockStore.selectedSymbolName)
+const selectedIndexName = computed(() => stockStore.selectedIndexName)
+const selectedForexName = computed(() => stockStore.selectedForexName)
+const citicNetPositionSeriesPoints = computed(
+  () => netPositionSeries.value?.citic_customer?.series?.[netPositionSeriesKey.value] ?? [],
+)
+const top20NetPositionSeriesPoints = computed(
+  () => netPositionSeries.value?.top20_institutions?.series?.[netPositionSeriesKey.value] ?? [],
+)
 
 const filteredSymbols = computed(() => {
   const key = searchKeyword.value.trim().toLowerCase()
@@ -24,9 +83,8 @@ const filteredSymbols = computed(() => {
     .slice(0, 30)
 })
 
-function openFlowerTab() {
-  activeTab.value = 'monitor'
-  window.open(flowerUrl, '_blank', 'noopener,noreferrer')
+function scrollToStockSection() {
+  stockSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function pickSymbol(code: string, name: string) {
@@ -36,125 +94,315 @@ async function pickSymbol(code: string, name: string) {
   await stockStore.loadKline()
 }
 
+async function applyNetPositionDate(nextDate: string) {
+  const result = await stockStore.loadNetPositionTables(nextDate || undefined)
+  if (!result?.ok) {
+    window.alert(result?.message ?? '所选日期暂无中金所净持仓数据')
+    netPositionDateInput.value = netPositionDate.value || ''
+    return
+  }
+  netPositionDateInput.value = stockStore.netPositionDate
+}
+
+async function resetNetPositionDate() {
+  await applyNetPositionDate('')
+}
+
+async function syncHashScroll() {
+  if (route.hash === '#stock-section') {
+    await nextTick()
+    scrollToStockSection()
+  }
+}
+
+watch(netPositionDate, (value) => {
+  netPositionDateInput.value = value || ''
+})
+
+watch(
+  () => route.hash,
+  async () => {
+    await syncHashScroll()
+  },
+)
+
 onMounted(async () => {
   await stockStore.initialize()
   if (selectedName.value) {
     searchKeyword.value = `${tsCode.value} ${selectedName.value}`
   }
+  netPositionDateInput.value = netPositionDate.value || ''
+  await syncHashScroll()
 })
 </script>
 
 <template>
-  <div class="page-wrap">
-    <div class="tab-bar card">
-      <button class="tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">行情中心</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'monitor' }" @click="openFlowerTab">任务监控（Flower）</button>
-    </div>
+  <div class="dashboard-shell">
+    <AppSidebar active="overview" @market="scrollToStockSection" />
 
-    <section v-if="activeTab === 'market'" class="market-grid">
-      <aside class="card panel-left">
-        <h3>股票选择</h3>
+    <main class="dashboard-main">
+      <p v-if="error" class="banner-error">{{ error }}</p>
 
-        <div class="db-check" v-if="dbStatus">
-          <div class="db-row">
-            <span>数据库连接</span>
-            <strong :class="dbStatus.connected ? 'ok' : 'bad'">{{ dbStatus.connected ? '已连接' : '未连接' }}</strong>
-          </div>
-          <div class="db-row">
-            <span>总记录</span>
-            <strong>{{ dbStatus.row_count }}</strong>
-          </div>
-          <div class="db-row">
-            <span>股票数量</span>
-            <strong>{{ dbStatus.symbol_count }}</strong>
-          </div>
-          <button class="btn" @click="stockStore.refreshDbStatus">刷新连接状态</button>
-        </div>
+      <section class="hero-grid">
+        <div class="hero-column hero-column-left">
+          <section class="card hero-panel positions-panel">
+            <div class="positions-toolbar">
+              <div class="positions-toolbar-meta">
+                <div v-if="netPositionTables?.citic_customer?.trade_date" class="panel-date">
+                  数据日期 {{ netPositionTables.citic_customer.trade_date }}
+                </div>
 
-        <div class="search-wrap">
-          <input
-            v-model="searchKeyword"
-            class="input"
-            placeholder="输入股票代码或股票名称"
-            @focus="showSuggestions = true"
-            @input="showSuggestions = true"
-          />
-          <ul v-if="showSuggestions" class="suggest-list">
-            <li v-for="item in filteredSymbols" :key="item.ts_code" @mousedown.prevent="pickSymbol(item.ts_code, item.stock_name)">
-              <span>{{ item.ts_code }}</span>
-              <strong>{{ item.stock_name }}</strong>
-            </li>
-          </ul>
-        </div>
+                <div class="positions-view-controls">
+                  <select v-model="netPositionViewMode" class="input select">
+                    <option v-for="item in NET_POSITION_VIEW_OPTIONS" :key="item.value" :value="item.value">
+                      {{ item.label }}
+                    </option>
+                  </select>
 
-        <div class="btn-group">
-          <button @click="stockStore.loadKline" :disabled="loading" class="btn primary">刷新K线</button>
-          <button @click="stockStore.triggerCollect" :disabled="!tsCode" class="btn">触发采集</button>
-          <button @click="stockStore.refreshTaskStatus" :disabled="!collectTaskId" class="btn">刷新任务状态</button>
-        </div>
+                  <select
+                    v-if="netPositionViewMode === 'chart'"
+                    v-model="netPositionSeriesKey"
+                    class="input select"
+                  >
+                    <option v-for="item in NET_POSITION_SERIES_OPTIONS" :key="item.value" :value="item.value">
+                      {{ item.label }}
+                    </option>
+                  </select>
+                </div>
+              </div>
 
-        <p class="muted">当前代码：{{ tsCode || '-' }}</p>
-        <p class="muted">任务ID：{{ collectTaskId || '-' }}</p>
-        <p class="muted">状态：{{ collectState || '-' }}</p>
-        <p v-if="error" class="error">{{ error }}</p>
-      </aside>
-
-      <main>
-        <section class="card summary" v-if="latestSnapshot">
-          <div class="symbol-head">{{ selectedName }} ({{ tsCode }})</div>
-          <div>
-            <div class="label">交易日</div>
-            <div class="value">{{ latestSnapshot.trade_date }}</div>
-          </div>
-          <div>
-            <div class="label">收盘价</div>
-            <div class="value">{{ latestSnapshot.close }}</div>
-          </div>
-          <div>
-            <div class="label">涨跌幅</div>
-            <div class="value">{{ latestSnapshot.pct_chg }}%</div>
-          </div>
-          <div>
-            <div class="label">成交量</div>
-            <div class="value">{{ latestSnapshot.vol }}</div>
-          </div>
-          <div>
-            <div class="label">PE(TTM)</div>
-            <div class="value small">{{ latestSnapshot.pe_ttm }}</div>
-          </div>
-          <div>
-            <div class="label">PB</div>
-            <div class="value small">{{ latestSnapshot.pb }}</div>
-          </div>
-          <div>
-            <div class="label">总市值</div>
-            <div class="value small">{{ latestSnapshot.total_market_value }}</div>
-          </div>
-          <div>
-            <div class="label">流通市值</div>
-            <div class="value small">{{ latestSnapshot.circulating_market_value }}</div>
-          </div>
-        </section>
-
-        <KlineChart :candles="candles" :symbol-name="selectedName" :symbol-code="tsCode" />
-
-        <section class="card meta" v-if="meta">
-          <h3>数据库字段映射（只读）</h3>
-          <p class="muted">数据表：{{ meta.table_name }}</p>
-          <div class="meta-grid">
-            <div v-for="(value, key) in meta.column_mapping" :key="key" class="meta-item">
-              <span>{{ key }}</span>
-              <strong>{{ value }}</strong>
+              <div class="positions-toolbar-controls">
+                <label for="position-date" class="label-inline">日期</label>
+                <input
+                  id="position-date"
+                  v-model="netPositionDateInput"
+                  type="date"
+                  class="input date-input"
+                  :disabled="netPositionLoading"
+                  @change="applyNetPositionDate(netPositionDateInput)"
+                />
+                <button class="btn" :disabled="netPositionLoading" @click="resetNetPositionDate">恢复最新</button>
+              </div>
             </div>
-          </div>
-        </section>
-      </main>
-    </section>
 
-    <section v-else class="card flower-card">
-      <h2>Flower 任务监控</h2>
-      <p class="muted">点击按钮跳转到 Flower 管理页面，查看任务状态、失败重试与队列情况。</p>
-      <a :href="flowerUrl" target="_blank" rel="noreferrer" class="btn primary">打开 Flower</a>
-    </section>
+            <div v-if="netPositionViewMode === 'table'" class="net-tables-stack">
+              <NetPositionTable
+                :table="netPositionTables?.citic_customer ?? null"
+                :loading="netPositionLoading"
+              />
+              <NetPositionTable
+                :table="netPositionTables?.top20_institutions ?? null"
+                :loading="netPositionLoading"
+              />
+            </div>
+            <div v-else class="net-tables-stack">
+              <NetPositionLineChart
+                title="中信期货(代客)净空单折线图"
+                :points="citicNetPositionSeriesPoints"
+                :loading="netPositionSeriesLoading"
+                line-color="#dc2626"
+              />
+              <NetPositionLineChart
+                title="前20机构净空单折线图"
+                :points="top20NetPositionSeriesPoints"
+                :loading="netPositionSeriesLoading"
+                line-color="#2563eb"
+              />
+            </div>
+          </section>
+
+          <section class="card hero-panel chart-panel">
+            <div class="compact-toolbar compact-toolbar-end">
+              <select id="index-select" v-model="indexCode" class="input select" @change="stockStore.loadIndexKline">
+                <option v-for="item in indexOptions" :key="item.code" :value="item.code">
+                  {{ item.name }}
+                </option>
+              </select>
+            </div>
+
+            <section v-if="latestIndexSnapshot" class="summary summary-compact">
+              <div class="symbol-head">{{ selectedIndexName }}（{{ indexCode }}）</div>
+              <div>
+                <div class="label">交易日期</div>
+                <div class="value">{{ latestIndexSnapshot.trade_date }}</div>
+              </div>
+              <div>
+                <div class="label">收盘价</div>
+                <div class="value">{{ latestIndexSnapshot.close }}</div>
+              </div>
+              <div>
+                <div class="label">涨跌幅</div>
+                <div class="value">{{ latestIndexSnapshot.pct_chg }}%</div>
+              </div>
+              <div>
+                <div class="label">成交量</div>
+                <div class="value">{{ latestIndexSnapshot.vol }}</div>
+              </div>
+            </section>
+
+            <p v-if="indexLoading" class="muted">指数 K 线加载中...</p>
+            <KlineChart
+              :candles="indexCandles"
+              :symbol-name="selectedIndexName"
+              :symbol-code="indexCode"
+              :default-visible-days="30"
+              height="100%"
+            />
+          </section>
+        </div>
+
+        <div class="hero-column hero-column-right">
+          <IndexEmotionChart
+            :points="indexEmotionPoints"
+            :loading="indexEmotionLoading"
+            :default-visible-days="30"
+            height="100%"
+          />
+
+          <section class="card hero-panel chart-panel">
+            <div class="compact-toolbar compact-toolbar-end">
+              <select id="forex-select" v-model="forexCode" class="input select" @change="stockStore.loadForexKline">
+                <option v-for="item in forexOptions" :key="item.code" :value="item.code">
+                  {{ item.name }}
+                </option>
+              </select>
+            </div>
+
+            <section v-if="latestForexSnapshot" class="summary summary-compact">
+              <div class="symbol-head">{{ selectedForexName }}（{{ forexCode }}）</div>
+              <div>
+                <div class="label">交易日期</div>
+                <div class="value">{{ latestForexSnapshot.trade_date }}</div>
+              </div>
+              <div>
+                <div class="label">最新价</div>
+                <div class="value">{{ latestForexSnapshot.close }}</div>
+              </div>
+              <div>
+                <div class="label">最高价</div>
+                <div class="value">{{ latestForexSnapshot.high }}</div>
+              </div>
+              <div>
+                <div class="label">最低价</div>
+                <div class="value">{{ latestForexSnapshot.low }}</div>
+              </div>
+            </section>
+
+            <p v-if="forexLoading" class="muted">汇率 K 线加载中...</p>
+            <KlineChart
+              :candles="forexCandles"
+              :symbol-name="selectedForexName"
+              :symbol-code="forexCode"
+              :default-visible-days="30"
+              height="100%"
+            />
+          </section>
+        </div>
+      </section>
+
+      <section id="stock-section" ref="stockSectionRef" class="stock-stage">
+        <div class="section-head">
+          <div>
+            <h2>行情中心</h2>
+          </div>
+        </div>
+
+        <div class="stock-stage-grid">
+          <aside class="card stock-control-panel">
+            <div class="stock-control-block">
+              <h3>股票搜索</h3>
+              <div class="search-wrap">
+                <input
+                  v-model="searchKeyword"
+                  class="input"
+                  placeholder="输入股票代码或股票名称"
+                  @focus="showSuggestions = true"
+                  @input="showSuggestions = true"
+                />
+                <ul v-if="showSuggestions" class="suggest-list">
+                  <li
+                    v-for="item in filteredSymbols"
+                    :key="item.ts_code"
+                    @mousedown.prevent="pickSymbol(item.ts_code, item.stock_name)"
+                  >
+                    <span>{{ item.ts_code }}</span>
+                    <strong>{{ item.stock_name }}</strong>
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="btn-group">
+              <button @click="stockStore.loadKline" :disabled="loading" class="btn primary">刷新股票 K 线</button>
+              <button @click="stockStore.triggerCollect" :disabled="!tsCode" class="btn">触发采集</button>
+              <button @click="stockStore.refreshTaskStatus" :disabled="!collectTaskId" class="btn">刷新任务状态</button>
+            </div>
+
+            <div class="stock-status-list">
+              <div class="stock-status-item">
+                <span>当前股票</span>
+                <strong>{{ selectedName || '-' }}（{{ tsCode || '-' }}）</strong>
+              </div>
+              <div class="stock-status-item">
+                <span>任务 ID</span>
+                <strong>{{ collectTaskId || '-' }}</strong>
+              </div>
+              <div class="stock-status-item">
+                <span>任务状态</span>
+                <strong>{{ collectState || '-' }}</strong>
+              </div>
+            </div>
+          </aside>
+
+          <div class="stock-content">
+            <section v-if="latestStockSnapshot" class="card summary stock-summary">
+              <div class="symbol-head">{{ selectedName }}（{{ tsCode }}）</div>
+              <div>
+                <div class="label">交易日期</div>
+                <div class="value">{{ latestStockSnapshot.trade_date }}</div>
+              </div>
+              <div>
+                <div class="label">收盘价</div>
+                <div class="value">{{ latestStockSnapshot.close }}</div>
+              </div>
+              <div>
+                <div class="label">涨跌幅</div>
+                <div class="value">{{ latestStockSnapshot.pct_chg }}%</div>
+              </div>
+              <div>
+                <div class="label">成交量</div>
+                <div class="value">{{ latestStockSnapshot.vol }}</div>
+              </div>
+              <div>
+                <div class="label">PE(TTM)</div>
+                <div class="value small">{{ latestStockSnapshot.pe_ttm }}</div>
+              </div>
+              <div>
+                <div class="label">PB</div>
+                <div class="value small">{{ latestStockSnapshot.pb }}</div>
+              </div>
+              <div>
+                <div class="label">总市值</div>
+                <div class="value small">{{ latestStockSnapshot.total_market_value }}</div>
+              </div>
+              <div>
+                <div class="label">流通市值</div>
+                <div class="value small">{{ latestStockSnapshot.circulating_market_value }}</div>
+              </div>
+            </section>
+
+            <section class="card stock-chart-panel stock-chart-panel-tall">
+              <div class="panel-head">
+                <div>
+                  <h2>股票 K 线</h2>
+                </div>
+              </div>
+
+              <KlineChart :candles="candles" :symbol-name="selectedName" :symbol-code="tsCode" :height="920" />
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
 </template>

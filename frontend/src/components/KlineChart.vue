@@ -10,9 +10,15 @@ import {
 } from 'lightweight-charts'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import type { StockCandle } from '../types/stock'
+import type { KlineCandle } from '../types/stock'
 
-const props = defineProps<{ candles: StockCandle[]; symbolName: string; symbolCode: string }>()
+const props = defineProps<{
+  candles: KlineCandle[]
+  symbolName: string
+  symbolCode: string
+  height?: number | string
+  defaultVisibleDays?: number
+}>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
 const tooltipRef = ref<HTMLDivElement | null>(null)
@@ -21,8 +27,20 @@ const renderError = ref('')
 let chart: IChartApi | null = null
 let candleSeries: ISeriesApi<'Candlestick'> | null = null
 
+function parseDateText(value: string): number {
+  return new Date(`${value}T00:00:00`).getTime()
+}
+
+function formatDateText(value: Date): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 const klineData = computed(() =>
-  props.candles
+  [...props.candles]
+    .sort((left, right) => left.trade_date.localeCompare(right.trade_date))
     .map((item) => ({
       time: item.trade_date as Time,
       open: Number(item.open),
@@ -30,13 +48,56 @@ const klineData = computed(() =>
       low: Number(item.low),
       close: Number(item.close),
     }))
-    .filter((item) => Number.isFinite(item.open) && Number.isFinite(item.high) && Number.isFinite(item.low) && Number.isFinite(item.close)),
+    .filter(
+      (item) =>
+        Number.isFinite(item.open) &&
+        Number.isFinite(item.high) &&
+        Number.isFinite(item.low) &&
+        Number.isFinite(item.close),
+    ),
 )
 
 const dataMap = computed(() => {
-  const result = new Map<string, StockCandle>()
+  const result = new Map<string, KlineCandle>()
   for (const item of props.candles) result.set(item.trade_date, item)
   return result
+})
+
+const hasFixedHeight = computed(() => typeof props.height === 'number')
+
+const shellStyle = computed(() => {
+  if (!hasFixedHeight.value) return undefined
+  const value = `${props.height}px`
+  return { height: value, minHeight: value }
+})
+
+function applyVisibleRange() {
+  if (!chart) return
+
+  if (!props.defaultVisibleDays || klineData.value.length === 0) {
+    chart.timeScale().fitContent()
+    return
+  }
+
+  const lastItem = klineData.value[klineData.value.length - 1]
+  const lastDate = new Date(parseDateText(String(lastItem.time)))
+  if (Number.isNaN(lastDate.getTime())) {
+    chart.timeScale().fitContent()
+    return
+  }
+
+  const startDate = new Date(lastDate)
+  startDate.setDate(startDate.getDate() - props.defaultVisibleDays + 1)
+  chart.timeScale().setVisibleRange({
+    from: formatDateText(startDate) as Time,
+    to: lastItem.time,
+  })
+}
+
+const containerStyle = computed(() => {
+  if (!hasFixedHeight.value) return undefined
+  const value = `${props.height}px`
+  return { height: value, minHeight: value }
 })
 
 function buildSeries(targetChart: IChartApi): ISeriesApi<'Candlestick'> {
@@ -120,10 +181,10 @@ function renderChart() {
 
     candleSeries = buildSeries(chart)
     candleSeries.setData(klineData.value as (WhitespaceData<Time> | any)[])
-    chart.timeScale().fitContent()
+    applyVisibleRange()
     bindCrosshairTooltip()
   } catch (error) {
-    renderError.value = `K线渲染失败：${String(error)}`
+    renderError.value = `K 线渲染失败：${String(error)}`
     console.error(error)
   }
 }
@@ -131,7 +192,7 @@ function renderChart() {
 watch(klineData, (next) => {
   if (!candleSeries) return
   candleSeries.setData(next as (WhitespaceData<Time> | any)[])
-  chart?.timeScale().fitContent()
+  applyVisibleRange()
 })
 
 onMounted(() => {
@@ -146,27 +207,37 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="card">
-    <div class="chart-head">{{ symbolName }}（{{ symbolCode }}）</div>
-    <p v-if="candles.length === 0" class="muted">当前没有查到K线数据，请检查股票代码与数据库字段映射配置。</p>
+  <div class="kline-shell" :class="{ 'has-explicit-height': hasFixedHeight }" :style="shellStyle">
+    <p v-if="candles.length === 0" class="muted">当前没有查到 K 线数据，请检查代码和数据表内容。</p>
     <p v-if="renderError" class="error">{{ renderError }}</p>
-    <div ref="containerRef" class="kline-container">
+    <div ref="containerRef" class="kline-container" :style="containerStyle">
       <div ref="tooltipRef" class="kline-tooltip"></div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.chart-head {
-  font-size: 18px;
-  font-weight: 700;
-  margin-bottom: 8px;
+.kline-shell {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.kline-shell.has-explicit-height {
+  flex: 0 0 auto;
 }
 
 .kline-container {
   position: relative;
   width: 100%;
-  height: 520px;
+  min-height: 220px;
+  flex: 1;
+}
+
+.kline-shell.has-explicit-height .kline-container {
+  flex: 0 0 auto;
 }
 
 .kline-tooltip {
@@ -187,12 +258,10 @@ onBeforeUnmount(() => {
 .muted {
   color: #64748b;
   font-size: 13px;
-  margin-bottom: 8px;
 }
 
 .error {
   color: #dc2626;
   font-size: 13px;
-  margin-bottom: 8px;
 }
 </style>

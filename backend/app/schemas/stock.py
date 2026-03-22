@@ -36,6 +36,56 @@ class StockSymbolResponse(BaseModel):
     stock_name: str
 
 
+class MarketOptionResponse(BaseModel):
+    code: str
+    name: str
+
+
+class IndexEmotionPointResponse(BaseModel):
+    emotion_date: date
+    index_name: str
+    emotion_value: float
+
+
+class NetPositionRowResponse(BaseModel):
+    product_code: str
+    index_name: str
+    short_position: int
+    long_position: int
+    net_position: int
+    net_position_text: str
+    action: str
+
+
+class NetPositionTableResponse(BaseModel):
+    member_label: str
+    trade_date: date | None = None
+    title: str
+    total_net_position: int
+    total_net_position_text: str
+    rows: list[NetPositionRowResponse]
+
+
+class NetPositionTablesResponse(BaseModel):
+    citic_customer: NetPositionTableResponse
+    top20_institutions: NetPositionTableResponse
+
+
+class NetPositionSeriesPointResponse(BaseModel):
+    trade_date: date
+    net_position: int
+
+
+class NetPositionSeriesGroupResponse(BaseModel):
+    member_label: str
+    series: dict[str, list[NetPositionSeriesPointResponse]]
+
+
+class NetPositionSeriesResponse(BaseModel):
+    citic_customer: NetPositionSeriesGroupResponse
+    top20_institutions: NetPositionSeriesGroupResponse
+
+
 class DbStatusResponse(BaseModel):
     connected: bool
     table_name: str
