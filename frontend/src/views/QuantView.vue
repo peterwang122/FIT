@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 
-import { fetchIndexEmotions, fetchIndexKline, fetchIndexOptions } from '../api/stocks'
+import { fetchIndexEmotions, fetchIndexFuturesBasis, fetchIndexKline, fetchIndexOptions } from '../api/stocks'
 import AppSidebar from '../components/AppSidebar.vue'
 import QuantIndexChart from '../components/QuantIndexChart.vue'
 import type {
@@ -12,11 +12,10 @@ import type {
   QuantHighlightBand,
   QuantIndicatorParams,
 } from '../types/quant'
-import type { IndexEmotionPoint, KlineCandle, MarketOption } from '../types/stock'
+import type { FuturesBasisPoint, IndexEmotionPoint, KlineCandle, MarketOption } from '../types/stock'
 import {
   QUANT_FILTER_FIELD_KEYS,
   buildQuantFilterDataset,
-  calculateSmaValueByDate,
   createEmptyQuantFilterDraft,
 } from '../utils/quantIndicators'
 
@@ -39,16 +38,13 @@ type QuantFormState = {
 type QuantFormErrors = Partial<Record<keyof QuantFormState, string>>
 type QuantFilterErrors = Partial<Record<QuantFilterFieldKey, string>>
 type QuantFilterColor = 'blue' | 'red'
-type QuantMaFilterInput = { gt: string; lt: string }
-type QuantMaFilterApplied = { gt: number | null; lt: number | null }
 type QuantBollFilterOption = '' | 'boll-upper' | 'boll-middle' | 'boll-lower'
 type QuantBollFilterAppliedOption = Exclude<QuantBollFilterOption, ''>
 type QuantBollFilterInput = { gt: QuantBollFilterOption; lt: QuantBollFilterOption }
 type QuantBollFilterApplied = { gt: QuantBollFilterAppliedOption | null; lt: QuantBollFilterAppliedOption | null }
-type QuantSpecialFilterErrors = { ma: string; boll: string }
+type QuantSpecialFilterErrors = { boll: string }
 type QuantSpecialFilterValidation = {
   errors: QuantSpecialFilterErrors
-  ma: QuantMaFilterApplied
   boll: QuantBollFilterApplied
 }
 const FILTER_COLORS: QuantFilterColor[] = ['blue', 'red']
@@ -82,9 +78,10 @@ const DEFAULT_PARAMS: QuantIndicatorParams = {
   },
 }
 
-const FILTER_GROUP_ORDER: QuantFilterGroupKey[] = ['emotion', 'wr', 'macd', 'kdj']
+const FILTER_GROUP_ORDER: QuantFilterGroupKey[] = ['emotion', 'basis', 'wr', 'macd', 'kdj']
 const FILTER_GROUP_TITLE: Record<QuantFilterGroupKey, string> = {
   emotion: '情绪指标',
+  basis: '期现差',
   wr: 'WR',
   macd: 'MACD',
   kdj: 'KDJ',
@@ -119,20 +116,6 @@ function buildFormState(params: QuantIndicatorParams): QuantFormState {
     wrPeriod: String(params.wr.period),
     bollPeriod: String(params.boll.period),
     bollMultiplier: String(params.boll.multiplier),
-  }
-}
-
-function createEmptyMaFilterInput(): QuantMaFilterInput {
-  return {
-    gt: '',
-    lt: '',
-  }
-}
-
-function createEmptyMaFilterApplied(): QuantMaFilterApplied {
-  return {
-    gt: null,
-    lt: null,
   }
 }
 
@@ -192,20 +175,6 @@ function parseOptionalNumber(label: string, rawValue: string) {
   return { value: parsed, error: '' }
 }
 
-function parseOptionalPositiveInteger(label: string, rawValue: string) {
-  const value = rawValue.trim()
-  if (!value) {
-    return { value: null, error: '' }
-  }
-
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    return { value: null, error: `${label}必须是正整数` }
-  }
-
-  return { value: parsed, error: '' }
-}
-
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '加载数据失败'
 }
@@ -214,23 +183,22 @@ const indexOptions = ref<MarketOption[]>([])
 const indexCode = ref('')
 const indexCandles = ref<KlineCandle[]>([])
 const emotionPoints = ref<IndexEmotionPoint[]>([])
+const futuresBasisPoints = ref<FuturesBasisPoint[]>([])
 const loading = ref(false)
 const booting = ref(true)
 const error = ref('')
 const emotionLoading = ref(false)
 const emotionError = ref('')
+const futuresBasisLoading = ref(false)
+const futuresBasisError = ref('')
 const appliedParams = ref<QuantIndicatorParams>(cloneParams(DEFAULT_PARAMS))
 const appliedBlueFilters = ref<QuantFilterApplied>({})
 const appliedRedFilters = ref<QuantFilterApplied>({})
 const formState = reactive<QuantFormState>(buildFormState(DEFAULT_PARAMS))
 const blueFilterDraft = reactive<QuantFilterDraft>(createEmptyQuantFilterDraft())
 const redFilterDraft = reactive<QuantFilterDraft>(createEmptyQuantFilterDraft())
-const blueMaFilterDraft = reactive<QuantMaFilterInput>(createEmptyMaFilterInput())
-const redMaFilterDraft = reactive<QuantMaFilterInput>(createEmptyMaFilterInput())
 const blueBollFilterDraft = reactive<QuantBollFilterInput>(createEmptyBollFilterInput())
 const redBollFilterDraft = reactive<QuantBollFilterInput>(createEmptyBollFilterInput())
-const appliedBlueMaFilter = ref<QuantMaFilterApplied>(createEmptyMaFilterApplied())
-const appliedRedMaFilter = ref<QuantMaFilterApplied>(createEmptyMaFilterApplied())
 const appliedBlueBollFilter = ref<QuantBollFilterApplied>(createEmptyBollFilterApplied())
 const appliedRedBollFilter = ref<QuantBollFilterApplied>(createEmptyBollFilterApplied())
 
@@ -239,7 +207,13 @@ const selectedIndexName = computed(
 )
 
 const quantFilterDataset = computed(() =>
-  buildQuantFilterDataset(indexCandles.value, appliedParams.value, selectedIndexName.value, emotionPoints.value),
+  buildQuantFilterDataset(
+    indexCandles.value,
+    appliedParams.value,
+    selectedIndexName.value,
+    emotionPoints.value,
+    futuresBasisPoints.value,
+  ),
 )
 
 const validation = computed(() => {
@@ -340,20 +314,10 @@ function validateFilterDraft(draft: QuantFilterDraft) {
 }
 
 function validateSpecialFilterDraft(
-  maDraft: QuantMaFilterInput,
   bollDraft: QuantBollFilterInput,
 ): QuantSpecialFilterValidation {
   const errors: QuantSpecialFilterErrors = {
-    ma: '',
     boll: '',
-  }
-
-  const maGt = parseOptionalPositiveInteger('MA 大于', maDraft.gt)
-  const maLt = parseOptionalPositiveInteger('MA 小于', maDraft.lt)
-  const maMessages = [maGt.error, maLt.error].filter(Boolean)
-
-  if (maMessages.length) {
-    errors.ma = maMessages.join('；')
   }
 
   const validBollValues = new Set(BOLL_FILTER_OPTIONS.map((item) => item.value))
@@ -369,10 +333,6 @@ function validateSpecialFilterDraft(
 
   return {
     errors,
-    ma: {
-      gt: maGt.value,
-      lt: maLt.value,
-    },
     boll: {
       gt: nextBollGt,
       lt: nextBollLt,
@@ -382,12 +342,8 @@ function validateSpecialFilterDraft(
 
 const blueFilterValidation = computed(() => validateFilterDraft(blueFilterDraft))
 const redFilterValidation = computed(() => validateFilterDraft(redFilterDraft))
-const blueSpecialFilterValidation = computed(() =>
-  validateSpecialFilterDraft(blueMaFilterDraft, blueBollFilterDraft),
-)
-const redSpecialFilterValidation = computed(() =>
-  validateSpecialFilterDraft(redMaFilterDraft, redBollFilterDraft),
-)
+const blueSpecialFilterValidation = computed(() => validateSpecialFilterDraft(blueBollFilterDraft))
+const redSpecialFilterValidation = computed(() => validateSpecialFilterDraft(redBollFilterDraft))
 
 const hasValidationErrors = computed(() => Object.keys(validation.value.errors).length > 0)
 const canApplyParams = computed(() => Boolean(validation.value.params) && !loading.value && Boolean(indexCode.value))
@@ -397,9 +353,7 @@ const canApplyFilters = computed(
     !booting.value &&
     !Object.keys(blueFilterValidation.value.errors).length &&
     !Object.keys(redFilterValidation.value.errors).length &&
-    !blueSpecialFilterValidation.value.errors.ma &&
     !blueSpecialFilterValidation.value.errors.boll &&
-    !redSpecialFilterValidation.value.errors.ma &&
     !redSpecialFilterValidation.value.errors.boll,
 )
 
@@ -411,35 +365,12 @@ const filterGroups = computed(() =>
   })).filter((group) => group.fields.length),
 )
 
-const dynamicMaLookups = computed(() => {
-  const periods = new Set<number>()
-  ;[
-    appliedBlueMaFilter.value.gt,
-    appliedBlueMaFilter.value.lt,
-    appliedRedMaFilter.value.gt,
-    appliedRedMaFilter.value.lt,
-  ].forEach((period) => {
-    if (period) {
-      periods.add(period)
-    }
-  })
-
-  const lookups = new Map<number, Map<string, number | null>>()
-  periods.forEach((period) => {
-    lookups.set(period, calculateSmaValueByDate(indexCandles.value, period))
-  })
-  return lookups
-})
-
 const highlightBands = computed<QuantHighlightBand[]>(() => {
   const snapshots = quantFilterDataset.value.snapshots
   const blueEntries = Object.entries(appliedBlueFilters.value)
   const redEntries = Object.entries(appliedRedFilters.value)
-  const blueMa = appliedBlueMaFilter.value
-  const redMa = appliedRedMaFilter.value
   const blueBoll = appliedBlueBollFilter.value
   const redBoll = appliedRedBollFilter.value
-  const maLookups = dynamicMaLookups.value
 
   const blueDates = new Set<string>()
   const redDates = new Set<string>()
@@ -464,32 +395,6 @@ const highlightBands = computed<QuantHighlightBand[]>(() => {
 
       return true
     })
-  }
-
-  function matchesMaFilter(snapshot: (typeof snapshots)[number], filter: QuantMaFilterApplied) {
-    if (filter.gt === null && filter.lt === null) {
-      return true
-    }
-
-    if (snapshot.close === null || snapshot.close === undefined) {
-      return false
-    }
-
-    if (filter.gt !== null) {
-      const value = maLookups.get(filter.gt)?.get(snapshot.tradeDate)
-      if (value === null || value === undefined || !(snapshot.close > value)) {
-        return false
-      }
-    }
-
-    if (filter.lt !== null) {
-      const value = maLookups.get(filter.lt)?.get(snapshot.tradeDate)
-      if (value === null || value === undefined || !(snapshot.close < value)) {
-        return false
-      }
-    }
-
-    return true
   }
 
   function matchesBollFilter(snapshot: (typeof snapshots)[number], filter: QuantBollFilterApplied) {
@@ -518,17 +423,12 @@ const highlightBands = computed<QuantHighlightBand[]>(() => {
     return true
   }
 
-  const hasBlueFilters =
-    blueEntries.length || blueMa.gt !== null || blueMa.lt !== null || blueBoll.gt !== null || blueBoll.lt !== null
-  const hasRedFilters =
-    redEntries.length || redMa.gt !== null || redMa.lt !== null || redBoll.gt !== null || redBoll.lt !== null
+  const hasBlueFilters = blueEntries.length || blueBoll.gt !== null || blueBoll.lt !== null
+  const hasRedFilters = redEntries.length || redBoll.gt !== null || redBoll.lt !== null
 
   if (hasBlueFilters) {
     snapshots.forEach((snapshot) => {
-      const matches =
-        matchesNumericFilters(snapshot, blueEntries) &&
-        matchesMaFilter(snapshot, blueMa) &&
-        matchesBollFilter(snapshot, blueBoll)
+      const matches = matchesNumericFilters(snapshot, blueEntries) && matchesBollFilter(snapshot, blueBoll)
 
       if (matches) {
         blueDates.add(snapshot.tradeDate)
@@ -538,10 +438,7 @@ const highlightBands = computed<QuantHighlightBand[]>(() => {
 
   if (hasRedFilters) {
     snapshots.forEach((snapshot) => {
-      const matches =
-        matchesNumericFilters(snapshot, redEntries) &&
-        matchesMaFilter(snapshot, redMa) &&
-        matchesBollFilter(snapshot, redBoll)
+      const matches = matchesNumericFilters(snapshot, redEntries) && matchesBollFilter(snapshot, redBoll)
 
       if (matches) {
         redDates.add(snapshot.tradeDate)
@@ -585,10 +482,6 @@ function getDraftByColor(color: QuantFilterColor) {
 
 function getValidationByColor(color: QuantFilterColor) {
   return color === 'blue' ? blueFilterValidation.value : redFilterValidation.value
-}
-
-function getMaDraftByColor(color: QuantFilterColor) {
-  return color === 'blue' ? blueMaFilterDraft : redMaFilterDraft
 }
 
 function getBollDraftByColor(color: QuantFilterColor) {
@@ -641,6 +534,20 @@ async function loadEmotionPoints() {
   }
 }
 
+async function loadFuturesBasisPoints() {
+  futuresBasisLoading.value = true
+  futuresBasisError.value = ''
+
+  try {
+    futuresBasisPoints.value = await fetchIndexFuturesBasis()
+  } catch (loadError) {
+    futuresBasisPoints.value = []
+    futuresBasisError.value = getErrorMessage(loadError)
+  } finally {
+    futuresBasisLoading.value = false
+  }
+}
+
 function applyParams() {
   if (!validation.value.params) {
     return
@@ -659,9 +566,7 @@ function applyFilters() {
   if (
     Object.keys(blueFilterValidation.value.errors).length ||
     Object.keys(redFilterValidation.value.errors).length ||
-    blueSpecialFilterValidation.value.errors.ma ||
     blueSpecialFilterValidation.value.errors.boll ||
-    redSpecialFilterValidation.value.errors.ma ||
     redSpecialFilterValidation.value.errors.boll
   ) {
     return
@@ -669,8 +574,6 @@ function applyFilters() {
 
   appliedBlueFilters.value = blueFilterValidation.value.applied
   appliedRedFilters.value = redFilterValidation.value.applied
-  appliedBlueMaFilter.value = { ...blueSpecialFilterValidation.value.ma }
-  appliedRedMaFilter.value = { ...redSpecialFilterValidation.value.ma }
   appliedBlueBollFilter.value = { ...blueSpecialFilterValidation.value.boll }
   appliedRedBollFilter.value = { ...redSpecialFilterValidation.value.boll }
 }
@@ -678,21 +581,16 @@ function applyFilters() {
 function clearFilters() {
   ;(['blue', 'red'] as QuantFilterColor[]).forEach((color) => {
     const draft = getDraftByColor(color)
-    const maDraft = getMaDraftByColor(color)
     const bollDraft = getBollDraftByColor(color)
     QUANT_FILTER_FIELD_KEYS.forEach((key) => {
       draft[key].gt = ''
       draft[key].lt = ''
     })
-    maDraft.gt = ''
-    maDraft.lt = ''
     bollDraft.gt = ''
     bollDraft.lt = ''
   })
   appliedBlueFilters.value = {}
   appliedRedFilters.value = {}
-  appliedBlueMaFilter.value = createEmptyMaFilterApplied()
-  appliedRedMaFilter.value = createEmptyMaFilterApplied()
   appliedBlueBollFilter.value = createEmptyBollFilterApplied()
   appliedRedBollFilter.value = createEmptyBollFilterApplied()
 }
@@ -702,7 +600,7 @@ async function initializePage() {
   error.value = ''
 
   try {
-    const [options] = await Promise.all([fetchIndexOptions(), loadEmotionPoints()])
+    const [options] = await Promise.all([fetchIndexOptions(), loadEmotionPoints(), loadFuturesBasisPoints()])
     indexOptions.value = options
 
     const preferredOption = options.find((item) => item.name === DEFAULT_INDEX_NAME) ?? options[0]
@@ -739,8 +637,8 @@ onMounted(async () => {
       <section class="card quant-toolbar-card">
         <div class="quant-page-head">
           <div>
-            <h2>量化部分</h2>
-            <p class="muted">指数技术分析</p>
+            <h2>量化展示</h2>
+            <p class="muted">指数技术分析展示</p>
           </div>
         </div>
       </section>
@@ -886,6 +784,9 @@ onMounted(async () => {
               :emotion-points="emotionPoints"
               :emotion-loading="emotionLoading"
               :emotion-error-message="emotionError"
+              :futures-basis-points="futuresBasisPoints"
+              :futures-basis-loading="futuresBasisLoading"
+              :futures-basis-error-message="futuresBasisError"
               :highlight-bands="highlightBands"
               :market-options="indexOptions"
               :symbol-name="selectedIndexName"
@@ -959,38 +860,6 @@ onMounted(async () => {
                       </div>
                       <p v-if="getValidationByColor(color).errors[field.key]" class="quant-filter-row-error">
                         {{ getValidationByColor(color).errors[field.key] }}
-                      </p>
-                    </div>
-                  </section>
-
-                  <section class="quant-filter-group">
-                    <div class="quant-filter-group-head">
-                      <h4>MA</h4>
-                      <div class="quant-filter-header-row">
-                        <span>指标</span>
-                        <span>大于</span>
-                        <span>小于</span>
-                      </div>
-                    </div>
-
-                    <div class="quant-filter-row">
-                      <div class="quant-filter-row-grid">
-                        <div class="quant-filter-row-label">收盘价相对均线</div>
-                        <input
-                          v-model="getMaDraftByColor(color).gt"
-                          class="input quant-filter-input"
-                          inputmode="numeric"
-                          placeholder="大于几日均线"
-                        />
-                        <input
-                          v-model="getMaDraftByColor(color).lt"
-                          class="input quant-filter-input"
-                          inputmode="numeric"
-                          placeholder="小于几日均线"
-                        />
-                      </div>
-                      <p v-if="getSpecialValidationByColor(color).errors.ma" class="quant-filter-row-error">
-                        {{ getSpecialValidationByColor(color).errors.ma }}
                       </p>
                     </div>
                   </section>

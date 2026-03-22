@@ -47,6 +47,13 @@ class IndexEmotionPointResponse(BaseModel):
     emotion_value: float
 
 
+class FuturesBasisPointResponse(BaseModel):
+    trade_date: date
+    index_name: str
+    main_basis: float | None = None
+    month_basis: float | None = None
+
+
 class NetPositionRowResponse(BaseModel):
     product_code: str
     index_name: str

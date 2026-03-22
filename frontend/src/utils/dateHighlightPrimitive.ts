@@ -17,9 +17,9 @@ type VisibleRect = {
 }
 
 const HIGHLIGHT_FILL: Record<QuantHighlightColor, string> = {
-  blue: 'rgba(37, 99, 235, 0.12)',
-  red: 'rgba(239, 68, 68, 0.12)',
-  purple: 'rgba(147, 51, 234, 0.14)',
+  blue: 'rgba(29, 78, 216, 0.24)',
+  red: 'rgba(220, 38, 38, 0.24)',
+  purple: 'rgba(126, 34, 206, 0.26)',
 }
 
 class DateHighlightRenderer implements IPrimitivePaneRenderer {

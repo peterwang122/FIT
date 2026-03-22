@@ -31,6 +31,13 @@ export interface IndexEmotionPoint {
   emotion_value: number
 }
 
+export interface FuturesBasisPoint {
+  trade_date: string
+  index_name: string
+  main_basis: number | null
+  month_basis: number | null
+}
+
 export interface NetPositionRow {
   product_code: string
   index_name: string

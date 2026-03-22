@@ -1,6 +1,7 @@
 import { http } from './client'
 import type {
   DbStatus,
+  FuturesBasisPoint,
   IndexEmotionPoint,
   KlineCandle,
   MarketOption,
@@ -43,6 +44,11 @@ export async function fetchIndexOptions() {
 
 export async function fetchIndexEmotions() {
   const { data } = await http.get<ApiResponse<IndexEmotionPoint[]>>('/stocks/index-emotions')
+  return data.data
+}
+
+export async function fetchIndexFuturesBasis() {
+  const { data } = await http.get<ApiResponse<FuturesBasisPoint[]>>('/stocks/index-futures-basis')
   return data.data
 }
 

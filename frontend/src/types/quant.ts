@@ -71,6 +71,8 @@ export interface QuantChartPayload {
 
 export type QuantFilterFieldKey =
   | 'emotion'
+  | 'basis-main'
+  | 'basis-month'
   | 'wr'
   | 'macd-dif'
   | 'macd-dea'
@@ -86,7 +88,7 @@ export type QuantFilterFieldKey =
   | 'boll-middle'
   | 'boll-lower'
 
-export type QuantFilterGroupKey = 'emotion' | 'wr' | 'macd' | 'kdj' | 'ma' | 'boll'
+export type QuantFilterGroupKey = 'emotion' | 'basis' | 'wr' | 'macd' | 'kdj' | 'ma' | 'boll'
 
 export interface QuantFilterFieldMeta {
   key: QuantFilterFieldKey
@@ -124,6 +126,10 @@ export interface QuantHighlightBand {
 export interface QuantFilterDataset {
   chart: QuantChartPayload
   emotion: QuantLineSeries
+  basis: {
+    main: QuantLineSeries
+    month: QuantLineSeries
+  }
   fields: QuantFilterFieldMeta[]
   snapshots: QuantDailyIndicatorSnapshot[]
 }

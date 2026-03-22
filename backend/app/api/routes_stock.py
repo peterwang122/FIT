@@ -10,6 +10,7 @@ from app.schemas.common import ApiResponse
 from app.schemas.stock import (
     CollectTaskPayload,
     DbStatusResponse,
+    FuturesBasisPointResponse,
     IndexEmotionPointResponse,
     MarketOptionResponse,
     NetPositionSeriesResponse,
@@ -57,6 +58,13 @@ def get_index_emotions(db: Session = Depends(get_db)):
     service = StockService(db)
     items = service.list_excel_index_emotions()
     return ApiResponse(data=[IndexEmotionPointResponse.model_validate(item) for item in items])
+
+
+@router.get("/index-futures-basis", response_model=ApiResponse[list[FuturesBasisPointResponse]])
+def get_index_futures_basis(db: Session = Depends(get_db)):
+    service = StockService(db)
+    items = service.list_index_futures_basis()
+    return ApiResponse(data=[FuturesBasisPointResponse.model_validate(item) for item in items])
 
 
 @router.get("/cffex/net-positions", response_model=ApiResponse[NetPositionTablesResponse])

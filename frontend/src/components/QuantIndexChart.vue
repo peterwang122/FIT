@@ -23,11 +23,11 @@ import type {
   QuantIndicatorParams,
   QuantLinePoint,
 } from '../types/quant'
-import type { IndexEmotionPoint, KlineCandle, MarketOption } from '../types/stock'
+import type { FuturesBasisPoint, IndexEmotionPoint, KlineCandle, MarketOption } from '../types/stock'
 import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 import { buildQuantFilterDataset } from '../utils/quantIndicators'
 
-type PanelKey = 'main' | 'macd' | 'kdj' | 'wr' | 'emotion'
+type PanelKey = 'main' | 'macd' | 'kdj' | 'wr' | 'emotion' | 'basis'
 type MainOverlayMode = 'ma' | 'boll'
 type AnySeries = ISeriesApi<SeriesType, Time>
 type LineSeriesApi = ISeriesApi<'Line', Time>
@@ -44,6 +44,9 @@ const props = withDefaults(
     emotionPoints?: IndexEmotionPoint[]
     emotionLoading?: boolean
     emotionErrorMessage?: string
+    futuresBasisPoints?: FuturesBasisPoint[]
+    futuresBasisLoading?: boolean
+    futuresBasisErrorMessage?: string
     highlightBands?: QuantHighlightBand[]
     marketOptions?: MarketOption[]
     symbolName: string
@@ -56,6 +59,9 @@ const props = withDefaults(
     emotionPoints: () => [],
     emotionLoading: false,
     emotionErrorMessage: '',
+    futuresBasisPoints: () => [],
+    futuresBasisLoading: false,
+    futuresBasisErrorMessage: '',
     highlightBands: () => [],
     loading: false,
     defaultVisibleDays: 90,
@@ -71,6 +77,7 @@ const macdContainerRef = ref<HTMLDivElement | null>(null)
 const kdjContainerRef = ref<HTMLDivElement | null>(null)
 const wrContainerRef = ref<HTMLDivElement | null>(null)
 const emotionContainerRef = ref<HTMLDivElement | null>(null)
+const basisContainerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 const overlayMode = ref<MainOverlayMode>('ma')
 const hoveredTradeDate = ref<string | null>(null)
@@ -87,6 +94,8 @@ let macdHistogramSeries: HistogramSeriesApi | null = null
 let kdjSeriesRefs: LineSeriesApi[] = []
 let wrSeries: LineSeriesApi | null = null
 let emotionSeries: LineSeriesApi | null = null
+let basisMainSeries: LineSeriesApi | null = null
+let basisMonthSeries: LineSeriesApi | null = null
 let highlightBindings: PrimitiveBinding[] = []
 let isSyncingRange = false
 let isSyncingCrosshair = false
@@ -149,7 +158,13 @@ const mainCandles = computed(() =>
 )
 
 const quantDataset = computed(() =>
-  buildQuantFilterDataset(sortedCandles.value, props.params, props.symbolName, props.emotionPoints),
+  buildQuantFilterDataset(
+    sortedCandles.value,
+    props.params,
+    props.symbolName,
+    props.emotionPoints,
+    props.futuresBasisPoints,
+  ),
 )
 
 const indicatorPayload = computed(() => quantDataset.value.chart)
@@ -193,6 +208,13 @@ const emotionLegend = computed(() => [
   },
 ])
 
+const basisLegend = computed(() => [
+  { label: quantDataset.value.basis.main.label, color: quantDataset.value.basis.main.color },
+  { label: quantDataset.value.basis.month.label, color: quantDataset.value.basis.month.color },
+])
+
+const activeTradeDate = computed(() => hoveredTradeDate.value ?? latestSnapshot.value?.trade_date ?? '')
+
 function handleIndexSelect(event: Event) {
   const target = event.target as HTMLSelectElement | null
   const nextCode = target?.value?.trim()
@@ -235,6 +257,78 @@ function buildValueMap(points: QuantLinePoint[]) {
   }
   return result
 }
+
+function buildHistogramValueMap(points: QuantHistogramPoint[]) {
+  const result = new Map<string, number>()
+  for (const item of points) {
+    if (item.value !== null && Number.isFinite(item.value)) {
+      result.set(item.time, item.value)
+    }
+  }
+  return result
+}
+
+const indicatorValueMaps = computed(() => {
+  const payload = indicatorPayload.value
+  return {
+    ma: payload.ma.map((series) => buildValueMap(series.data)),
+    boll: {
+      upper: buildValueMap(payload.boll.upper.data),
+      middle: buildValueMap(payload.boll.middle.data),
+      lower: buildValueMap(payload.boll.lower.data),
+    },
+    macd: {
+      dif: buildValueMap(payload.macd.dif.data),
+      dea: buildValueMap(payload.macd.dea.data),
+      histogram: buildHistogramValueMap(payload.macd.histogram),
+    },
+    kdj: {
+      k: buildValueMap(payload.kdj.k.data),
+      d: buildValueMap(payload.kdj.d.data),
+      j: buildValueMap(payload.kdj.j.data),
+    },
+    wr: buildValueMap(payload.wr.data),
+    emotion: buildValueMap(quantDataset.value.emotion.data),
+    basis: {
+      main: buildValueMap(quantDataset.value.basis.main.data),
+      month: buildValueMap(quantDataset.value.basis.month.data),
+    },
+  }
+})
+
+const activeIndicatorSnapshot = computed(() => {
+  if (!activeTradeDate.value) {
+    return null
+  }
+
+  const tradeDate = activeTradeDate.value
+  const maps = indicatorValueMaps.value
+  return {
+    tradeDate,
+    ma: maps.ma.map((map) => map.get(tradeDate)),
+    boll: {
+      upper: maps.boll.upper.get(tradeDate),
+      middle: maps.boll.middle.get(tradeDate),
+      lower: maps.boll.lower.get(tradeDate),
+    },
+    macd: {
+      dif: maps.macd.dif.get(tradeDate),
+      dea: maps.macd.dea.get(tradeDate),
+      histogram: maps.macd.histogram.get(tradeDate),
+    },
+    kdj: {
+      k: maps.kdj.k.get(tradeDate),
+      d: maps.kdj.d.get(tradeDate),
+      j: maps.kdj.j.get(tradeDate),
+    },
+    wr: maps.wr.get(tradeDate),
+    emotion: maps.emotion.get(tradeDate),
+    basis: {
+      main: maps.basis.main.get(tradeDate),
+      month: maps.basis.month.get(tradeDate),
+    },
+  }
+})
 
 function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
   return createChart(container, {
@@ -308,7 +402,7 @@ function syncVisibleRange(sourceKey: PanelKey, range: LogicalRange | null) {
 
   isSyncingRange = true
   try {
-    ;(['main', 'macd', 'kdj', 'wr', 'emotion'] as PanelKey[]).forEach((panelKey) => {
+    ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis'] as PanelKey[]).forEach((panelKey) => {
       if (panelKey !== sourceKey) {
         charts[panelKey]?.timeScale().setVisibleLogicalRange(range)
       }
@@ -327,7 +421,7 @@ function syncCrosshair(sourceKey: PanelKey, param: MouseEventParams<Time>) {
   isSyncingCrosshair = true
   try {
     const time = param.time ? String(param.time) : null
-    ;(['main', 'macd', 'kdj', 'wr', 'emotion'] as PanelKey[]).forEach((panelKey) => {
+    ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis'] as PanelKey[]).forEach((panelKey) => {
       if (panelKey === sourceKey) {
         return
       }
@@ -416,6 +510,8 @@ function updateAllSeries() {
     !macdHistogramSeries ||
     !wrSeries ||
     !emotionSeries ||
+    !basisMainSeries ||
+    !basisMonthSeries ||
     !kdjSeriesRefs.length
   ) {
     return
@@ -449,12 +545,15 @@ function updateAllSeries() {
   kdjSeriesRefs[2]?.setData(toLineData(payload.kdj.j.data))
   wrSeries.setData(toLineData(payload.wr.data))
   emotionSeries.setData(toLineData(quantDataset.value.emotion.data))
+  basisMainSeries.setData(toLineData(quantDataset.value.basis.main.data))
+  basisMonthSeries.setData(toLineData(quantDataset.value.basis.month.data))
 
   panelValueMaps.set('main', new Map(sortedCandles.value.map((item) => [item.trade_date, item.close])))
   panelValueMaps.set('macd', buildValueMap(payload.macd.dif.data))
   panelValueMaps.set('kdj', buildValueMap(payload.kdj.k.data))
   panelValueMaps.set('wr', buildValueMap(payload.wr.data))
   panelValueMaps.set('emotion', new Map(emotionSeriesData.value.map((item) => [item.rawDate, item.value])))
+  panelValueMaps.set('basis', buildValueMap(quantDataset.value.basis.main.data))
 }
 
 function renderCharts() {
@@ -463,7 +562,8 @@ function renderCharts() {
     !macdContainerRef.value ||
     !kdjContainerRef.value ||
     !wrContainerRef.value ||
-    !emotionContainerRef.value
+    !emotionContainerRef.value ||
+    !basisContainerRef.value
   ) {
     return
   }
@@ -475,7 +575,8 @@ function renderCharts() {
     charts.macd = createBaseChart(macdContainerRef.value, false)
     charts.kdj = createBaseChart(kdjContainerRef.value, false)
     charts.wr = createBaseChart(wrContainerRef.value, false)
-    charts.emotion = createBaseChart(emotionContainerRef.value, true)
+    charts.emotion = createBaseChart(emotionContainerRef.value, false)
+    charts.basis = createBaseChart(basisContainerRef.value, true)
 
     mainCandleSeries = addCandles(charts.main)
     mainMaSeries = indicatorPayload.value.ma.map((item) => addLineSeries(charts.main!, item.color, 2))
@@ -497,14 +598,17 @@ function renderCharts() {
 
     wrSeries = addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2)
     emotionSeries = addLineSeries(charts.emotion, quantDataset.value.emotion.color, 2)
+    basisMainSeries = addLineSeries(charts.basis, quantDataset.value.basis.main.color, 2)
+    basisMonthSeries = addLineSeries(charts.basis, quantDataset.value.basis.month.color, 2)
 
     primarySeriesMap.set('main', mainCandleSeries)
     primarySeriesMap.set('macd', macdDifSeries)
     primarySeriesMap.set('kdj', kdjSeriesRefs[0])
     primarySeriesMap.set('wr', wrSeries)
     primarySeriesMap.set('emotion', emotionSeries)
+    primarySeriesMap.set('basis', basisMainSeries)
 
-    ;(['main', 'macd', 'kdj', 'wr', 'emotion'] as PanelKey[]).forEach((panelKey) => {
+    ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis'] as PanelKey[]).forEach((panelKey) => {
       const chart = charts[panelKey]
       if (chart) {
         attachSync(panelKey, chart)
@@ -517,6 +621,7 @@ function renderCharts() {
     attachHighlightPrimitive(kdjSeriesRefs[0] ?? null)
     attachHighlightPrimitive(wrSeries)
     attachHighlightPrimitive(emotionSeries)
+    attachHighlightPrimitive(basisMainSeries)
 
     updateAllSeries()
     syncHighlightBindings()
@@ -535,6 +640,14 @@ watch(mainCandles, () => {
 watch(emotionSeriesData, () => {
   updateAllSeries()
 })
+
+watch(
+  () => props.futuresBasisPoints,
+  () => {
+    updateAllSeries()
+  },
+  { deep: true },
+)
 
 watch(
   () => props.params,
@@ -569,7 +682,7 @@ onBeforeUnmount(() => {
 
   cleanupHighlightBindings()
 
-  ;(['main', 'macd', 'kdj', 'wr', 'emotion'] as PanelKey[]).forEach((panelKey) => {
+  ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis'] as PanelKey[]).forEach((panelKey) => {
     charts[panelKey]?.remove()
     delete charts[panelKey]
   })
@@ -585,6 +698,8 @@ onBeforeUnmount(() => {
   kdjSeriesRefs = []
   wrSeries = null
   emotionSeries = null
+  basisMainSeries = null
+  basisMonthSeries = null
   hoveredTradeDate.value = null
 })
 </script>
@@ -606,14 +721,6 @@ onBeforeUnmount(() => {
           </select>
           <span class="quant-chart-symbol-code">（{{ symbolCode }}）</span>
         </div>
-        <div v-if="activeSnapshot" class="quant-chart-details">
-          <span class="quant-chart-detail">日期 {{ activeSnapshot.trade_date }}</span>
-          <span class="quant-chart-detail">开 {{ formatMetric(activeSnapshot.open) }}</span>
-          <span class="quant-chart-detail">高 {{ formatMetric(activeSnapshot.high) }}</span>
-          <span class="quant-chart-detail">低 {{ formatMetric(activeSnapshot.low) }}</span>
-          <span class="quant-chart-detail">收 {{ formatMetric(activeSnapshot.close) }}</span>
-          <span class="quant-chart-detail">涨跌幅 {{ formatMetric(activeSnapshot.pct_chg) }}%</span>
-        </div>
       </div>
 
       <div class="quant-chart-switches">
@@ -633,6 +740,63 @@ onBeforeUnmount(() => {
         >
           BOLL
         </button>
+      </div>
+
+      <div v-if="activeSnapshot && activeIndicatorSnapshot" class="quant-detail-grid">
+        <div class="quant-detail-card">
+          <h4>行情</h4>
+          <div class="quant-detail-list">
+            <span class="quant-chart-detail">日期 {{ activeSnapshot.trade_date }}</span>
+            <span class="quant-chart-detail">开 {{ formatMetric(activeSnapshot.open) }}</span>
+            <span class="quant-chart-detail">高 {{ formatMetric(activeSnapshot.high) }}</span>
+            <span class="quant-chart-detail">低 {{ formatMetric(activeSnapshot.low) }}</span>
+            <span class="quant-chart-detail">收 {{ formatMetric(activeSnapshot.close) }}</span>
+            <span class="quant-chart-detail">涨跌幅 {{ formatMetric(activeSnapshot.pct_chg) }}%</span>
+          </div>
+        </div>
+
+        <div class="quant-detail-card">
+          <h4>{{ overlayMode === 'ma' ? '均线' : 'BOLL' }}</h4>
+          <div class="quant-detail-list" v-if="overlayMode === 'ma'">
+            <span class="quant-chart-detail">{{ indicatorPayload.ma[0]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[0]) }}</span>
+            <span class="quant-chart-detail">{{ indicatorPayload.ma[1]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[1]) }}</span>
+            <span class="quant-chart-detail">{{ indicatorPayload.ma[2]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[2]) }}</span>
+            <span class="quant-chart-detail">{{ indicatorPayload.ma[3]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[3]) }}</span>
+          </div>
+          <div class="quant-detail-list" v-else>
+            <span class="quant-chart-detail">{{ indicatorPayload.boll.upper.label }} {{ formatMetric(activeIndicatorSnapshot.boll.upper) }}</span>
+            <span class="quant-chart-detail">{{ indicatorPayload.boll.middle.label }} {{ formatMetric(activeIndicatorSnapshot.boll.middle) }}</span>
+            <span class="quant-chart-detail">{{ indicatorPayload.boll.lower.label }} {{ formatMetric(activeIndicatorSnapshot.boll.lower) }}</span>
+          </div>
+        </div>
+
+        <div class="quant-detail-card">
+          <h4>MACD</h4>
+          <div class="quant-detail-list">
+            <span class="quant-chart-detail">DIF {{ formatMetric(activeIndicatorSnapshot.macd.dif) }}</span>
+            <span class="quant-chart-detail">DEA {{ formatMetric(activeIndicatorSnapshot.macd.dea) }}</span>
+            <span class="quant-chart-detail">柱 {{ formatMetric(activeIndicatorSnapshot.macd.histogram) }}</span>
+          </div>
+        </div>
+
+        <div class="quant-detail-card">
+          <h4>KDJ / WR</h4>
+          <div class="quant-detail-list">
+            <span class="quant-chart-detail">K {{ formatMetric(activeIndicatorSnapshot.kdj.k) }}</span>
+            <span class="quant-chart-detail">D {{ formatMetric(activeIndicatorSnapshot.kdj.d) }}</span>
+            <span class="quant-chart-detail">J {{ formatMetric(activeIndicatorSnapshot.kdj.j) }}</span>
+            <span class="quant-chart-detail">WR {{ formatMetric(activeIndicatorSnapshot.wr) }}</span>
+          </div>
+        </div>
+
+        <div class="quant-detail-card">
+          <h4>情绪 / 期现差</h4>
+          <div class="quant-detail-list">
+            <span class="quant-chart-detail">情绪 {{ formatMetric(activeIndicatorSnapshot.emotion) }}</span>
+            <span class="quant-chart-detail">主连期现差 {{ formatMetric(activeIndicatorSnapshot.basis.main) }}</span>
+            <span class="quant-chart-detail">月连期现差 {{ formatMetric(activeIndicatorSnapshot.basis.month) }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -700,6 +864,20 @@ onBeforeUnmount(() => {
       <p v-if="emotionLoading" class="muted">情绪指标加载中...</p>
       <p v-else-if="emotionErrorMessage" class="error">{{ emotionErrorMessage }}</p>
       <div ref="emotionContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>期现差</h3>
+        <div class="quant-legend">
+          <span v-for="item in basisLegend" :key="item.label" class="quant-legend-item">
+            <i :style="{ background: item.color }"></i>{{ item.label }}
+          </span>
+        </div>
+      </div>
+      <p v-if="futuresBasisLoading" class="muted">期现差指标加载中...</p>
+      <p v-else-if="futuresBasisErrorMessage" class="error">{{ futuresBasisErrorMessage }}</p>
+      <div ref="basisContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
   </section>
 </template>
@@ -779,6 +957,33 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.quant-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.quant-detail-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(20, 33, 61, 0.08);
+}
+
+.quant-detail-card h4 {
+  margin: 0;
+  font-size: 13px;
+  color: #334155;
+}
+
+.quant-detail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .quant-switch {

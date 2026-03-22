@@ -49,7 +49,7 @@ function openFlowerTab() {
       </button>
       <button type="button" class="sidebar-link" @click="goMarket">行情中心</button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'quant' }" @click="goQuant">
-        量化部分
+        量化展示
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'progress' }" @click="goProgress">
         开发进度

@@ -10,7 +10,7 @@ import type {
   QuantLinePoint,
   QuantLineSeries,
 } from '../types/quant'
-import type { IndexEmotionPoint } from '../types/stock'
+import type { FuturesBasisPoint, IndexEmotionPoint } from '../types/stock'
 
 export type QuantIndicatorCandle = {
   trade_date: string
@@ -23,6 +23,8 @@ const CORE_EMOTION_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1
 
 export const QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'emotion',
+  'basis-main',
+  'basis-month',
   'wr',
   'macd-dif',
   'macd-dea',
@@ -320,9 +322,67 @@ export function calculateQuantEmotionSeries(
   }
 }
 
+export function calculateQuantFuturesBasisSeries(
+  candles: QuantIndicatorCandle[],
+  symbolName: string,
+  basisPoints: FuturesBasisPoint[],
+) {
+  const sortedCandles = sortCandles(candles)
+  const grouped = new Map<string, Map<string, { main_basis: number | null; month_basis: number | null }>>()
+
+  for (const point of basisPoints) {
+    const indexName = String(point.index_name ?? '').trim()
+    const tradeDate = String(point.trade_date ?? '').trim()
+    if (!indexName || !tradeDate) {
+      continue
+    }
+
+    const rowsByDate = grouped.get(indexName) ?? new Map<string, { main_basis: number | null; month_basis: number | null }>()
+    rowsByDate.set(tradeDate, {
+      main_basis: isFiniteNumber(point.main_basis) ? point.main_basis : null,
+      month_basis: isFiniteNumber(point.month_basis) ? point.month_basis : null,
+    })
+    grouped.set(indexName, rowsByDate)
+  }
+
+  const mainValues = sortedCandles.map((item) => {
+    if (symbolName === '上证指数') {
+      const total = CORE_EMOTION_INDEX_NAMES.reduce((sum, indexName) => {
+        const value = grouped.get(indexName)?.get(item.trade_date)?.main_basis
+        return sum + (isFiniteNumber(value) ? value : 0)
+      }, 0)
+      return total / CORE_EMOTION_INDEX_NAMES.length
+    }
+
+    const value = grouped.get(symbolName)?.get(item.trade_date)?.main_basis
+    return isFiniteNumber(value) ? value : 0
+  })
+
+  const monthValues = sortedCandles.map((item) => {
+    if (symbolName === '上证指数') {
+      const total = CORE_EMOTION_INDEX_NAMES.reduce((sum, indexName) => {
+        const value = grouped.get(indexName)?.get(item.trade_date)?.month_basis
+        return sum + (isFiniteNumber(value) ? value : 0)
+      }, 0)
+      return total / CORE_EMOTION_INDEX_NAMES.length
+    }
+
+    const value = grouped.get(symbolName)?.get(item.trade_date)?.month_basis
+    return isFiniteNumber(value) ? value : 0
+  })
+
+  const times = sortedCandles.map((item) => item.trade_date)
+  return {
+    main: buildLineSeries('basis-main', '主连期现差', '#dc2626', times, mainValues),
+    month: buildLineSeries('basis-month', '月连期现差', '#2563eb', times, monthValues),
+  }
+}
+
 function buildQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMeta[] {
   return [
     { key: 'emotion', group: 'emotion', label: '情绪指标' },
+    { key: 'basis-main', group: 'basis', label: '主连期现差' },
+    { key: 'basis-month', group: 'basis', label: '月连期现差' },
     { key: 'wr', group: 'wr', label: payload.wr.label },
     { key: 'macd-dif', group: 'macd', label: payload.macd.dif.label },
     { key: 'macd-dea', group: 'macd', label: payload.macd.dea.label },
@@ -343,6 +403,7 @@ function buildQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMet
 function buildQuantDailySnapshots(
   payload: QuantChartPayload,
   emotionSeries: QuantLineSeries,
+  basisSeries: QuantFilterDataset['basis'],
   candles: QuantIndicatorCandle[],
 ): QuantDailyIndicatorSnapshot[] {
   const sortedCandles = sortCandles(candles)
@@ -353,6 +414,8 @@ function buildQuantDailySnapshots(
     close: sortedCandles[index]?.close ?? null,
     values: {
       emotion: emotionSeries.data[index]?.value ?? null,
+      'basis-main': basisSeries.main.data[index]?.value ?? null,
+      'basis-month': basisSeries.month.data[index]?.value ?? null,
       wr: payload.wr.data[index]?.value ?? null,
       'macd-dif': payload.macd.dif.data[index]?.value ?? null,
       'macd-dea': payload.macd.dea.data[index]?.value ?? null,
@@ -376,14 +439,17 @@ export function buildQuantFilterDataset(
   params: QuantIndicatorParams,
   symbolName: string,
   emotionPoints: IndexEmotionPoint[],
+  basisPoints: FuturesBasisPoint[],
 ): QuantFilterDataset {
   const chart = calculateQuantIndicators(candles, params)
   const emotion = calculateQuantEmotionSeries(candles, symbolName, emotionPoints)
+  const basis = calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints)
 
   return {
     chart,
     emotion,
+    basis,
     fields: buildQuantFilterFields(chart),
-    snapshots: buildQuantDailySnapshots(chart, emotion, candles),
+    snapshots: buildQuantDailySnapshots(chart, emotion, basis, candles),
   }
 }

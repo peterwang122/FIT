@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     excel_index_emotion_name_column: str = "index_name"
     excel_index_emotion_value_column: str = "emotion_value"
 
+    futures_daily_table_name: str = "futures_daily_data"
+    futures_daily_symbol_column: str = "symbol"
+    futures_daily_trade_date_column: str = "trade_date"
+    futures_daily_close_column: str = "close_price"
+    futures_daily_data_source_column: str = "data_source"
+    futures_daily_hist_source_value: str = "futures_hist_em"
+
     cffex_member_rankings_table_name: str = "cffex_member_rankings"
     cffex_trade_date_column: str = "trade_date"
     cffex_product_code_column: str = "product_code"

@@ -33,6 +33,13 @@ EXCEL_INDEX_EMOTION_ORDER = [
     "中证1000",
 ]
 
+FUTURES_BASIS_SYMBOL_MAP = [
+    {"index_name": "上证50", "main_symbol": "IHM", "month_symbol": "IHM0"},
+    {"index_name": "沪深300", "main_symbol": "IFM", "month_symbol": "IFM0"},
+    {"index_name": "中证500", "main_symbol": "ICM", "month_symbol": "ICM0"},
+    {"index_name": "中证1000", "main_symbol": "IMM", "month_symbol": "IMM0"},
+]
+
 CFFEX_PRODUCT_INDEX_MAP = [
     {"product_code": "IH", "index_name": "上证50"},
     {"product_code": "IF", "index_name": "沪深300"},
@@ -250,6 +257,89 @@ class StockService:
                 }
             )
         return result
+
+    def list_index_futures_basis(self) -> list[dict]:
+        allowed_names = {item["index_name"] for item in FUTURES_BASIS_SYMBOL_MAP}
+        index_code_by_name = {
+            str(item["name"]): str(item["code"])
+            for item in self.list_index_options()
+            if str(item.get("name", "")).strip() in allowed_names
+        }
+
+        if not index_code_by_name:
+            return []
+
+        code_to_name = {code: name for name, code in index_code_by_name.items()}
+        code_sql = ", ".join([f":code_{index}" for index, _ in enumerate(index_code_by_name.values())])
+        code_params = {f"code_{index}": code for index, code in enumerate(index_code_by_name.values())}
+
+        index_sql = text(
+            f"SELECT "
+            f"`{settings.index_daily_code_column}` AS index_code, "
+            f"`{settings.index_daily_date_column}` AS trade_date, "
+            f"`{settings.index_daily_close_column}` AS close_price "
+            f"FROM `{settings.index_daily_table_name}` "
+            f"WHERE `{settings.index_daily_code_column}` IN ({code_sql})"
+        )
+        spot_rows = self.db.execute(index_sql, code_params).mappings().all()
+        spot_close_by_key = {
+            (code_to_name.get(str(row["index_code"]), ""), row["trade_date"]): float(row["close_price"])
+            for row in spot_rows
+            if row.get("trade_date") is not None
+            and row.get("close_price") is not None
+            and str(row.get("index_code", "")).strip() in code_to_name
+        }
+
+        symbol_meta: dict[str, tuple[str, str]] = {}
+        for item in FUTURES_BASIS_SYMBOL_MAP:
+            symbol_meta[item["main_symbol"]] = (item["index_name"], "main_basis")
+            symbol_meta[item["month_symbol"]] = (item["index_name"], "month_basis")
+
+        symbol_sql = ", ".join([f":symbol_{index}" for index, _ in enumerate(symbol_meta.keys())])
+        symbol_params = {f"symbol_{index}": symbol for index, symbol in enumerate(symbol_meta.keys())}
+        symbol_params["data_source"] = settings.futures_daily_hist_source_value
+
+        futures_sql = text(
+            f"SELECT "
+            f"`{settings.futures_daily_trade_date_column}` AS trade_date, "
+            f"`{settings.futures_daily_symbol_column}` AS symbol, "
+            f"`{settings.futures_daily_close_column}` AS close_price "
+            f"FROM `{settings.futures_daily_table_name}` "
+            f"WHERE `{settings.futures_daily_symbol_column}` IN ({symbol_sql}) "
+            f"AND `{settings.futures_daily_data_source_column}` = :data_source "
+            f"ORDER BY `{settings.futures_daily_trade_date_column}` ASC"
+        )
+        futures_rows = self.db.execute(futures_sql, symbol_params).mappings().all()
+
+        basis_rows_by_key: dict[tuple[str, object], dict] = {}
+        for row in futures_rows:
+            trade_date = row.get("trade_date")
+            symbol = str(row.get("symbol", "")).strip().upper()
+            close_price = row.get("close_price")
+            if trade_date is None or close_price is None or symbol not in symbol_meta:
+                continue
+
+            index_name, basis_key = symbol_meta[symbol]
+            row_key = (index_name, trade_date)
+            target = basis_rows_by_key.setdefault(
+                row_key,
+                {
+                    "trade_date": trade_date,
+                    "index_name": index_name,
+                    "main_basis": None,
+                    "month_basis": None,
+                },
+            )
+            spot_close = spot_close_by_key.get((index_name, trade_date))
+            if spot_close is None:
+                target[basis_key] = None
+                continue
+            target[basis_key] = float(close_price) - float(spot_close)
+
+        return sorted(
+            basis_rows_by_key.values(),
+            key=lambda item: (str(item["index_name"]), item["trade_date"]),
+        )
 
     def _latest_cffex_trade_date(self) -> date | None:
         sql = text(
