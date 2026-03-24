@@ -71,7 +71,8 @@ class Settings(BaseSettings):
     futures_daily_trade_date_column: str = "trade_date"
     futures_daily_close_column: str = "close_price"
     futures_daily_data_source_column: str = "data_source"
-    futures_daily_hist_source_value: str = "futures_hist_em"
+    futures_daily_primary_source_value: str = "get_futures_daily_derived"
+    futures_daily_fallback_source_value: str = "futures_hist_em"
 
     cffex_member_rankings_table_name: str = "cffex_member_rankings"
     cffex_trade_date_column: str = "trade_date"

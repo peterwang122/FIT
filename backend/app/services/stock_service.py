@@ -297,22 +297,48 @@ class StockService:
 
         symbol_sql = ", ".join([f":symbol_{index}" for index, _ in enumerate(symbol_meta.keys())])
         symbol_params = {f"symbol_{index}": symbol for index, symbol in enumerate(symbol_meta.keys())}
-        symbol_params["data_source"] = settings.futures_daily_hist_source_value
+        symbol_params["primary_source"] = settings.futures_daily_primary_source_value
+        symbol_params["fallback_source"] = settings.futures_daily_fallback_source_value
 
         futures_sql = text(
             f"SELECT "
             f"`{settings.futures_daily_trade_date_column}` AS trade_date, "
             f"`{settings.futures_daily_symbol_column}` AS symbol, "
-            f"`{settings.futures_daily_close_column}` AS close_price "
+            f"`{settings.futures_daily_close_column}` AS close_price, "
+            f"`{settings.futures_daily_data_source_column}` AS data_source "
             f"FROM `{settings.futures_daily_table_name}` "
             f"WHERE `{settings.futures_daily_symbol_column}` IN ({symbol_sql}) "
-            f"AND `{settings.futures_daily_data_source_column}` = :data_source "
+            f"AND `{settings.futures_daily_data_source_column}` IN (:primary_source, :fallback_source) "
             f"ORDER BY `{settings.futures_daily_trade_date_column}` ASC"
         )
         futures_rows = self.db.execute(futures_sql, symbol_params).mappings().all()
 
-        basis_rows_by_key: dict[tuple[str, object], dict] = {}
+        source_priority = {
+            settings.futures_daily_primary_source_value: 0,
+            settings.futures_daily_fallback_source_value: 1,
+        }
+        best_futures_by_key: dict[tuple[str, object], dict] = {}
         for row in futures_rows:
+            trade_date = row.get("trade_date")
+            symbol = str(row.get("symbol", "")).strip().upper()
+            close_price = row.get("close_price")
+            data_source = str(row.get("data_source", "")).strip()
+            priority = source_priority.get(data_source)
+            if trade_date is None or close_price is None or symbol not in symbol_meta or priority is None:
+                continue
+
+            row_key = (symbol, trade_date)
+            current = best_futures_by_key.get(row_key)
+            if current is None or priority < current["source_priority"]:
+                best_futures_by_key[row_key] = {
+                    "trade_date": trade_date,
+                    "symbol": symbol,
+                    "close_price": float(close_price),
+                    "source_priority": priority,
+                }
+
+        basis_rows_by_key: dict[tuple[str, object], dict] = {}
+        for row in sorted(best_futures_by_key.values(), key=lambda item: (item["trade_date"], item["symbol"])):
             trade_date = row.get("trade_date")
             symbol = str(row.get("symbol", "")).strip().upper()
             close_price = row.get("close_price")
