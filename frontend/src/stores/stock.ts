@@ -64,36 +64,51 @@ export const useStockStore = defineStore('stock', {
     },
   },
   actions: {
-    async initialize() {
+    ensureDefaultStockSelection() {
+      if (!this.symbols.find((item) => item.ts_code === this.tsCode) && this.symbols.length > 0) {
+        this.tsCode = this.symbols[0].ts_code
+      }
+    },
+    ensureDefaultIndexSelection() {
+      if (!this.indexOptions.find((item) => item.code === this.indexCode) && this.indexOptions.length > 0) {
+        this.indexCode = this.indexOptions[0].code
+      }
+    },
+    ensureDefaultForexSelection() {
+      if (!this.forexOptions.find((item) => item.code === this.forexCode) && this.forexOptions.length > 0) {
+        this.forexCode = this.forexOptions[0].code
+      }
+    },
+    async loadSymbols() {
+      this.symbols = await fetchSymbols()
+      this.ensureDefaultStockSelection()
+    },
+    async initializeOverview() {
       this.error = ''
       try {
-        const [symbols, indexOptions, forexOptions] = await Promise.all([
-          fetchSymbols(),
-          fetchIndexOptions(),
-          fetchForexOptions(),
-        ])
-        this.symbols = symbols
+        const [indexOptions, forexOptions] = await Promise.all([fetchIndexOptions(), fetchForexOptions()])
         this.indexOptions = indexOptions
         this.forexOptions = forexOptions
 
-        if (!this.symbols.find((item) => item.ts_code === this.tsCode) && this.symbols.length > 0) {
-          this.tsCode = this.symbols[0].ts_code
-        }
-        if (!this.indexOptions.find((item) => item.code === this.indexCode) && this.indexOptions.length > 0) {
-          this.indexCode = this.indexOptions[0].code
-        }
-        if (!this.forexOptions.find((item) => item.code === this.forexCode) && this.forexOptions.length > 0) {
-          this.forexCode = this.forexOptions[0].code
-        }
+        this.ensureDefaultIndexSelection()
+        this.ensureDefaultForexSelection()
 
         await Promise.all([
-          this.loadKline(),
           this.loadIndexEmotionPoints(),
           this.loadNetPositionTables(),
           this.loadNetPositionSeries(),
           this.loadIndexKline(),
           this.loadForexKline(),
         ])
+      } catch (error) {
+        this.error = `初始化失败：${String(error)}`
+      }
+    },
+    async initializeStocksPage() {
+      this.error = ''
+      try {
+        await this.loadSymbols()
+        await this.loadKline()
       } catch (error) {
         this.error = `初始化失败：${String(error)}`
       }

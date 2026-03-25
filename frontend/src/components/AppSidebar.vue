@@ -2,11 +2,7 @@
 import { useRouter } from 'vue-router'
 
 const props = defineProps<{
-  active: 'overview' | 'progress' | 'quant'
-}>()
-
-const emit = defineEmits<{
-  market: []
+  active: 'overview' | 'stocks' | 'progress' | 'quant'
 }>()
 
 const router = useRouter()
@@ -16,12 +12,8 @@ function goOverview() {
   router.push('/')
 }
 
-function goMarket() {
-  if (props.active === 'overview') {
-    emit('market')
-    return
-  }
-  router.push({ path: '/', hash: '#stock-section' })
+function goStocks() {
+  router.push('/stocks')
 }
 
 function goQuant() {
@@ -47,7 +39,9 @@ function openFlowerTab() {
       <button type="button" class="sidebar-link" :class="{ active: active === 'overview' }" @click="goOverview">
         首页总览
       </button>
-      <button type="button" class="sidebar-link" @click="goMarket">行情中心</button>
+      <button type="button" class="sidebar-link" :class="{ active: active === 'stocks' }" @click="goStocks">
+        个股行情
+      </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'quant' }" @click="goQuant">
         量化展示
       </button>
