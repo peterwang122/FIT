@@ -10,7 +10,7 @@ import type {
   QuantLinePoint,
   QuantLineSeries,
 } from '../types/quant'
-import type { FuturesBasisPoint, IndexEmotionPoint } from '../types/stock'
+import type { FuturesBasisPoint, IndexBreadthPoint, IndexEmotionPoint } from '../types/stock'
 
 export type QuantIndicatorCandle = {
   trade_date: string
@@ -21,10 +21,11 @@ export type QuantIndicatorCandle = {
 
 const CORE_EMOTION_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
 
-export const QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'emotion',
   'basis-main',
   'basis-month',
+  'breadth-up-pct',
   'wr',
   'macd-dif',
   'macd-dea',
@@ -32,6 +33,24 @@ export const QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'kdj-k',
   'kdj-d',
   'kdj-j',
+]
+
+export const STOCK_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+  'wr',
+  'macd-dif',
+  'macd-dea',
+  'macd-histogram',
+  'kdj-k',
+  'kdj-d',
+  'kdj-j',
+  'ma-1',
+  'ma-2',
+  'ma-3',
+  'ma-4',
+]
+
+export const ALL_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+  ...new Set([...INDEX_QUANT_FILTER_FIELD_KEYS, ...STOCK_QUANT_FILTER_FIELD_KEYS]),
 ]
 
 function isFiniteNumber(value: unknown): value is number {
@@ -153,14 +172,12 @@ function calculateMacd(times: string[], closes: number[], fast: number, slow: nu
 
   const dea: Array<number | null> = new Array(closes.length).fill(null)
   let seedIndex = -1
-  let seedValue = 0
 
   for (let index = slow - 1; index < dif.length; index += 1) {
     const slice = dif.slice(index - signal + 1, index + 1)
     if (slice.length === signal && slice.every((item) => isFiniteNumber(item))) {
+      dea[index] = slice.reduce((sum, item) => sum + (item as number), 0) / signal
       seedIndex = index
-      seedValue = slice.reduce((sum, item) => sum + (item as number), 0) / signal
-      dea[index] = seedValue
       break
     }
   }
@@ -268,14 +285,17 @@ export function calculateSmaValueByDate(candles: QuantIndicatorCandle[], period:
   return new Map(sortedCandles.map((item, index) => [item.trade_date, smaValues[index] ?? null]))
 }
 
-export function createEmptyQuantFilterDraft(): QuantFilterDraft {
-  return QUANT_FILTER_FIELD_KEYS.reduce(
-    (draft, key) => {
+export function createEmptyQuantFilterDraft(keys: QuantFilterFieldKey[] = ALL_QUANT_FILTER_FIELD_KEYS): QuantFilterDraft {
+  const draft = {} as QuantFilterDraft
+  ALL_QUANT_FILTER_FIELD_KEYS.forEach((key) => {
+    draft[key] = { gt: '', lt: '' }
+  })
+  keys.forEach((key) => {
+    if (!draft[key]) {
       draft[key] = { gt: '', lt: '' }
-      return draft
-    },
-    {} as QuantFilterDraft,
-  )
+    }
+  })
+  return draft
 }
 
 function buildEmotionValueByDate(symbolName: string, emotionPoints: IndexEmotionPoint[]) {
@@ -301,9 +321,7 @@ function buildEmotionValueByDate(symbolName: string, emotionPoints: IndexEmotion
     grouped.set(point.emotion_date, current)
   }
 
-  return new Map(
-    [...grouped.entries()].map(([date, info]) => [date, info.count ? info.sum / info.count : 50]),
-  )
+  return new Map([...grouped.entries()].map(([date, info]) => [date, info.count ? info.sum / info.count : 50]))
 }
 
 export function calculateQuantEmotionSeries(
@@ -378,11 +396,31 @@ export function calculateQuantFuturesBasisSeries(
   }
 }
 
-function buildQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMeta[] {
+export function calculateQuantBreadthSeries(
+  candles: QuantIndicatorCandle[],
+  breadthPoints: IndexBreadthPoint[],
+): QuantLineSeries {
+  const sortedCandles = sortCandles(candles)
+  const breadthByDate = new Map(
+    breadthPoints
+      .filter((item) => Number.isFinite(Number(item.up_ratio_pct)))
+      .map((item) => [item.trade_date, Number(item.up_ratio_pct)]),
+  )
+
+  return {
+    key: 'breadth-up-pct',
+    label: '上涨家数百分比',
+    color: '#0ea5e9',
+    data: sortedCandles.map((item) => createLinePoint(item.trade_date, breadthByDate.get(item.trade_date) ?? 0)),
+  }
+}
+
+function buildIndexQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMeta[] {
   return [
     { key: 'emotion', group: 'emotion', label: '情绪指标' },
     { key: 'basis-main', group: 'basis', label: '主连期现差' },
     { key: 'basis-month', group: 'basis', label: '月连期现差' },
+    { key: 'breadth-up-pct', group: 'breadth', label: '上涨家数百分比' },
     { key: 'wr', group: 'wr', label: payload.wr.label },
     { key: 'macd-dif', group: 'macd', label: payload.macd.dif.label },
     { key: 'macd-dea', group: 'macd', label: payload.macd.dea.label },
@@ -390,32 +428,32 @@ function buildQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMet
     { key: 'kdj-k', group: 'kdj', label: payload.kdj.k.label },
     { key: 'kdj-d', group: 'kdj', label: payload.kdj.d.label },
     { key: 'kdj-j', group: 'kdj', label: payload.kdj.j.label },
+  ]
+}
+
+function buildStockQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMeta[] {
+  return [
     { key: 'ma-1', group: 'ma', label: payload.ma[0]?.label ?? 'MA1' },
     { key: 'ma-2', group: 'ma', label: payload.ma[1]?.label ?? 'MA2' },
     { key: 'ma-3', group: 'ma', label: payload.ma[2]?.label ?? 'MA3' },
     { key: 'ma-4', group: 'ma', label: payload.ma[3]?.label ?? 'MA4' },
-    { key: 'boll-upper', group: 'boll', label: payload.boll.upper.label },
-    { key: 'boll-middle', group: 'boll', label: payload.boll.middle.label },
-    { key: 'boll-lower', group: 'boll', label: payload.boll.lower.label },
+    { key: 'wr', group: 'wr', label: payload.wr.label },
+    { key: 'macd-dif', group: 'macd', label: payload.macd.dif.label },
+    { key: 'macd-dea', group: 'macd', label: payload.macd.dea.label },
+    { key: 'macd-histogram', group: 'macd', label: 'MACD柱' },
+    { key: 'kdj-k', group: 'kdj', label: payload.kdj.k.label },
+    { key: 'kdj-d', group: 'kdj', label: payload.kdj.d.label },
+    { key: 'kdj-j', group: 'kdj', label: payload.kdj.j.label },
   ]
 }
 
-function buildQuantDailySnapshots(
-  payload: QuantChartPayload,
-  emotionSeries: QuantLineSeries,
-  basisSeries: QuantFilterDataset['basis'],
-  candles: QuantIndicatorCandle[],
-): QuantDailyIndicatorSnapshot[] {
+function buildBaseSnapshots(payload: QuantChartPayload, candles: QuantIndicatorCandle[]) {
   const sortedCandles = sortCandles(candles)
-  const times = payload.ma[0]?.data.map((item) => item.time) ?? []
-
+  const times = sortedCandles.map((item) => item.trade_date)
   return times.map((tradeDate, index) => ({
     tradeDate,
     close: sortedCandles[index]?.close ?? null,
     values: {
-      emotion: emotionSeries.data[index]?.value ?? null,
-      'basis-main': basisSeries.main.data[index]?.value ?? null,
-      'basis-month': basisSeries.month.data[index]?.value ?? null,
       wr: payload.wr.data[index]?.value ?? null,
       'macd-dif': payload.macd.dif.data[index]?.value ?? null,
       'macd-dea': payload.macd.dea.data[index]?.value ?? null,
@@ -434,22 +472,63 @@ function buildQuantDailySnapshots(
   }))
 }
 
+export function buildIndexQuantFilterDataset(
+  candles: QuantIndicatorCandle[],
+  params: QuantIndicatorParams,
+  symbolName: string,
+  emotionPoints: IndexEmotionPoint[],
+  basisPoints: FuturesBasisPoint[],
+  breadthPoints: IndexBreadthPoint[],
+): QuantFilterDataset {
+  const chart = calculateQuantIndicators(candles, params)
+  const emotion = calculateQuantEmotionSeries(candles, symbolName, emotionPoints)
+  const basis = calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints)
+  const breadth = calculateQuantBreadthSeries(candles, breadthPoints)
+  const snapshots = buildBaseSnapshots(chart, candles).map((snapshot, index) => ({
+    ...snapshot,
+    values: {
+      ...snapshot.values,
+      emotion: emotion.data[index]?.value ?? 50,
+      'basis-main': basis.main.data[index]?.value ?? 0,
+      'basis-month': basis.month.data[index]?.value ?? 0,
+      'breadth-up-pct': breadth.data[index]?.value ?? 0,
+    },
+  }))
+
+  return {
+    chart,
+    emotion,
+    basis,
+    breadth,
+    fields: buildIndexQuantFilterFields(chart),
+    snapshots,
+  }
+}
+
+export function buildStockQuantFilterDataset(
+  candles: QuantIndicatorCandle[],
+  params: QuantIndicatorParams,
+): QuantFilterDataset {
+  const chart = calculateQuantIndicators(candles, params)
+  const snapshots = buildBaseSnapshots(chart, candles)
+
+  return {
+    chart,
+    emotion: null,
+    basis: null,
+    breadth: null,
+    fields: buildStockQuantFilterFields(chart),
+    snapshots,
+  }
+}
+
 export function buildQuantFilterDataset(
   candles: QuantIndicatorCandle[],
   params: QuantIndicatorParams,
   symbolName: string,
   emotionPoints: IndexEmotionPoint[],
   basisPoints: FuturesBasisPoint[],
+  breadthPoints: IndexBreadthPoint[] = [],
 ): QuantFilterDataset {
-  const chart = calculateQuantIndicators(candles, params)
-  const emotion = calculateQuantEmotionSeries(candles, symbolName, emotionPoints)
-  const basis = calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints)
-
-  return {
-    chart,
-    emotion,
-    basis,
-    fields: buildQuantFilterFields(chart),
-    snapshots: buildQuantDailySnapshots(chart, emotion, basis, candles),
-  }
+  return buildIndexQuantFilterDataset(candles, params, symbolName, emotionPoints, basisPoints, breadthPoints)
 }

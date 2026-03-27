@@ -73,6 +73,7 @@ export type QuantFilterFieldKey =
   | 'emotion'
   | 'basis-main'
   | 'basis-month'
+  | 'breadth-up-pct'
   | 'wr'
   | 'macd-dif'
   | 'macd-dea'
@@ -88,7 +89,7 @@ export type QuantFilterFieldKey =
   | 'boll-middle'
   | 'boll-lower'
 
-export type QuantFilterGroupKey = 'emotion' | 'basis' | 'wr' | 'macd' | 'kdj' | 'ma' | 'boll'
+export type QuantFilterGroupKey = 'emotion' | 'basis' | 'breadth' | 'wr' | 'macd' | 'kdj' | 'ma' | 'boll'
 
 export interface QuantFilterFieldMeta {
   key: QuantFilterFieldKey
@@ -125,11 +126,79 @@ export interface QuantHighlightBand {
 
 export interface QuantFilterDataset {
   chart: QuantChartPayload
-  emotion: QuantLineSeries
+  emotion: QuantLineSeries | null
   basis: {
     main: QuantLineSeries
     month: QuantLineSeries
-  }
+  } | null
+  breadth: QuantLineSeries | null
   fields: QuantFilterFieldMeta[]
   snapshots: QuantDailyIndicatorSnapshot[]
+}
+
+export type QuantStrategyType = 'index' | 'stock'
+export type QuantExecutionPriceMode = 'next_open' | 'next_close'
+export type QuantConflictMode = 'sell_first' | 'buy_first' | 'skip'
+export type QuantSignalColor = 'blue' | 'red'
+export type QuantBollFilterKey = 'boll-upper' | 'boll-middle' | 'boll-lower'
+
+export interface QuantSavedBollFilter {
+  gt: QuantBollFilterKey | null
+  lt: QuantBollFilterKey | null
+}
+
+export interface QuantStrategyConfig {
+  id: number
+  name: string
+  strategy_type: QuantStrategyType
+  target_code: string
+  target_name: string
+  indicator_params: QuantIndicatorParams
+  blue_filters: QuantFilterApplied
+  red_filters: QuantFilterApplied
+  blue_boll_filter: QuantSavedBollFilter
+  red_boll_filter: QuantSavedBollFilter
+  signal_buy_color: QuantSignalColor
+  signal_sell_color: QuantSignalColor
+  purple_conflict_mode: QuantConflictMode
+  start_date: string | null
+  buy_position_pct: number
+  sell_position_pct: number
+  execution_price_mode: QuantExecutionPriceMode
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface QuantStrategyPayload {
+  name: string
+  strategy_type: QuantStrategyType
+  target_code: string
+  target_name: string
+  indicator_params: QuantIndicatorParams
+  blue_filters: QuantFilterApplied
+  red_filters: QuantFilterApplied
+  blue_boll_filter: QuantSavedBollFilter
+  red_boll_filter: QuantSavedBollFilter
+  signal_buy_color: QuantSignalColor
+  signal_sell_color: QuantSignalColor
+  purple_conflict_mode: QuantConflictMode
+  start_date: string | null
+  buy_position_pct: number
+  sell_position_pct: number
+  execution_price_mode: QuantExecutionPriceMode
+}
+
+export interface QuantEquityCurvePoint {
+  trade_date: string
+  nav: number
+  benchmark_nav: number | null
+  signal: string | null
+  close_price: number | null
+}
+
+export interface QuantEquityCurveResponse {
+  strategy: QuantStrategyConfig
+  cumulative_return_pct: number
+  annualized_return_pct: number
+  points: QuantEquityCurvePoint[]
 }

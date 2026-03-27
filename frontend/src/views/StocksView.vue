@@ -7,7 +7,7 @@ import KlineChart from '../components/KlineChart.vue'
 import { useStockStore } from '../stores/stock'
 
 const stockStore = useStockStore()
-const { tsCode, searchKeyword, symbols, candles, loading, collectTaskId, collectState, error } = storeToRefs(stockStore)
+const { tsCode, searchKeyword, symbols, candles, loading, error } = storeToRefs(stockStore)
 
 const showSuggestions = ref(false)
 
@@ -73,27 +73,6 @@ onMounted(async () => {
                     <strong>{{ item.stock_name }}</strong>
                   </li>
                 </ul>
-              </div>
-            </div>
-
-            <div class="btn-group">
-              <button @click="stockStore.loadKline" :disabled="loading" class="btn primary">刷新股票 K 线</button>
-              <button @click="stockStore.triggerCollect" :disabled="!tsCode" class="btn">触发采集</button>
-              <button @click="stockStore.refreshTaskStatus" :disabled="!collectTaskId" class="btn">刷新任务状态</button>
-            </div>
-
-            <div class="stock-status-list">
-              <div class="stock-status-item">
-                <span>当前股票</span>
-                <strong>{{ selectedName || '-' }}（{{ tsCode || '-' }}）</strong>
-              </div>
-              <div class="stock-status-item">
-                <span>任务 ID</span>
-                <strong>{{ collectTaskId || '-' }}</strong>
-              </div>
-              <div class="stock-status-item">
-                <span>任务状态</span>
-                <strong>{{ collectState || '-' }}</strong>
               </div>
             </div>
           </aside>

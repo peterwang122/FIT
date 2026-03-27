@@ -17,7 +17,7 @@ function goStocks() {
 }
 
 function goQuant() {
-  router.push('/quant')
+  router.push('/quant/index')
 }
 
 function goProgress() {

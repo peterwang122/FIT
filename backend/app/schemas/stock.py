@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -103,3 +103,72 @@ class DbStatusResponse(BaseModel):
     sample_symbols: list[str]
     mapping: dict[str, str]
     error: str | None = None
+
+
+class IndexBreadthPointResponse(BaseModel):
+    trade_date: date
+    up_ratio_pct: float
+    up_count: int
+    total_count: int
+
+
+class QfqCollectTaskPayload(BaseModel):
+    ts_code: str
+    start_date: date | None = None
+    end_date: date | None = None
+
+
+class QuantStrategySavePayload(BaseModel):
+    name: str
+    strategy_type: str
+    target_code: str
+    target_name: str
+    indicator_params: dict
+    blue_filters: dict = {}
+    red_filters: dict = {}
+    blue_boll_filter: dict = {}
+    red_boll_filter: dict = {}
+    signal_buy_color: str = "blue"
+    signal_sell_color: str = "red"
+    purple_conflict_mode: str = "sell_first"
+    start_date: date | None = None
+    buy_position_pct: float = 1.0
+    sell_position_pct: float = 1.0
+    execution_price_mode: str = "next_open"
+
+
+class QuantStrategyConfigResponse(BaseModel):
+    id: int
+    name: str
+    strategy_type: str
+    target_code: str
+    target_name: str
+    indicator_params: dict
+    blue_filters: dict
+    red_filters: dict
+    blue_boll_filter: dict
+    red_boll_filter: dict
+    signal_buy_color: str
+    signal_sell_color: str
+    purple_conflict_mode: str
+    start_date: date | None = None
+    buy_position_pct: float
+    sell_position_pct: float
+    execution_price_mode: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class QuantEquityCurvePointResponse(BaseModel):
+    trade_date: date
+    nav: float
+    benchmark_nav: float | None = None
+    signal: str | None = None
+    close_price: float | None = None
+
+
+class QuantEquityCurveResponse(BaseModel):
+    strategy: QuantStrategyConfigResponse
+    cumulative_return_pct: float
+    annualized_return_pct: float
+    points: list[QuantEquityCurvePointResponse]

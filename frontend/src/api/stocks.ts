@@ -2,6 +2,7 @@ import { http } from './client'
 import type {
   DbStatus,
   FuturesBasisPoint,
+  IndexBreadthPoint,
   IndexEmotionPoint,
   KlineCandle,
   MarketOption,
@@ -9,7 +10,10 @@ import type {
   NetPositionTables,
   StockMeta,
   StockSymbol,
+  TaskStatusResult,
+  TaskSubmitResult,
 } from '../types/stock'
+import type { QuantEquityCurveResponse, QuantStrategyConfig, QuantStrategyPayload } from '../types/quant'
 
 interface ApiResponse<T> {
   code: number
@@ -37,6 +41,11 @@ export async function fetchKline(tsCode: string) {
   return data.data
 }
 
+export async function fetchQfqKline(tsCode: string) {
+  const { data } = await http.get<ApiResponse<KlineCandle[]>>(`/stocks/${tsCode}/qfq-kline`)
+  return data.data
+}
+
 export async function fetchIndexOptions() {
   const { data } = await http.get<ApiResponse<MarketOption[]>>('/stocks/indexes/options')
   return data.data
@@ -49,6 +58,11 @@ export async function fetchIndexEmotions() {
 
 export async function fetchIndexFuturesBasis() {
   const { data } = await http.get<ApiResponse<FuturesBasisPoint[]>>('/stocks/index-futures-basis')
+  return data.data
+}
+
+export async function fetchIndexBreadth() {
+  const { data } = await http.get<ApiResponse<IndexBreadthPoint[]>>('/stocks/quant/index-breadth')
   return data.data
 }
 
@@ -90,7 +104,7 @@ export async function fetchForexKline(symbolCode: string, startDate?: string, en
 }
 
 export async function submitCollectTask(tsCode: string, idempotencyKey: string) {
-  const { data } = await http.post<ApiResponse<{ task_id: string; status: string }>>(
+  const { data } = await http.post<ApiResponse<TaskSubmitResult>>(
     '/stocks/collect',
     {
       ts_code: tsCode,
@@ -105,6 +119,55 @@ export async function submitCollectTask(tsCode: string, idempotencyKey: string) 
 }
 
 export async function fetchTaskStatus(taskId: string) {
-  const { data } = await http.get<ApiResponse<Record<string, unknown>>>(`/stocks/collect/${taskId}`)
+  const { data } = await http.get<ApiResponse<TaskStatusResult>>(`/stocks/collect/${taskId}`)
+  return data.data
+}
+
+export async function submitQfqCollectTask(tsCode: string, idempotencyKey: string) {
+  const { data } = await http.post<ApiResponse<TaskSubmitResult>>(
+    '/stocks/qfq-collect',
+    {
+      ts_code: tsCode,
+    },
+    {
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    },
+  )
+  return data.data
+}
+
+export async function fetchQfqTaskStatus(taskId: string) {
+  const { data } = await http.get<ApiResponse<TaskStatusResult>>(`/stocks/qfq-collect/${taskId}`)
+  return data.data
+}
+
+export async function fetchQuantStrategies() {
+  const { data } = await http.get<ApiResponse<QuantStrategyConfig[]>>('/stocks/quant/strategies')
+  return data.data
+}
+
+export async function createQuantStrategy(payload: QuantStrategyPayload) {
+  const { data } = await http.post<ApiResponse<QuantStrategyConfig>>('/stocks/quant/strategies', payload)
+  return data.data
+}
+
+export async function updateQuantStrategy(strategyId: number, payload: QuantStrategyPayload) {
+  const { data } = await http.put<ApiResponse<QuantStrategyConfig>>(`/stocks/quant/strategies/${strategyId}`, payload)
+  return data.data
+}
+
+export async function deleteQuantStrategy(strategyId: number) {
+  const { data } = await http.delete<ApiResponse<{ id: number; status: string }>>(
+    `/stocks/quant/strategies/${strategyId}`,
+  )
+  return data.data
+}
+
+export async function fetchQuantStrategyEquityCurve(strategyId: number) {
+  const { data } = await http.get<ApiResponse<QuantEquityCurveResponse>>(
+    `/stocks/quant/strategies/${strategyId}/equity-curve`,
+  )
   return data.data
 }

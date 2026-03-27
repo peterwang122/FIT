@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.db.session import engine
+from app.models.quant_strategy_config import QuantStrategyConfig
 
 app = FastAPI(title=settings.app_name)
 
@@ -19,6 +21,11 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix=settings.api_prefix)
+
+
+@app.on_event("startup")
+def ensure_runtime_tables() -> None:
+    QuantStrategyConfig.__table__.create(bind=engine, checkfirst=True)
 
 
 @app.get("/health", tags=["system"])

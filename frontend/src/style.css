@@ -531,6 +531,37 @@ body::before {
   margin: 6px 0 0;
 }
 
+.quant-subnav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.quant-subnav-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(20, 33, 61, 0.12);
+  background: rgba(20, 33, 61, 0.04);
+  color: #14213d;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.quant-subnav-link:hover,
+.quant-subnav-link.active {
+  transform: translateY(-1px);
+  color: #fff;
+  background: linear-gradient(135deg, #0f4c75, #2563eb);
+  border-color: transparent;
+  box-shadow: 0 10px 24px rgba(15, 76, 117, 0.16);
+}
+
 .quant-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 25vw);
@@ -730,7 +761,13 @@ body::before {
   gap: 10px;
   flex-wrap: wrap;
   padding-top: 6px;
- }
+}
+
+.quant-save-box {
+  display: grid;
+  gap: 10px;
+  padding-top: 6px;
+}
 
 .quant-toolbar,
 .quant-toolbar-group,
@@ -842,6 +879,66 @@ body::before {
 
 .quant-form-hint {
   margin: 0;
+}
+
+.quant-stock-top {
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  margin-bottom: 18px;
+}
+
+.quant-stock-control {
+  position: static;
+  top: auto;
+}
+
+.quant-stock-summary-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.quant-stock-empty {
+  display: grid;
+  gap: 8px;
+  min-height: 180px;
+  align-content: center;
+  justify-items: start;
+}
+
+.quant-stock-empty h3 {
+  margin: 0;
+}
+
+.quant-strategy-grid {
+  align-items: start;
+}
+
+.quant-strategy-list {
+  gap: 10px;
+}
+
+.quant-strategy-item {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+}
+
+.quant-strategy-item span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.quant-strategy-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.quant-strategy-summary {
+  margin-bottom: 18px;
 }
 
 .progress-main {
@@ -1030,6 +1127,10 @@ body::before {
   .quant-body {
     grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
   }
+
+  .quant-stock-top {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1100px) {
@@ -1076,6 +1177,10 @@ body::before {
 
   .quant-filter-card {
     max-height: none;
+  }
+
+  .quant-strategy-form {
+    grid-template-columns: 1fr;
   }
 }
 

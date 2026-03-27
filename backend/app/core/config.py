@@ -11,28 +11,48 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     # read-only existing table mapping (defaults aligned with current DB)
-    stock_table_name: str = "stock_data"
+    stock_table_name: str = "stock_daily_data"
     stock_code_column: str = "stock_code"
-    stock_date_column: str = "date"
+    stock_prefixed_code_column: str = "prefixed_code"
+    stock_name_column: str = "stock_name"
+    stock_date_column: str = "trade_date"
     stock_open_column: str = "open_price"
     stock_high_column: str = "high_price"
     stock_low_column: str = "low_price"
     stock_close_column: str = "close_price"
-    stock_pre_close_column: str = "0"
+    stock_latest_price_column: str = "latest_price"
+    stock_pre_close_column: str = "pre_close_price"
     stock_change_column: str = "price_change_amount"
     stock_pct_chg_column: str = "price_change_rate"
     stock_vol_column: str = "volume"
-    stock_amount_column: str = "turnover"
+    stock_amount_column: str = "turnover_amount"
     stock_pe_ttm_column: str = "pe_ttm"
     stock_pb_column: str = "pb"
     stock_total_market_value_column: str = "total_market_value"
     stock_circulating_market_value_column: str = "circulating_market_value"
+    stock_data_source_column: str = "data_source"
+    stock_hist_source_value: str = "stock_zh_a_hist_tx"
+    stock_spot_source_value: str = "stock_zh_a_spot"
 
-    stock_basic_info_table_name: str = "stock_basic_info"
+    stock_basic_info_table_name: str = "stock_info_all"
     stock_basic_info_code_column: str = "stock_code"
+    stock_basic_info_prefixed_code_column: str = "prefixed_code"
     stock_basic_info_name_column: str = "stock_name"
     stock_basic_cache_key: str = "fit:stock_basic_info:all"
     stock_basic_cache_ttl_seconds: int = 86400
+
+    stock_qfq_table_name: str = "stock_qfq_daily_data"
+    stock_qfq_code_column: str = "stock_code"
+    stock_qfq_prefixed_code_column: str = "prefixed_code"
+    stock_qfq_name_column: str = "stock_name"
+    stock_qfq_date_column: str = "trade_date"
+    stock_qfq_open_column: str = "open_price"
+    stock_qfq_high_column: str = "high_price"
+    stock_qfq_low_column: str = "low_price"
+    stock_qfq_close_column: str = "close_price"
+    stock_qfq_vol_column: str = "volume"
+    stock_qfq_amount_column: str = "turnover_amount"
+    stock_qfq_data_source_column: str = "data_source"
 
     index_basic_info_table_name: str = "index_basic_info"
     index_basic_info_code_column: str = "index_code"
@@ -66,6 +86,21 @@ class Settings(BaseSettings):
     excel_index_emotion_name_column: str = "index_name"
     excel_index_emotion_value_column: str = "emotion_value"
 
+    etf_basic_info_table_name: str = "etf_basic_info_sina"
+    etf_basic_info_code_column: str = "etf_code"
+    etf_basic_info_name_column: str = "etf_name"
+    etf_daily_table_name: str = "etf_daily_data_sina"
+    etf_daily_code_column: str = "etf_code"
+    etf_daily_name_column: str = "etf_name"
+    etf_daily_date_column: str = "trade_date"
+    etf_daily_open_column: str = "open_price"
+    etf_daily_close_column: str = "close_price"
+    etf_daily_high_column: str = "high_price"
+    etf_daily_low_column: str = "low_price"
+    etf_daily_data_source_column: str = "data_source"
+    etf_daily_hist_source_value: str = "fund_etf_hist_sina"
+    etf_daily_spot_source_value: str = "fund_etf_category_sina"
+
     futures_daily_table_name: str = "futures_daily_data"
     futures_daily_symbol_column: str = "symbol"
     futures_daily_trade_date_column: str = "trade_date"
@@ -93,6 +128,12 @@ class Settings(BaseSettings):
     collector_task_time_limit_seconds: int = 60
     collector_task_max_retries: int = 3
     collector_task_retry_backoff_seconds: int = 5
+
+    stock_temp_service_base_url: str = "http://127.0.0.1:8786"
+    stock_temp_service_timeout_seconds: int = 1800
+    stock_temp_task_soft_time_limit_seconds: int = 1800
+    stock_temp_task_time_limit_seconds: int = 2100
+    stock_temp_task_max_retries: int = 5
 
     task_idempotency_ttl_seconds: int = 3600
     collector_dedupe_lock_ttl_seconds: int = 120

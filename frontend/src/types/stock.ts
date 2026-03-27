@@ -38,6 +38,13 @@ export interface FuturesBasisPoint {
   month_basis: number | null
 }
 
+export interface IndexBreadthPoint {
+  trade_date: string
+  up_ratio_pct: number
+  up_count: number
+  total_count: number
+}
+
 export interface NetPositionRow {
   product_code: string
   index_name: string
@@ -82,6 +89,17 @@ export interface NetPositionSeries {
 export interface StockMeta {
   table_name: string
   column_mapping: Record<string, string>
+}
+
+export interface TaskSubmitResult {
+  task_id: string
+  status: string
+}
+
+export interface TaskStatusResult {
+  task_id: string
+  state: string
+  result: Record<string, unknown> | null
 }
 
 export interface DbStatus {

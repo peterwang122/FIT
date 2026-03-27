@@ -141,7 +141,9 @@ class StockService:
 
     def _query_stock_basics_from_db(self) -> list[dict]:
         sql = text(
-            f"SELECT `{settings.stock_basic_info_code_column}` AS ts_code, "
+            f"SELECT "
+            f"`{settings.stock_basic_info_code_column}` AS ts_code, "
+            f"`{settings.stock_basic_info_prefixed_code_column}` AS prefixed_code, "
             f"`{settings.stock_basic_info_name_column}` AS stock_name "
             f"FROM `{settings.stock_basic_info_table_name}` "
             f"ORDER BY `{settings.stock_basic_info_code_column}`"
@@ -175,9 +177,30 @@ class StockService:
             items = [
                 item
                 for item in items
-                if key in str(item.get("ts_code", "")).lower() or key in str(item.get("stock_name", "")).lower()
+                if key in str(item.get("ts_code", "")).lower()
+                or key in str(item.get("prefixed_code", "")).lower()
+                or key in str(item.get("stock_name", "")).lower()
             ]
         return items[:limit]
+
+    def _resolve_stock_code(self, ts_code: str) -> str:
+        normalized = str(ts_code or "").strip().lower()
+        if not normalized:
+            return ""
+        if normalized.isdigit() and len(normalized) == 6:
+            return normalized
+
+        sql = text(
+            f"SELECT `{settings.stock_basic_info_code_column}` AS stock_code "
+            f"FROM `{settings.stock_basic_info_table_name}` "
+            f"WHERE LOWER(`{settings.stock_basic_info_code_column}`) = :code "
+            f"OR LOWER(`{settings.stock_basic_info_prefixed_code_column}`) = :code "
+            f"LIMIT 1"
+        )
+        row = self.db.execute(sql, {"code": normalized}).mappings().first()
+        if not row:
+            return normalized
+        return str(row["stock_code"]).strip()
 
     def _filter_named_options(self, items: list[dict], order: list[str], code_key: str, name_key: str) -> list[dict]:
         item_by_name: dict[str, list[dict[str, str]]] = {}
@@ -682,62 +705,144 @@ class StockService:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> list[dict]:
-        mapping = self.available_mapping()
-        required = {"ts_code", "trade_date", "open", "high", "low", "close"}
-        if not required.issubset(mapping):
+        stock_code = self._resolve_stock_code(ts_code)
+        if not stock_code:
             return []
 
-        optional_defaults = {
-            "pre_close": 0,
-            "change": 0,
-            "pct_chg": 0,
-            "vol": 0,
-            "amount": 0,
-            "pe_ttm": 0,
-            "pb": 0,
-            "total_market_value": 0,
-            "circulating_market_value": 0,
+        params: dict[str, object] = {
+            "stock_code": stock_code,
+            "hist_source": settings.stock_hist_source_value,
+            "spot_source": settings.stock_spot_source_value,
         }
-
-        select_parts = [
-            f"`{mapping['trade_date']}` AS trade_date",
-            f"`{mapping['open']}` AS open",
-            f"`{mapping['high']}` AS high",
-            f"`{mapping['low']}` AS low",
-            f"`{mapping['close']}` AS close",
-        ]
-        output_alias = {
-            "pre_close": "pre_close",
-            "change": "change_value",
-            "pct_chg": "pct_chg",
-            "vol": "vol",
-            "amount": "amount",
-            "pe_ttm": "pe_ttm",
-            "pb": "pb",
-            "total_market_value": "total_market_value",
-            "circulating_market_value": "circulating_market_value",
-        }
-
-        for field, alias in output_alias.items():
-            if field in mapping:
-                select_parts.append(f"`{mapping[field]}` AS {alias}")
-            else:
-                select_parts.append(f"{optional_defaults[field]} AS {alias}")
-
-        sql = (
-            f"SELECT {', '.join(select_parts)} "
-            f"FROM `{settings.stock_table_name}` "
-            f"WHERE `{mapping['ts_code']}` = :ts_code"
-        )
-
-        params: dict[str, object] = {"ts_code": ts_code}
         if start_date:
-            sql += f" AND `{mapping['trade_date']}` >= :start_date"
             params["start_date"] = start_date
         if end_date:
-            sql += f" AND `{mapping['trade_date']}` <= :end_date"
             params["end_date"] = end_date
-        sql += f" ORDER BY `{mapping['trade_date']}` ASC"
+
+        date_filter_sql = ""
+        if start_date:
+            date_filter_sql += f" AND `{settings.stock_date_column}` >= :start_date"
+        if end_date:
+            date_filter_sql += f" AND `{settings.stock_date_column}` <= :end_date"
+
+        latest_spot_date_sql = text(
+            f"SELECT MAX(`{settings.stock_date_column}`) AS trade_date "
+            f"FROM `{settings.stock_table_name}` "
+            f"WHERE `{settings.stock_code_column}` = :stock_code "
+            f"AND `{settings.stock_data_source_column}` = :spot_source"
+            f"{date_filter_sql}"
+        )
+        latest_spot_date = self.db.execute(latest_spot_date_sql, params).scalar()
+
+        hist_sql = text(
+            f"SELECT "
+            f"`{settings.stock_date_column}` AS trade_date, "
+            f"`{settings.stock_open_column}` AS open, "
+            f"`{settings.stock_high_column}` AS high, "
+            f"`{settings.stock_low_column}` AS low, "
+            f"`{settings.stock_close_column}` AS close, "
+            f"COALESCE(`{settings.stock_pre_close_column}`, 0) AS pre_close, "
+            f"COALESCE(`{settings.stock_change_column}`, 0) AS change_value, "
+            f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
+            f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
+            f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
+            f"COALESCE(`{settings.stock_pe_ttm_column}`, 0) AS pe_ttm, "
+            f"COALESCE(`{settings.stock_pb_column}`, 0) AS pb, "
+            f"COALESCE(`{settings.stock_total_market_value_column}`, 0) AS total_market_value, "
+            f"COALESCE(`{settings.stock_circulating_market_value_column}`, 0) AS circulating_market_value "
+            f"FROM `{settings.stock_table_name}` "
+            f"WHERE `{settings.stock_code_column}` = :stock_code "
+            f"AND `{settings.stock_data_source_column}` = :hist_source"
+            f"{date_filter_sql} "
+            f"ORDER BY `{settings.stock_date_column}` ASC"
+        )
+        hist_rows = [dict(row) for row in self.db.execute(hist_sql, params).mappings().all()]
+
+        rows_by_date = {row["trade_date"]: row for row in hist_rows if row.get("trade_date") is not None}
+
+        if latest_spot_date is not None:
+            spot_sql = text(
+                f"SELECT "
+                f"`{settings.stock_date_column}` AS trade_date, "
+                f"`{settings.stock_open_column}` AS open, "
+                f"`{settings.stock_high_column}` AS high, "
+                f"`{settings.stock_low_column}` AS low, "
+                f"COALESCE(`{settings.stock_latest_price_column}`, `{settings.stock_close_column}`) AS close, "
+                f"COALESCE(`{settings.stock_pre_close_column}`, 0) AS pre_close, "
+                f"COALESCE(`{settings.stock_change_column}`, 0) AS change_value, "
+                f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
+                f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
+                f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
+                f"COALESCE(`{settings.stock_pe_ttm_column}`, 0) AS pe_ttm, "
+                f"COALESCE(`{settings.stock_pb_column}`, 0) AS pb, "
+                f"COALESCE(`{settings.stock_total_market_value_column}`, 0) AS total_market_value, "
+                f"COALESCE(`{settings.stock_circulating_market_value_column}`, 0) AS circulating_market_value "
+                f"FROM `{settings.stock_table_name}` "
+                f"WHERE `{settings.stock_code_column}` = :stock_code "
+                f"AND `{settings.stock_data_source_column}` = :spot_source "
+                f"AND `{settings.stock_date_column}` = :latest_spot_date "
+                f"LIMIT 1"
+            )
+            spot_params = {**params, "latest_spot_date": latest_spot_date}
+            spot_row = self.db.execute(spot_sql, spot_params).mappings().first()
+            if spot_row:
+                rows_by_date[spot_row["trade_date"]] = dict(spot_row)
+
+        rows = [rows_by_date[key] for key in sorted(rows_by_date.keys())]
+        numeric_fields = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "pre_close",
+            "change",
+            "pct_chg",
+            "vol",
+            "amount",
+            "pe_ttm",
+            "pb",
+            "total_market_value",
+            "circulating_market_value",
+        ]
+        return self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
+
+    def list_qfq_daily_kline(
+        self,
+        ts_code: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        stock_code = self._resolve_stock_code(ts_code)
+        if not stock_code:
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.stock_qfq_date_column}` AS trade_date, "
+            f"`{settings.stock_qfq_open_column}` AS open, "
+            f"`{settings.stock_qfq_high_column}` AS high, "
+            f"`{settings.stock_qfq_low_column}` AS low, "
+            f"`{settings.stock_qfq_close_column}` AS close, "
+            f"0 AS pre_close, "
+            f"0 AS change_value, "
+            f"0 AS pct_chg, "
+            f"COALESCE(`{settings.stock_qfq_vol_column}`, 0) AS vol, "
+            f"COALESCE(`{settings.stock_qfq_amount_column}`, 0) AS amount, "
+            f"0 AS pe_ttm, "
+            f"0 AS pb, "
+            f"0 AS total_market_value, "
+            f"0 AS circulating_market_value "
+            f"FROM `{settings.stock_qfq_table_name}` "
+            f"WHERE `{settings.stock_qfq_code_column}` = :stock_code"
+        )
+        params: dict[str, object] = {"stock_code": stock_code}
+        if start_date:
+            sql += f" AND `{settings.stock_qfq_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.stock_qfq_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.stock_qfq_date_column}` ASC"
 
         rows = self.db.execute(text(sql), params).mappings().all()
         numeric_fields = [
