@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import {
   createQuantStrategy,
@@ -184,6 +184,7 @@ function getErrorMessage(error: unknown) {
 const symbols = ref<StockSymbol[]>([])
 const searchKeyword = ref('')
 const showSuggestions = ref(false)
+const suggestionLoading = ref(false)
 const selectedCode = ref('')
 const selectedName = ref('')
 const candles = ref<KlineCandle[]>([])
@@ -214,12 +215,40 @@ const redBollFilterDraft = reactive({ gt: '' as QuantBollFilterOption, lt: '' as
 
 const latestStockSnapshot = computed(() => (candles.value.length ? candles.value[candles.value.length - 1] : undefined))
 const filteredSymbols = computed(() => {
-  const key = searchKeyword.value.trim().toLowerCase()
-  if (!key) return symbols.value.slice(0, 30)
   return symbols.value
-    .filter((item) => item.ts_code.toLowerCase().includes(key) || item.stock_name.toLowerCase().includes(key))
-    .slice(0, 30)
 })
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+let latestSearchRequestId = 0
+
+async function loadSuggestions(keyword: string) {
+  const requestId = ++latestSearchRequestId
+  suggestionLoading.value = true
+  try {
+    const items = await fetchSymbols(30, keyword)
+    if (requestId !== latestSearchRequestId) {
+      return
+    }
+    symbols.value = items
+  } catch (loadError) {
+    if (requestId === latestSearchRequestId) {
+      error.value = getErrorMessage(loadError)
+    }
+  } finally {
+    if (requestId === latestSearchRequestId) {
+      suggestionLoading.value = false
+    }
+  }
+}
+
+function scheduleSuggestionSearch(keyword: string) {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+  }
+  searchTimer = setTimeout(() => {
+    void loadSuggestions(keyword)
+  }, 280)
+}
 
 const quantFilterDataset = computed(() => buildStockQuantFilterDataset(candles.value, appliedParams.value))
 const validation = computed(() => {
@@ -379,6 +408,16 @@ function pickSymbol(code: string, name: string) {
   chartRequested.value = false
 }
 
+function handleSearchFocus() {
+  showSuggestions.value = true
+  scheduleSuggestionSearch(searchKeyword.value.trim())
+}
+
+function handleSearchInput() {
+  showSuggestions.value = true
+  scheduleSuggestionSearch(searchKeyword.value.trim())
+}
+
 async function loadQfqKline() {
   if (!selectedCode.value) {
     error.value = '请先选择股票'
@@ -505,12 +544,12 @@ async function saveStrategy() {
 
 onMounted(async () => {
   booting.value = true
-  try {
-    symbols.value = await fetchSymbols()
-  } catch (loadError) {
-    error.value = getErrorMessage(loadError)
-  } finally {
-    booting.value = false
+  booting.value = false
+})
+
+onBeforeUnmount(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
   }
 })
 </script>
@@ -536,18 +575,26 @@ onMounted(async () => {
                   v-model="searchKeyword"
                   class="input"
                   placeholder="输入股票代码或股票名称"
-                  @focus="showSuggestions = true"
-                  @input="showSuggestions = true"
+                  @focus="handleSearchFocus"
+                  @input="handleSearchInput"
                 />
                 <ul v-if="showSuggestions" class="suggest-list">
-                  <li
-                    v-for="item in filteredSymbols"
-                    :key="item.ts_code"
-                    @mousedown.prevent="pickSymbol(item.ts_code, item.stock_name)"
-                  >
-                    <span>{{ item.ts_code }}</span>
-                    <strong>{{ item.stock_name }}</strong>
+                  <li v-if="suggestionLoading">
+                    <span>搜索中...</span>
                   </li>
+                  <li v-else-if="!filteredSymbols.length">
+                    <span>没有匹配结果</span>
+                  </li>
+                  <template v-else>
+                    <li
+                      v-for="item in filteredSymbols"
+                      :key="item.ts_code"
+                      @mousedown.prevent="pickSymbol(item.ts_code, item.stock_name)"
+                    >
+                      <span>{{ item.ts_code }}</span>
+                      <strong>{{ item.stock_name }}</strong>
+                    </li>
+                  </template>
                 </ul>
               </div>
             </div>

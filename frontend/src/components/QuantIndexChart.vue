@@ -104,9 +104,11 @@ let emotionSeries: LineSeriesApi | null = null
 let basisMainSeries: LineSeriesApi | null = null
 let basisMonthSeries: LineSeriesApi | null = null
 let breadthSeries: LineSeriesApi | null = null
+let breadthCountSeries: LineSeriesApi | null = null
 let highlightBindings: PrimitiveBinding[] = []
 let isSyncingRange = false
 let isSyncingCrosshair = false
+let shouldResetVisibleRange = true
 let unsubs: Array<() => void> = []
 
 function formatDateText(value: Date): string {
@@ -194,6 +196,29 @@ const breadthSeriesData = computed(() =>
   })),
 )
 
+const breadthCountSeriesData = computed(() => {
+  const upCountByDate = new Map(props.breadthPoints.map((item) => [item.trade_date, Number(item.up_count) || 0]))
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: upCountByDate.get(item.trade_date) ?? 0,
+  }))
+})
+
+const breadthPointByDate = computed(
+  () =>
+    new Map(
+      props.breadthPoints.map((item) => [
+        item.trade_date,
+        {
+          up_ratio_pct: Number(item.up_ratio_pct) || 0,
+          up_count: Number(item.up_count) || 0,
+          total_count: Number(item.total_count) || 0,
+        },
+      ]),
+    ),
+)
+
 const mainLegend = computed(() =>
   overlayMode.value === 'boll'
     ? [
@@ -234,6 +259,10 @@ const breadthLegend = computed(() => [
   {
     label: quantDataset.value.breadth?.label ?? '上涨家数百分比',
     color: quantDataset.value.breadth?.color ?? '#0ea5e9',
+  },
+  {
+    label: '上涨家数',
+    color: '#f97316',
   },
 ])
 
@@ -352,7 +381,11 @@ const activeIndicatorSnapshot = computed(() => {
       main: maps.basis.main.get(tradeDate),
       month: maps.basis.month.get(tradeDate),
     },
-    breadth: maps.breadth.get(tradeDate),
+    breadth: {
+      pct: maps.breadth.get(tradeDate),
+      upCount: breadthPointByDate.value.get(tradeDate)?.up_count ?? 0,
+      totalCount: breadthPointByDate.value.get(tradeDate)?.total_count ?? 0,
+    },
   }
 })
 
@@ -364,6 +397,11 @@ function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
       textColor: '#14213d',
     },
     rightPriceScale: {
+      borderColor: '#e2e8f0',
+      autoScale: true,
+    },
+    leftPriceScale: {
+      visible: false,
       borderColor: '#e2e8f0',
       autoScale: true,
     },
@@ -393,13 +431,14 @@ function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
   })
 }
 
-function addLineSeries(chart: IChartApi, color: string, lineWidth: LineWidth = 2) {
+function addLineSeries(chart: IChartApi, color: string, lineWidth: LineWidth = 2, priceScaleId?: string) {
   return chart.addSeries(LineSeries, {
     color,
     lineWidth,
     lastValueVisible: false,
     priceLineVisible: false,
     crosshairMarkerRadius: 3,
+    priceScaleId,
   })
 }
 
@@ -539,6 +578,7 @@ function updateAllSeries() {
     !basisMainSeries ||
     !basisMonthSeries ||
     !breadthSeries ||
+    !breadthCountSeries ||
     !kdjSeriesRefs.length
   ) {
     return
@@ -575,6 +615,12 @@ function updateAllSeries() {
   basisMainSeries.setData(toLineData(quantDataset.value.basis?.main.data ?? []))
   basisMonthSeries.setData(toLineData(quantDataset.value.basis?.month.data ?? []))
   breadthSeries.setData(toLineData(quantDataset.value.breadth?.data ?? []))
+  breadthCountSeries.setData(
+    breadthCountSeriesData.value.map((item) => ({
+      time: item.time,
+      value: item.value,
+    })),
+  )
 
   panelValueMaps.set('main', new Map(sortedCandles.value.map((item) => [item.trade_date, item.close])))
   panelValueMaps.set('macd', buildValueMap(payload.macd.dif.data))
@@ -608,6 +654,11 @@ function renderCharts() {
     charts.emotion = createBaseChart(emotionContainerRef.value, false)
     charts.basis = createBaseChart(basisContainerRef.value, false)
     charts.breadth = createBaseChart(breadthContainerRef.value, true)
+    charts.breadth.priceScale('left').applyOptions({
+      visible: true,
+      borderColor: '#e2e8f0',
+      autoScale: true,
+    })
 
     mainCandleSeries = addCandles(charts.main)
     mainMaSeries = indicatorPayload.value.ma.map((item) => addLineSeries(charts.main!, item.color, 2))
@@ -632,6 +683,7 @@ function renderCharts() {
     basisMainSeries = addLineSeries(charts.basis, quantDataset.value.basis?.main.color ?? '#dc2626', 2)
     basisMonthSeries = addLineSeries(charts.basis, quantDataset.value.basis?.month.color ?? '#2563eb', 2)
     breadthSeries = addLineSeries(charts.breadth, quantDataset.value.breadth?.color ?? '#0ea5e9', 2)
+    breadthCountSeries = addLineSeries(charts.breadth, '#f97316', 2, 'left')
 
     primarySeriesMap.set('main', mainCandleSeries)
     primarySeriesMap.set('macd', macdDifSeries)
@@ -659,7 +711,10 @@ function renderCharts() {
 
     updateAllSeries()
     syncHighlightBindings()
-    applyDefaultVisibleRange()
+    if (shouldResetVisibleRange && mainCandles.value.length) {
+      applyDefaultVisibleRange()
+      shouldResetVisibleRange = false
+    }
   } catch (error) {
     renderError.value = `量化图表渲染失败：${String(error)}`
     console.error(error)
@@ -668,7 +723,10 @@ function renderCharts() {
 
 watch(mainCandles, () => {
   updateAllSeries()
-  applyDefaultVisibleRange()
+  if (shouldResetVisibleRange && mainCandles.value.length) {
+    applyDefaultVisibleRange()
+    shouldResetVisibleRange = false
+  }
 })
 
 watch(emotionSeriesData, () => {
@@ -678,6 +736,18 @@ watch(emotionSeriesData, () => {
 watch(breadthSeriesData, () => {
   updateAllSeries()
 })
+
+watch(breadthCountSeriesData, () => {
+  updateAllSeries()
+})
+
+watch(
+  () => props.symbolCode,
+  () => {
+    hoveredTradeDate.value = null
+    shouldResetVisibleRange = true
+  },
+)
 
 watch(
   () => props.futuresBasisPoints,
@@ -739,7 +809,9 @@ onBeforeUnmount(() => {
   basisMainSeries = null
   basisMonthSeries = null
   breadthSeries = null
+  breadthCountSeries = null
   hoveredTradeDate.value = null
+  shouldResetVisibleRange = true
 })
 </script>
 
@@ -834,7 +906,10 @@ onBeforeUnmount(() => {
             <span class="quant-chart-detail">情绪 {{ formatMetric(activeIndicatorSnapshot.emotion) }}</span>
             <span class="quant-chart-detail">主连期现差 {{ formatMetric(activeIndicatorSnapshot.basis.main) }}</span>
             <span class="quant-chart-detail">月连期现差 {{ formatMetric(activeIndicatorSnapshot.basis.month) }}</span>
-            <span class="quant-chart-detail">上涨家数百分比 {{ formatMetric(activeIndicatorSnapshot.breadth) }}%</span>
+            <span class="quant-chart-detail">上涨家数百分比 {{ formatMetric(activeIndicatorSnapshot.breadth.pct) }}%</span>
+            <span class="quant-chart-detail">
+              上涨家数 {{ activeIndicatorSnapshot.breadth.upCount }}/{{ activeIndicatorSnapshot.breadth.totalCount }}
+            </span>
           </div>
         </div>
       </div>
@@ -922,14 +997,14 @@ onBeforeUnmount(() => {
 
     <div class="quant-panel">
       <div class="quant-panel-head">
-        <h3>上涨家数百分比</h3>
+        <h3>涨跌家数</h3>
         <div class="quant-legend">
           <span v-for="item in breadthLegend" :key="item.label" class="quant-legend-item">
             <i :style="{ background: item.color }"></i>{{ item.label }}
           </span>
         </div>
       </div>
-      <p v-if="breadthLoading" class="muted">上涨家数百分比加载中...</p>
+      <p v-if="breadthLoading" class="muted">涨跌家数加载中...</p>
       <p v-else-if="breadthErrorMessage" class="error">{{ breadthErrorMessage }}</p>
       <div ref="breadthContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>

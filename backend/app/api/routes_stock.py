@@ -10,6 +10,7 @@ from app.schemas.common import ApiResponse
 from app.schemas.stock import (
     CollectTaskPayload,
     DbStatusResponse,
+    IndexDashboardResponse,
     FuturesBasisPointResponse,
     IndexEmotionPointResponse,
     IndexBreadthPointResponse,
@@ -78,6 +79,24 @@ def get_index_breadth(db: Session = Depends(get_db)):
     service = QuantService(db)
     items = service.list_index_breadth()
     return ApiResponse(data=[IndexBreadthPointResponse.model_validate(item) for item in items])
+
+
+@router.get("/quant/index-dashboard", response_model=ApiResponse[IndexDashboardResponse])
+def get_index_dashboard(
+    index_code: str = Query(..., min_length=1),
+    mode: str = Query(default="recent"),
+    db: Session = Depends(get_db),
+):
+    service = QuantService(db)
+    try:
+        item = service.get_index_dashboard(index_code=index_code, mode=mode)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 400 if "mode" in detail else 404
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ApiResponse(data=IndexDashboardResponse.model_validate(item))
 
 
 @router.get("/quant/strategies", response_model=ApiResponse[list[QuantStrategyConfigResponse]])

@@ -1,38 +1,95 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { fetchSymbols } from '../api/stocks'
 import AppSidebar from '../components/AppSidebar.vue'
 import KlineChart from '../components/KlineChart.vue'
 import { useStockStore } from '../stores/stock'
+import type { StockSymbol } from '../types/stock'
 
 const stockStore = useStockStore()
-const { tsCode, searchKeyword, symbols, candles, loading, error } = storeToRefs(stockStore)
+const { tsCode, searchKeyword, candles, loading, error } = storeToRefs(stockStore)
 
 const showSuggestions = ref(false)
+const suggestionLoading = ref(false)
+const suggestions = ref<StockSymbol[]>([])
+const selectedStockName = ref('')
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+let latestSearchRequestId = 0
 
 const latestStockSnapshot = computed(() => (candles.value.length ? candles.value[candles.value.length - 1] : undefined))
-const selectedName = computed(() => stockStore.selectedSymbolName)
+const selectedName = computed(() => selectedStockName.value)
 
-const filteredSymbols = computed(() => {
-  const key = searchKeyword.value.trim().toLowerCase()
-  if (!key) return symbols.value.slice(0, 30)
-  return symbols.value
-    .filter((item) => item.ts_code.toLowerCase().includes(key) || item.stock_name.toLowerCase().includes(key))
-    .slice(0, 30)
-})
+async function loadSuggestions(keyword: string) {
+  const requestId = ++latestSearchRequestId
+  suggestionLoading.value = true
+  try {
+    const items = await fetchSymbols(30, keyword)
+    if (requestId !== latestSearchRequestId) {
+      return
+    }
+    suggestions.value = items
+  } finally {
+    if (requestId === latestSearchRequestId) {
+      suggestionLoading.value = false
+    }
+  }
+}
+
+function scheduleSuggestionSearch(keyword: string) {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+  }
+  searchTimer = setTimeout(() => {
+    void loadSuggestions(keyword)
+  }, 280)
+}
+
+function handleSearchFocus() {
+  showSuggestions.value = true
+  scheduleSuggestionSearch(searchKeyword.value.trim())
+}
+
+function handleSearchInput() {
+  showSuggestions.value = true
+  scheduleSuggestionSearch(searchKeyword.value.trim())
+}
+
+async function hydrateSelectedStockName() {
+  if (!tsCode.value) return
+  try {
+    const items = await fetchSymbols(10, tsCode.value)
+    const matched = items.find((item) => item.ts_code === tsCode.value)
+    if (matched) {
+      selectedStockName.value = matched.stock_name
+      searchKeyword.value = `${matched.ts_code} ${matched.stock_name}`
+    } else {
+      searchKeyword.value = tsCode.value
+    }
+  } catch {
+    searchKeyword.value = tsCode.value
+  }
+}
 
 async function pickSymbol(code: string, name: string) {
   tsCode.value = code
+  selectedStockName.value = name
   searchKeyword.value = `${code} ${name}`
   showSuggestions.value = false
+  suggestions.value = []
   await stockStore.loadKline()
 }
 
 onMounted(async () => {
   await stockStore.initializeStocksPage()
-  if (selectedName.value) {
-    searchKeyword.value = `${tsCode.value} ${selectedName.value}`
+  await hydrateSelectedStockName()
+})
+
+onBeforeUnmount(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
   }
 })
 </script>
@@ -60,18 +117,26 @@ onMounted(async () => {
                   v-model="searchKeyword"
                   class="input"
                   placeholder="输入股票代码或股票名称"
-                  @focus="showSuggestions = true"
-                  @input="showSuggestions = true"
+                  @focus="handleSearchFocus"
+                  @input="handleSearchInput"
                 />
                 <ul v-if="showSuggestions" class="suggest-list">
-                  <li
-                    v-for="item in filteredSymbols"
-                    :key="item.ts_code"
-                    @mousedown.prevent="pickSymbol(item.ts_code, item.stock_name)"
-                  >
-                    <span>{{ item.ts_code }}</span>
-                    <strong>{{ item.stock_name }}</strong>
+                  <li v-if="suggestionLoading">
+                    <span>搜索中...</span>
                   </li>
+                  <li v-else-if="!suggestions.length">
+                    <span>没有匹配结果</span>
+                  </li>
+                  <template v-else>
+                    <li
+                      v-for="item in suggestions"
+                      :key="item.ts_code"
+                      @mousedown.prevent="pickSymbol(item.ts_code, item.stock_name)"
+                    >
+                      <span>{{ item.ts_code }}</span>
+                      <strong>{{ item.stock_name }}</strong>
+                    </li>
+                  </template>
                 </ul>
               </div>
             </div>
@@ -79,7 +144,7 @@ onMounted(async () => {
 
           <div class="stock-content">
             <section v-if="latestStockSnapshot" class="card summary stock-summary">
-              <div class="symbol-head">{{ selectedName }}（{{ tsCode }}）</div>
+              <div class="symbol-head">{{ selectedName || '未命名股票' }}（{{ tsCode }}）</div>
               <div>
                 <div class="label">交易日期</div>
                 <div class="value">{{ latestStockSnapshot.trade_date }}</div>

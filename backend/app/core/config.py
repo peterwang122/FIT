@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     excel_index_emotion_name_column: str = "index_name"
     excel_index_emotion_value_column: str = "emotion_value"
 
+    quant_index_dashboard_table_name: str = "quant_index_dashboard_daily"
+    quant_index_dashboard_date_column: str = "trade_date"
+    quant_index_dashboard_code_column: str = "index_code"
+    quant_index_dashboard_name_column: str = "index_name"
+    quant_index_dashboard_emotion_column: str = "emotion_value"
+    quant_index_dashboard_main_basis_column: str = "main_basis"
+    quant_index_dashboard_month_basis_column: str = "month_basis"
+    quant_index_dashboard_breadth_up_count_column: str = "breadth_up_count"
+    quant_index_dashboard_breadth_total_count_column: str = "breadth_total_count"
+    quant_index_dashboard_breadth_up_pct_column: str = "breadth_up_pct"
+
     etf_basic_info_table_name: str = "etf_basic_info_sina"
     etf_basic_info_code_column: str = "etf_code"
     etf_basic_info_name_column: str = "etf_name"

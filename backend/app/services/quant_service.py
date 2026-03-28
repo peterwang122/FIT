@@ -1,12 +1,15 @@
+import json
 from bisect import bisect_right
 from collections import defaultdict
 from datetime import date
 from math import sqrt
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.redis_client import redis_client
 from app.models.quant_strategy_config import QuantStrategyConfig
 from app.services.stock_service import StockService
 
@@ -44,6 +47,11 @@ STOCK_STRATEGY_FILTER_KEYS = [
     "ma-3",
     "ma-4",
 ]
+INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
+INDEX_BREADTH_CACHE_TTL_SECONDS = 600
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v1"
+INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
+INDEX_DASHBOARD_RECENT_LIMIT = 750
 
 
 def _date_text(value: object) -> str:
@@ -213,16 +221,159 @@ class QuantService:
         self.db = db
         self.stock_service = StockService(db)
 
+    def _resolve_index_option(self, index_code: str) -> dict | None:
+        for item in self.stock_service.list_index_options():
+            if str(item.get("code", "")).strip() == index_code:
+                return item
+        return None
+
+    def _ensure_index_dashboard_table_ready(self) -> None:
+        bind = self.db.get_bind()
+        table_name = settings.quant_index_dashboard_table_name
+        if bind is None:
+            raise RuntimeError("database bind is unavailable")
+        if not inspect(bind).has_table(table_name):
+            raise RuntimeError(f"precomputed table `{table_name}` is not ready")
+
+    def _resolve_recent_index_start_date(self, index_code: str) -> date | None:
+        sql = text(
+            f"SELECT MIN(recent.trade_date) AS trade_date "
+            f"FROM ("
+            f"  SELECT `{settings.index_daily_date_column}` AS trade_date "
+            f"  FROM `{settings.index_daily_table_name}` "
+            f"  WHERE `{settings.index_daily_code_column}` = :index_code "
+            f"  ORDER BY `{settings.index_daily_date_column}` DESC "
+            f"  LIMIT {INDEX_DASHBOARD_RECENT_LIMIT}"
+            f") recent"
+        )
+        return self.db.execute(sql, {"index_code": index_code}).scalar()
+
+    def _load_index_dashboard_rows(self, index_code: str, start_date: date | None = None) -> list[dict]:
+        sql = (
+            f"SELECT "
+            f"`{settings.quant_index_dashboard_date_column}` AS trade_date, "
+            f"`{settings.quant_index_dashboard_emotion_column}` AS emotion_value, "
+            f"`{settings.quant_index_dashboard_main_basis_column}` AS main_basis, "
+            f"`{settings.quant_index_dashboard_month_basis_column}` AS month_basis, "
+            f"`{settings.quant_index_dashboard_breadth_up_count_column}` AS up_count, "
+            f"`{settings.quant_index_dashboard_breadth_total_count_column}` AS total_count, "
+            f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct "
+            f"FROM `{settings.quant_index_dashboard_table_name}` "
+            f"WHERE `{settings.quant_index_dashboard_code_column}` = :index_code"
+        )
+        params: dict[str, object] = {"index_code": index_code}
+        if start_date is not None:
+            sql += f" AND `{settings.quant_index_dashboard_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        sql += f" ORDER BY `{settings.quant_index_dashboard_date_column}` ASC"
+        return [dict(row) for row in self.db.execute(text(sql), params).mappings().all()]
+
+    def get_index_dashboard(self, index_code: str, mode: str = "recent") -> dict:
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in {"recent", "full"}:
+            raise ValueError("unsupported mode")
+
+        option = self._resolve_index_option(index_code)
+        if option is None:
+            raise ValueError("index not found")
+
+        cache_key = f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:{index_code}:{normalized_mode}"
+        cached = redis_client.get(cache_key)
+        if cached:
+            try:
+                payload = json.loads(cached)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                pass
+
+        start_date = self._resolve_recent_index_start_date(index_code) if normalized_mode == "recent" else None
+        candles = self.stock_service.list_index_daily_kline(index_code=index_code, start_date=start_date)
+
+        try:
+            self._ensure_index_dashboard_table_ready()
+            rows = self._load_index_dashboard_rows(index_code=index_code, start_date=start_date)
+        except SQLAlchemyError as exc:
+            raise RuntimeError("failed to load precomputed quant index dashboard data") from exc
+
+        result = {
+            "index": {"code": option["code"], "name": option["name"]},
+            "range_mode": normalized_mode,
+            "candles": candles,
+            "emotion_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "value": _to_float(row.get("emotion_value")) or 50.0,
+                }
+                for row in rows
+            ],
+            "basis_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "main_basis": _to_float(row.get("main_basis")) or 0.0,
+                    "month_basis": _to_float(row.get("month_basis")) or 0.0,
+                }
+                for row in rows
+            ],
+            "breadth_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "up_ratio_pct": _to_float(row.get("up_ratio_pct")) or 0.0,
+                    "up_count": int(row.get("up_count") or 0),
+                    "total_count": int(row.get("total_count") or 0),
+                }
+                for row in rows
+            ],
+        }
+        redis_client.set(
+            cache_key,
+            json.dumps(result, ensure_ascii=False, default=str),
+            ex=INDEX_DASHBOARD_CACHE_TTL_SECONDS,
+        )
+        return result
+
     def list_index_breadth(self) -> list[dict]:
+        cached = redis_client.get(INDEX_BREADTH_CACHE_KEY)
+        if cached:
+            try:
+                data = json.loads(cached)
+                if isinstance(data, list):
+                    return data
+            except json.JSONDecodeError:
+                pass
+
+        change_expr = (
+            f"COALESCE("
+            f"`{settings.stock_change_column}`, "
+            f"`{settings.stock_close_column}` - `{settings.stock_pre_close_column}`, "
+            f"`{settings.stock_latest_price_column}` - `{settings.stock_pre_close_column}`"
+            f")"
+        )
         hist_sql = text(
             f"SELECT "
-            f"`{settings.stock_date_column}` AS trade_date, "
-            f"SUM(CASE WHEN COALESCE(`{settings.stock_change_column}`, 0) > 0 THEN 1 ELSE 0 END) AS up_count, "
-            f"COUNT(*) AS total_count "
-            f"FROM `{settings.stock_table_name}` "
-            f"WHERE `{settings.stock_data_source_column}` = :hist_source "
-            f"GROUP BY `{settings.stock_date_column}` "
-            f"ORDER BY `{settings.stock_date_column}` ASC"
+            f"calendar.trade_date AS trade_date, "
+            f"SUM(CASE WHEN prev.`{settings.stock_close_column}` IS NOT NULL "
+            f"AND curr.`{settings.stock_close_column}` > prev.`{settings.stock_close_column}` THEN 1 ELSE 0 END) AS up_count, "
+            f"SUM(CASE WHEN prev.`{settings.stock_close_column}` IS NOT NULL THEN 1 ELSE 0 END) AS total_count "
+            f"FROM ("
+            f"  SELECT "
+            f"  trade_date, "
+            f"  LAG(trade_date) OVER (ORDER BY trade_date) AS prev_trade_date "
+            f"  FROM ("
+            f"    SELECT DISTINCT `{settings.stock_date_column}` AS trade_date "
+            f"    FROM `{settings.stock_table_name}` "
+            f"    WHERE `{settings.stock_data_source_column}` = :hist_source"
+            f"  ) distinct_dates"
+            f") calendar "
+            f"LEFT JOIN `{settings.stock_table_name}` curr "
+            f"  ON curr.`{settings.stock_date_column}` = calendar.trade_date "
+            f" AND curr.`{settings.stock_data_source_column}` = :hist_source "
+            f"LEFT JOIN `{settings.stock_table_name}` prev "
+            f"  ON prev.`{settings.stock_prefixed_code_column}` = curr.`{settings.stock_prefixed_code_column}` "
+            f" AND prev.`{settings.stock_date_column}` = calendar.prev_trade_date "
+            f" AND prev.`{settings.stock_data_source_column}` = :hist_source "
+            f"GROUP BY calendar.trade_date "
+            f"ORDER BY calendar.trade_date ASC"
         )
         rows_by_date = {
             row["trade_date"]: {
@@ -236,8 +387,8 @@ class QuantService:
         spot_sql = text(
             f"SELECT "
             f"`{settings.stock_date_column}` AS trade_date, "
-            f"SUM(CASE WHEN COALESCE(`{settings.stock_change_column}`, 0) > 0 THEN 1 ELSE 0 END) AS up_count, "
-            f"COUNT(*) AS total_count "
+            f"SUM(CASE WHEN {change_expr} > 0 THEN 1 ELSE 0 END) AS up_count, "
+            f"SUM(CASE WHEN {change_expr} IS NOT NULL THEN 1 ELSE 0 END) AS total_count "
             f"FROM `{settings.stock_table_name}` "
             f"WHERE `{settings.stock_data_source_column}` = :spot_source "
             f"GROUP BY `{settings.stock_date_column}` "
@@ -263,6 +414,11 @@ class QuantService:
                     "total_count": total_count,
                 }
             )
+        redis_client.set(
+            INDEX_BREADTH_CACHE_KEY,
+            json.dumps(result, ensure_ascii=False, default=str),
+            ex=INDEX_BREADTH_CACHE_TTL_SECONDS,
+        )
         return result
 
     def _build_emotion_value_by_date(self, symbol_name: str) -> dict[str, float]:

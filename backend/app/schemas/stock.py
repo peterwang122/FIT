@@ -112,6 +112,31 @@ class IndexBreadthPointResponse(BaseModel):
     total_count: int
 
 
+class IndexDashboardIndexResponse(BaseModel):
+    code: str
+    name: str
+
+
+class IndexDashboardEmotionPointResponse(BaseModel):
+    trade_date: date
+    value: float
+
+
+class IndexDashboardBasisPointResponse(BaseModel):
+    trade_date: date
+    main_basis: float
+    month_basis: float
+
+
+class IndexDashboardResponse(BaseModel):
+    index: IndexDashboardIndexResponse
+    range_mode: str
+    candles: list[StockCandle]
+    emotion_points: list[IndexDashboardEmotionPointResponse]
+    basis_points: list[IndexDashboardBasisPointResponse]
+    breadth_points: list[IndexBreadthPointResponse]
+
+
 class QfqCollectTaskPayload(BaseModel):
     ts_code: str
     start_date: date | None = None

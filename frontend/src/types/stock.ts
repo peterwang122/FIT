@@ -31,6 +31,11 @@ export interface IndexEmotionPoint {
   emotion_value: number
 }
 
+export interface IndexDashboardEmotionPoint {
+  trade_date: string
+  value: number
+}
+
 export interface FuturesBasisPoint {
   trade_date: string
   index_name: string
@@ -38,11 +43,29 @@ export interface FuturesBasisPoint {
   month_basis: number | null
 }
 
+export interface IndexDashboardBasisPoint {
+  trade_date: string
+  main_basis: number
+  month_basis: number
+}
+
 export interface IndexBreadthPoint {
   trade_date: string
   up_ratio_pct: number
   up_count: number
   total_count: number
+}
+
+export interface IndexDashboardResponse {
+  index: {
+    code: string
+    name: string
+  }
+  range_mode: 'recent' | 'full'
+  candles: KlineCandle[]
+  emotion_points: IndexDashboardEmotionPoint[]
+  basis_points: IndexDashboardBasisPoint[]
+  breadth_points: IndexBreadthPoint[]
 }
 
 export interface NetPositionRow {

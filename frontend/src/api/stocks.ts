@@ -1,6 +1,7 @@
 import { http } from './client'
 import type {
   DbStatus,
+  IndexDashboardResponse,
   FuturesBasisPoint,
   IndexBreadthPoint,
   IndexEmotionPoint,
@@ -63,6 +64,16 @@ export async function fetchIndexFuturesBasis() {
 
 export async function fetchIndexBreadth() {
   const { data } = await http.get<ApiResponse<IndexBreadthPoint[]>>('/stocks/quant/index-breadth')
+  return data.data
+}
+
+export async function fetchIndexDashboard(indexCode: string, mode: 'recent' | 'full' = 'recent') {
+  const { data } = await http.get<ApiResponse<IndexDashboardResponse>>('/stocks/quant/index-dashboard', {
+    params: {
+      index_code: indexCode,
+      mode,
+    },
+  })
   return data.data
 }
 

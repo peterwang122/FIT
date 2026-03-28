@@ -22,6 +22,9 @@ import type {
   StockSymbol,
 } from '../types/stock'
 
+const DEFAULT_FOREX_CODE = 'UDI'
+const DEFAULT_FOREX_NAME = '美元指数'
+
 function buildIdempotencyKey(tsCode: string): string {
   return `collect:${tsCode}:${new Date().toISOString().slice(0, 10)}`
 }
@@ -75,8 +78,13 @@ export const useStockStore = defineStore('stock', {
       }
     },
     ensureDefaultForexSelection() {
-      if (!this.forexOptions.find((item) => item.code === this.forexCode) && this.forexOptions.length > 0) {
-        this.forexCode = this.forexOptions[0].code
+      const preferredOption =
+        this.forexOptions.find((item) => item.code.toUpperCase() === DEFAULT_FOREX_CODE) ??
+        this.forexOptions.find((item) => item.name === DEFAULT_FOREX_NAME) ??
+        this.forexOptions[0]
+
+      if (!this.forexOptions.find((item) => item.code === this.forexCode) && preferredOption) {
+        this.forexCode = preferredOption.code
       }
     },
     async loadSymbols() {
@@ -107,7 +115,6 @@ export const useStockStore = defineStore('stock', {
     async initializeStocksPage() {
       this.error = ''
       try {
-        await this.loadSymbols()
         await this.loadKline()
       } catch (error) {
         this.error = `初始化失败：${String(error)}`

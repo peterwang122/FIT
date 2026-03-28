@@ -3,10 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import {
   createQuantStrategy,
-  fetchIndexBreadth,
-  fetchIndexEmotions,
-  fetchIndexFuturesBasis,
-  fetchIndexKline,
+  fetchIndexDashboard,
   fetchIndexOptions,
 } from '../api/stocks'
 import QuantIndexChart from '../components/QuantIndexChart.vue'
@@ -44,6 +41,7 @@ type QuantFilterColor = 'blue' | 'red'
 type QuantBollFilterOption = '' | 'boll-upper' | 'boll-middle' | 'boll-lower'
 
 const DEFAULT_INDEX_NAME = '上证指数'
+const CORE_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
 const FILTER_COLORS: QuantFilterColor[] = ['blue', 'red']
 const FILTER_GROUP_ORDER: QuantFilterGroupKey[] = ['emotion', 'basis', 'breadth', 'wr', 'macd', 'kdj']
 const FILTER_GROUP_TITLE: Record<QuantFilterGroupKey, string> = {
@@ -186,6 +184,7 @@ const emotionPoints = ref<IndexEmotionPoint[]>([])
 const futuresBasisPoints = ref<FuturesBasisPoint[]>([])
 const breadthPoints = ref<IndexBreadthPoint[]>([])
 const loading = ref(false)
+const fullLoading = ref(false)
 const booting = ref(true)
 const error = ref('')
 const emotionLoading = ref(false)
@@ -198,6 +197,7 @@ const saveName = ref('')
 const saveLoading = ref(false)
 const saveMessage = ref('')
 const saveError = ref('')
+let activeDashboardToken = 0
 
 const appliedParams = ref<QuantIndicatorParams>(cloneParams(DEFAULT_PARAMS))
 const appliedBlueFilters = ref<QuantFilterApplied>({})
@@ -386,35 +386,74 @@ function getBollValidationByColor(color: QuantFilterColor) {
 async function handleChartIndexSelect(nextCode: string) {
   if (!nextCode || nextCode === indexCode.value) return
   indexCode.value = nextCode
-  await loadSelectedIndexKline()
+  await loadDashboardForIndex(nextCode)
 }
-async function loadSelectedIndexKline() {
-  if (!indexCode.value) return
-  loading.value = true
-  error.value = ''
+function applyDashboardPayload(payload: Awaited<ReturnType<typeof fetchIndexDashboard>>) {
+  const basisIndexNames = payload.index.name === DEFAULT_INDEX_NAME ? [...CORE_INDEX_NAMES] : [payload.index.name]
+  indexCandles.value = payload.candles
+  emotionPoints.value = payload.emotion_points.flatMap((item) =>
+    basisIndexNames.map((indexName) => ({
+      emotion_date: item.trade_date,
+      index_name: indexName,
+      emotion_value: item.value,
+    })),
+  )
+  futuresBasisPoints.value = payload.basis_points.flatMap((item) =>
+    basisIndexNames.map((indexName) => ({
+      trade_date: item.trade_date,
+      index_name: indexName,
+      main_basis: item.main_basis,
+      month_basis: item.month_basis,
+    })),
+  )
+  breadthPoints.value = payload.breadth_points
+}
+
+async function loadFullDashboardForIndex(targetCode: string, token: number) {
+  fullLoading.value = true
   try {
-    indexCandles.value = await fetchIndexKline(indexCode.value)
+    const payload = await fetchIndexDashboard(targetCode, 'full')
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
+    applyDashboardPayload(payload)
   } catch (loadError) {
-    indexCandles.value = []
-    error.value = getErrorMessage(loadError)
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
+    console.error(loadError)
   } finally {
-    loading.value = false
+    if (token === activeDashboardToken && targetCode === indexCode.value) {
+      fullLoading.value = false
+    }
   }
 }
-async function loadEmotionPoints() {
-  emotionLoading.value = true
+
+async function loadDashboardForIndex(targetCode: string) {
+  if (!targetCode) return
+  const token = ++activeDashboardToken
+  loading.value = true
+  fullLoading.value = false
+  error.value = ''
   emotionError.value = ''
-  try { emotionPoints.value = await fetchIndexEmotions() } catch (loadError) { emotionPoints.value = []; emotionError.value = getErrorMessage(loadError) } finally { emotionLoading.value = false }
-}
-async function loadFuturesBasisPoints() {
-  futuresBasisLoading.value = true
   futuresBasisError.value = ''
-  try { futuresBasisPoints.value = await fetchIndexFuturesBasis() } catch (loadError) { futuresBasisPoints.value = []; futuresBasisError.value = getErrorMessage(loadError) } finally { futuresBasisLoading.value = false }
-}
-async function loadBreadthPoints() {
-  breadthLoading.value = true
   breadthError.value = ''
-  try { breadthPoints.value = await fetchIndexBreadth() } catch (loadError) { breadthPoints.value = []; breadthError.value = getErrorMessage(loadError) } finally { breadthLoading.value = false }
+  emotionLoading.value = false
+  futuresBasisLoading.value = false
+  breadthLoading.value = false
+  indexCandles.value = []
+  emotionPoints.value = []
+  futuresBasisPoints.value = []
+  breadthPoints.value = []
+  try {
+    const payload = await fetchIndexDashboard(targetCode, 'recent')
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
+    applyDashboardPayload(payload)
+    void loadFullDashboardForIndex(targetCode, token)
+  } catch (loadError) {
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
+    error.value = getErrorMessage(loadError)
+  } finally {
+    if (token === activeDashboardToken && targetCode === indexCode.value) {
+      loading.value = false
+    }
+  }
 }
 function applyParams() {
   if (validation.value.params) appliedParams.value = cloneParams(validation.value.params)
@@ -488,14 +527,14 @@ async function initializePage() {
   booting.value = true
   error.value = ''
   try {
-    const [options] = await Promise.all([fetchIndexOptions(), loadEmotionPoints(), loadFuturesBasisPoints(), loadBreadthPoints()])
+    const options = await fetchIndexOptions()
     indexOptions.value = options
     indexCode.value = (options.find((item) => item.name === DEFAULT_INDEX_NAME) ?? options[0])?.code ?? ''
     if (!indexCode.value) {
       error.value = '暂无可用的指数选项'
       return
     }
-    await loadSelectedIndexKline()
+    await loadDashboardForIndex(indexCode.value)
   } catch (loadError) {
     error.value = getErrorMessage(loadError)
   } finally {
