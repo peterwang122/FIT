@@ -23,6 +23,7 @@ const editingStrategy = ref<QuantStrategyConfig | null>(null)
 const equityCurve = ref<QuantEquityCurveResponse | null>(null)
 const loading = ref(false)
 const curveLoading = ref(false)
+const curveRequested = ref(false)
 const error = ref('')
 const saveMessage = ref('')
 
@@ -30,24 +31,31 @@ const signalColorOptions: Array<{ value: QuantSignalColor; label: string }> = [
   { value: 'blue', label: '蓝色' },
   { value: 'red', label: '红色' },
 ]
+
 const conflictModeOptions: Array<{ value: QuantConflictMode; label: string }> = [
   { value: 'sell_first', label: '紫色优先卖出' },
   { value: 'buy_first', label: '紫色优先买入' },
   { value: 'skip', label: '紫色跳过' },
 ]
+
 const executionModeOptions: Array<{ value: QuantExecutionPriceMode; label: string }> = [
   { value: 'next_open', label: '次日开盘价' },
   { value: 'next_close', label: '次日收盘价' },
+  { value: 'next_best', label: '次日最优' },
 ]
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
 
 function cloneStrategy(strategy: QuantStrategyConfig): QuantStrategyConfig {
   return {
     ...strategy,
-    indicator_params: structuredClone(strategy.indicator_params),
-    blue_filters: structuredClone(strategy.blue_filters),
-    red_filters: structuredClone(strategy.red_filters),
-    blue_boll_filter: structuredClone(strategy.blue_boll_filter),
-    red_boll_filter: structuredClone(strategy.red_boll_filter),
+    indicator_params: cloneJson(strategy.indicator_params),
+    blue_filters: cloneJson(strategy.blue_filters),
+    red_filters: cloneJson(strategy.red_filters),
+    blue_boll_filter: cloneJson(strategy.blue_boll_filter),
+    red_boll_filter: cloneJson(strategy.red_boll_filter),
   }
 }
 
@@ -79,11 +87,12 @@ async function loadStrategies(preferredId?: number | null) {
     strategies.value = await fetchQuantStrategies()
     const fallbackId = preferredId ?? selectedStrategyId.value ?? strategies.value[0]?.id ?? null
     if (fallbackId && strategies.value.some((item) => item.id === fallbackId)) {
-      await selectStrategy(fallbackId)
+      selectStrategy(fallbackId)
     } else {
       selectedStrategyId.value = null
       editingStrategy.value = null
       equityCurve.value = null
+      curveRequested.value = false
     }
   } catch (loadError) {
     error.value = loadError instanceof Error ? loadError.message : '策略加载失败'
@@ -94,6 +103,7 @@ async function loadStrategies(preferredId?: number | null) {
 
 async function loadEquityCurve(strategyId: number) {
   curveLoading.value = true
+  error.value = ''
   try {
     equityCurve.value = await fetchQuantStrategyEquityCurve(strategyId)
   } catch (loadError) {
@@ -104,25 +114,48 @@ async function loadEquityCurve(strategyId: number) {
   }
 }
 
-async function selectStrategy(strategyId: number) {
+function selectStrategy(strategyId: number) {
   const target = strategies.value.find((item) => item.id === strategyId)
   if (!target) return
   selectedStrategyId.value = strategyId
   editingStrategy.value = cloneStrategy(target)
-  await loadEquityCurve(strategyId)
+  equityCurve.value = null
+  curveRequested.value = false
+  curveLoading.value = false
+  saveMessage.value = ''
+  error.value = ''
 }
 
-async function saveStrategy() {
-  if (!editingStrategy.value) return
+async function persistStrategy(showSavedMessage = true) {
+  if (!editingStrategy.value) return null
   error.value = ''
-  saveMessage.value = ''
+  if (showSavedMessage) {
+    saveMessage.value = ''
+  }
   try {
     const updated = await updateQuantStrategy(editingStrategy.value.id, toPayload(editingStrategy.value))
     await loadStrategies(updated.id)
-    saveMessage.value = `已更新策略：${updated.name}`
+    if (showSavedMessage) {
+      saveMessage.value = `已更新策略：${updated.name}`
+    }
+    return updated
   } catch (saveError) {
     error.value = saveError instanceof Error ? saveError.message : '策略保存失败'
+    return null
   }
+}
+
+async function saveStrategy() {
+  await persistStrategy(true)
+}
+
+async function confirmAndLoadCurve() {
+  if (!editingStrategy.value) return
+  saveMessage.value = ''
+  const updated = await persistStrategy(false)
+  if (!updated) return
+  curveRequested.value = true
+  await loadEquityCurve(updated.id)
 }
 
 async function removeStrategy() {
@@ -133,6 +166,7 @@ async function removeStrategy() {
     const deletingId = editingStrategy.value.id
     await deleteQuantStrategy(deletingId)
     await loadStrategies(strategies.value.find((item) => item.id !== deletingId)?.id ?? null)
+    curveRequested.value = false
     saveMessage.value = '策略已删除'
   } catch (deleteError) {
     error.value = deleteError instanceof Error ? deleteError.message : '策略删除失败'
@@ -152,7 +186,7 @@ onMounted(() => {
       <div class="progress-section-head">
         <div class="progress-section-copy">
           <h3>已保存策略</h3>
-          <p class="muted">指数和股票页保存的筛选策略都会汇总在这里。</p>
+          <p class="muted">这里只加载策略列表；收益曲线会在你确认参数后单独计算。</p>
         </div>
       </div>
 
@@ -168,10 +202,10 @@ onMounted(() => {
         >
           <strong>{{ item.name }}</strong>
           <span>{{ item.strategy_type === 'index' ? '指数策略' : '股票策略' }} / {{ item.target_name }}</span>
-          <span>{{ item.updated_at ? item.updated_at.slice(0, 10) : '未更新时间' }}</span>
+          <span>{{ item.updated_at ? item.updated_at.slice(0, 10) : '暂无更新时间' }}</span>
         </button>
       </div>
-      <p v-else class="muted">当前还没有已保存的策略，请先去指数或股票页保存筛选条件。</p>
+      <p v-else class="muted">当前还没有已保存的策略，请先去指数或股票页面保存筛选条件。</p>
     </section>
 
     <section class="card progress-card progress-card-wide">
@@ -227,8 +261,8 @@ onMounted(() => {
         </div>
 
         <div class="progress-hero-actions">
-          <button class="btn primary" @click="saveStrategy">保存策略</button>
-          <button class="btn" @click="loadEquityCurve(editingStrategy.id)">刷新收益曲线</button>
+          <button class="btn" @click="saveStrategy">保存策略</button>
+          <button class="btn primary" :disabled="curveLoading" @click="confirmAndLoadCurve">确定并加载收益曲线</button>
           <button class="btn" @click="removeStrategy">删除策略</button>
         </div>
 
@@ -244,7 +278,11 @@ onMounted(() => {
             <div class="value">{{ equityCurve.annualized_return_pct.toFixed(2) }}%</div>
           </div>
           <div>
-            <div class="label">收益点数</div>
+            <div class="label">最大回撤</div>
+            <div class="value">{{ equityCurve.max_drawdown_pct.toFixed(2) }}%</div>
+          </div>
+          <div>
+            <div class="label">回测交易日数</div>
             <div class="value">{{ equityCurve.points.length }}</div>
           </div>
           <div>
@@ -253,13 +291,16 @@ onMounted(() => {
           </div>
         </div>
 
-        <StrategyEquityCurveChart :points="equityCurve?.points ?? []" :loading="curveLoading" />
+        <p v-if="!curveRequested && !curveLoading" class="muted">
+          当前只加载了策略配置。调整好选项后，点击“确定并加载收益曲线”再开始回测。
+        </p>
+        <StrategyEquityCurveChart v-else :points="equityCurve?.points ?? []" :loading="curveLoading" />
       </template>
 
       <template v-else>
         <div class="quant-stock-empty">
           <h3>策略存储和收益曲线</h3>
-          <p class="muted">从左侧选择一个已保存策略后，这里会展示交易规则和收益曲线。</p>
+          <p class="muted">从左侧选择一个已保存策略后，这里会显示交易规则和收益曲线。</p>
         </div>
       </template>
     </section>

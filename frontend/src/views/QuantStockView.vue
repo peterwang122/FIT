@@ -177,6 +177,11 @@ function parseOptionalNumber(label: string, rawValue: string) {
   return { value: parsed, error: '' }
 }
 
+function formatTurnoverRatePercent(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '-'
+  return (Number(value) * 100).toFixed(4).replace(/\.?0+$/, '')
+}
+
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : '加载失败'
 }
@@ -643,6 +648,10 @@ onBeforeUnmount(() => {
               <div>
                 <div class="label">成交量</div>
                 <div class="value">{{ latestStockSnapshot.vol }}</div>
+              </div>
+              <div>
+                <div class="label">换手率</div>
+                <div class="value">{{ formatTurnoverRatePercent(latestStockSnapshot.turnover_rate) }}%</div>
               </div>
             </section>
 

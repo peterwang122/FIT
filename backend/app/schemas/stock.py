@@ -14,6 +14,7 @@ class StockCandle(BaseModel):
     pct_chg: float = 0
     vol: float = 0
     amount: float = 0
+    turnover_rate: float = 0
     pe_ttm: float = 0
     pb: float = 0
     total_market_value: float = 0
@@ -196,4 +197,5 @@ class QuantEquityCurveResponse(BaseModel):
     strategy: QuantStrategyConfigResponse
     cumulative_return_pct: float
     annualized_return_pct: float
+    max_drawdown_pct: float
     points: list[QuantEquityCurvePointResponse]

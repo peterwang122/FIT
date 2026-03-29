@@ -708,6 +708,12 @@ class StockService:
         stock_code = self._resolve_stock_code(ts_code)
         if not stock_code:
             return []
+        table_columns = self.get_table_columns()
+        turnover_rate_expr = (
+            f"COALESCE(`{settings.stock_turnover_rate_column}`, 0)"
+            if settings.stock_turnover_rate_column in table_columns
+            else "0"
+        )
 
         params: dict[str, object] = {
             "stock_code": stock_code,
@@ -746,10 +752,11 @@ class StockService:
             f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
             f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
             f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
-            f"COALESCE(`{settings.stock_pe_ttm_column}`, 0) AS pe_ttm, "
-            f"COALESCE(`{settings.stock_pb_column}`, 0) AS pb, "
-            f"COALESCE(`{settings.stock_total_market_value_column}`, 0) AS total_market_value, "
-            f"COALESCE(`{settings.stock_circulating_market_value_column}`, 0) AS circulating_market_value "
+            f"{turnover_rate_expr} AS turnover_rate, "
+            f"0 AS pe_ttm, "
+            f"0 AS pb, "
+            f"0 AS total_market_value, "
+            f"0 AS circulating_market_value "
             f"FROM `{settings.stock_table_name}` "
             f"WHERE `{settings.stock_code_column}` = :stock_code "
             f"AND `{settings.stock_data_source_column}` = :hist_source"
@@ -773,10 +780,11 @@ class StockService:
                 f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
                 f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
                 f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
-                f"COALESCE(`{settings.stock_pe_ttm_column}`, 0) AS pe_ttm, "
-                f"COALESCE(`{settings.stock_pb_column}`, 0) AS pb, "
-                f"COALESCE(`{settings.stock_total_market_value_column}`, 0) AS total_market_value, "
-                f"COALESCE(`{settings.stock_circulating_market_value_column}`, 0) AS circulating_market_value "
+                f"{turnover_rate_expr} AS turnover_rate, "
+                f"0 AS pe_ttm, "
+                f"0 AS pb, "
+                f"0 AS total_market_value, "
+                f"0 AS circulating_market_value "
                 f"FROM `{settings.stock_table_name}` "
                 f"WHERE `{settings.stock_code_column}` = :stock_code "
                 f"AND `{settings.stock_data_source_column}` = :spot_source "
@@ -799,6 +807,7 @@ class StockService:
             "pct_chg",
             "vol",
             "amount",
+            "turnover_rate",
             "pe_ttm",
             "pb",
             "total_market_value",
@@ -823,11 +832,15 @@ class StockService:
             f"`{settings.stock_qfq_high_column}` AS high, "
             f"`{settings.stock_qfq_low_column}` AS low, "
             f"`{settings.stock_qfq_close_column}` AS close, "
-            f"0 AS pre_close, "
-            f"0 AS change_value, "
-            f"0 AS pct_chg, "
+            f"CASE "
+            f"WHEN `{settings.stock_qfq_change_column}` IS NULL THEN 0 "
+            f"ELSE COALESCE(`{settings.stock_qfq_close_column}`, 0) - COALESCE(`{settings.stock_qfq_change_column}`, 0) "
+            f"END AS pre_close, "
+            f"COALESCE(`{settings.stock_qfq_change_column}`, 0) AS change_value, "
+            f"COALESCE(`{settings.stock_qfq_pct_chg_column}`, 0) AS pct_chg, "
             f"COALESCE(`{settings.stock_qfq_vol_column}`, 0) AS vol, "
             f"COALESCE(`{settings.stock_qfq_amount_column}`, 0) AS amount, "
+            f"COALESCE(`{settings.stock_qfq_turnover_rate_column}`, 0) AS turnover_rate, "
             f"0 AS pe_ttm, "
             f"0 AS pb, "
             f"0 AS total_market_value, "
@@ -855,6 +868,7 @@ class StockService:
             "pct_chg",
             "vol",
             "amount",
+            "turnover_rate",
             "pe_ttm",
             "pb",
             "total_market_value",

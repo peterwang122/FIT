@@ -22,7 +22,7 @@ import type { KlineCandle } from '../types/stock'
 import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 import { buildStockQuantFilterDataset } from '../utils/quantIndicators'
 
-type PanelKey = 'main' | 'macd' | 'kdj' | 'wr'
+type PanelKey = 'main' | 'macd' | 'kdj' | 'wr' | 'turnover'
 type MainOverlayMode = 'ma' | 'boll'
 type AnySeries = ISeriesApi<SeriesType, Time>
 type LineSeriesApi = ISeriesApi<'Line', Time>
@@ -50,6 +50,7 @@ const mainContainerRef = ref<HTMLDivElement | null>(null)
 const macdContainerRef = ref<HTMLDivElement | null>(null)
 const kdjContainerRef = ref<HTMLDivElement | null>(null)
 const wrContainerRef = ref<HTMLDivElement | null>(null)
+const turnoverContainerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 const overlayMode = ref<MainOverlayMode>('ma')
 const hoveredTradeDate = ref<string | null>(null)
@@ -65,6 +66,7 @@ let macdDeaSeries: LineSeriesApi | null = null
 let macdHistogramSeries: HistogramSeriesApi | null = null
 let kdjSeriesRefs: LineSeriesApi[] = []
 let wrSeries: LineSeriesApi | null = null
+let turnoverSeries: LineSeriesApi | null = null
 let highlightBindings: Array<{ series: AnySeries; primitive: DateHighlightPrimitive }> = []
 let isSyncingRange = false
 let isSyncingCrosshair = false
@@ -90,6 +92,7 @@ const sortedCandles = computed(() =>
       low: Number(item.low),
       close: Number(item.close),
       pct_chg: Number(item.pct_chg),
+      turnover_rate: Number.isFinite(Number(item.turnover_rate)) ? Number(item.turnover_rate) * 100 : 0,
     }))
     .filter((item) => Number.isFinite(item.open) && Number.isFinite(item.high) && Number.isFinite(item.low) && Number.isFinite(item.close))
     .sort((left, right) => left.trade_date.localeCompare(right.trade_date)),
@@ -122,6 +125,7 @@ const kdjLegend = computed(() => [
   { label: indicatorPayload.value.kdj.j.label, color: indicatorPayload.value.kdj.j.color },
 ])
 const wrLegend = computed(() => [{ label: indicatorPayload.value.wr.label, color: indicatorPayload.value.wr.color }])
+const turnoverLegend = computed(() => [{ label: '换手率', color: '#ec4899' }])
 
 function formatMetric(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
@@ -202,6 +206,7 @@ const activeIndicatorSnapshot = computed(() => {
       j: maps.kdj.j.get(tradeDate),
     },
     wr: maps.wr.get(tradeDate),
+    turnover: candleSnapshotMap.value.get(tradeDate)?.turnover_rate,
   }
 })
 
@@ -246,7 +251,7 @@ function syncVisibleRange(sourceKey: PanelKey, range: LogicalRange | null) {
   if (!range || isSyncingRange) return
   isSyncingRange = true
   try {
-    ;(['main', 'macd', 'kdj', 'wr'] as PanelKey[]).forEach((panelKey) => {
+    ;(['main', 'macd', 'kdj', 'wr', 'turnover'] as PanelKey[]).forEach((panelKey) => {
       if (panelKey !== sourceKey) charts[panelKey]?.timeScale().setVisibleLogicalRange(range)
     })
   } finally {
@@ -260,7 +265,7 @@ function syncCrosshair(sourceKey: PanelKey, param: MouseEventParams<Time>) {
   isSyncingCrosshair = true
   try {
     const time = param.time ? String(param.time) : null
-    ;(['main', 'macd', 'kdj', 'wr'] as PanelKey[]).forEach((panelKey) => {
+    ;(['main', 'macd', 'kdj', 'wr', 'turnover'] as PanelKey[]).forEach((panelKey) => {
       if (panelKey === sourceKey) return
       const chart = charts[panelKey]
       const series = primarySeriesMap.get(panelKey)
@@ -323,7 +328,7 @@ function syncHighlightBindings() {
 }
 
 function updateAllSeries() {
-  if (!mainCandleSeries || !macdDifSeries || !macdDeaSeries || !macdHistogramSeries || !wrSeries || !kdjSeriesRefs.length) return
+  if (!mainCandleSeries || !macdDifSeries || !macdDeaSeries || !macdHistogramSeries || !wrSeries || !turnoverSeries || !kdjSeriesRefs.length) return
   const payload = indicatorPayload.value
   mainCandleSeries.setData(mainCandles.value)
   if (overlayMode.value === 'boll') {
@@ -342,21 +347,29 @@ function updateAllSeries() {
   kdjSeriesRefs[1]?.setData(toLineData(payload.kdj.d.data))
   kdjSeriesRefs[2]?.setData(toLineData(payload.kdj.j.data))
   wrSeries.setData(toLineData(payload.wr.data))
+  turnoverSeries.setData(
+    sortedCandles.value.map((item) => ({
+      time: item.trade_date as Time,
+      value: item.turnover_rate,
+    })),
+  )
 
   panelValueMaps.set('main', new Map(sortedCandles.value.map((item) => [item.trade_date, item.close])))
   panelValueMaps.set('macd', buildValueMap(payload.macd.dif.data))
   panelValueMaps.set('kdj', buildValueMap(payload.kdj.k.data))
   panelValueMaps.set('wr', buildValueMap(payload.wr.data))
+  panelValueMaps.set('turnover', new Map(sortedCandles.value.map((item) => [item.trade_date, item.turnover_rate])))
 }
 
 function renderCharts() {
-  if (!mainContainerRef.value || !macdContainerRef.value || !kdjContainerRef.value || !wrContainerRef.value) return
+  if (!mainContainerRef.value || !macdContainerRef.value || !kdjContainerRef.value || !wrContainerRef.value || !turnoverContainerRef.value) return
   try {
     renderError.value = ''
     charts.main = createBaseChart(mainContainerRef.value, false)
     charts.macd = createBaseChart(macdContainerRef.value, false)
     charts.kdj = createBaseChart(kdjContainerRef.value, false)
-    charts.wr = createBaseChart(wrContainerRef.value, true)
+    charts.wr = createBaseChart(wrContainerRef.value, false)
+    charts.turnover = createBaseChart(turnoverContainerRef.value, true)
 
     mainCandleSeries = addCandles(charts.main)
     mainMaSeries = indicatorPayload.value.ma.map((item) => addLineSeries(charts.main!, item.color, 2))
@@ -374,13 +387,15 @@ function renderCharts() {
       addLineSeries(charts.kdj, indicatorPayload.value.kdj.j.color, 2),
     ]
     wrSeries = addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2)
+    turnoverSeries = addLineSeries(charts.turnover, '#ec4899', 2)
 
     primarySeriesMap.set('main', mainCandleSeries)
     primarySeriesMap.set('macd', macdDifSeries)
     primarySeriesMap.set('kdj', kdjSeriesRefs[0])
     primarySeriesMap.set('wr', wrSeries)
+    primarySeriesMap.set('turnover', turnoverSeries)
 
-    ;(['main', 'macd', 'kdj', 'wr'] as PanelKey[]).forEach((panelKey) => {
+    ;(['main', 'macd', 'kdj', 'wr', 'turnover'] as PanelKey[]).forEach((panelKey) => {
       const chart = charts[panelKey]
       if (chart) attachSync(panelKey, chart)
     })
@@ -390,6 +405,7 @@ function renderCharts() {
     attachHighlightPrimitive(macdDifSeries)
     attachHighlightPrimitive(kdjSeriesRefs[0] ?? null)
     attachHighlightPrimitive(wrSeries)
+    attachHighlightPrimitive(turnoverSeries)
 
     updateAllSeries()
     syncHighlightBindings()
@@ -431,7 +447,7 @@ onBeforeUnmount(() => {
   unsubs.forEach((dispose) => dispose())
   unsubs = []
   cleanupHighlightBindings()
-  ;(['main', 'macd', 'kdj', 'wr'] as PanelKey[]).forEach((panelKey) => {
+  ;(['main', 'macd', 'kdj', 'wr', 'turnover'] as PanelKey[]).forEach((panelKey) => {
     charts[panelKey]?.remove()
     delete charts[panelKey]
   })
@@ -445,6 +461,7 @@ onBeforeUnmount(() => {
   macdHistogramSeries = null
   kdjSeriesRefs = []
   wrSeries = null
+  turnoverSeries = null
 })
 </script>
 
@@ -503,6 +520,12 @@ onBeforeUnmount(() => {
             <span class="quant-chart-detail">WR {{ formatMetric(activeIndicatorSnapshot.wr) }}</span>
           </div>
         </div>
+        <div class="quant-detail-card">
+          <h4>换手率</h4>
+          <div class="quant-detail-list">
+            <span class="quant-chart-detail">换手率 {{ formatMetric(activeIndicatorSnapshot.turnover) }}%</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -548,6 +571,16 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div ref="wrContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>换手率</h3>
+        <div class="quant-legend">
+          <span v-for="item in turnoverLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span>
+        </div>
+      </div>
+      <div ref="turnoverContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
   </section>
 </template>

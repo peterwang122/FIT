@@ -438,6 +438,28 @@ class QuantService:
             grouped[trade_date].append(emotion_value)
         return {trade_date: sum(values) / len(values) for trade_date, values in grouped.items() if values}
 
+    def _load_precomputed_index_indicator_rows(self, symbol_name: str) -> list[dict]:
+        try:
+            self._ensure_index_dashboard_table_ready()
+        except RuntimeError:
+            return []
+
+        sql = text(
+            f"SELECT "
+            f"`{settings.quant_index_dashboard_date_column}` AS trade_date, "
+            f"`{settings.quant_index_dashboard_emotion_column}` AS emotion_value, "
+            f"`{settings.quant_index_dashboard_main_basis_column}` AS main_basis, "
+            f"`{settings.quant_index_dashboard_month_basis_column}` AS month_basis, "
+            f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct "
+            f"FROM `{settings.quant_index_dashboard_table_name}` "
+            f"WHERE `{settings.quant_index_dashboard_name_column}` = :index_name "
+            f"ORDER BY `{settings.quant_index_dashboard_date_column}` ASC"
+        )
+        try:
+            return [dict(row) for row in self.db.execute(sql, {"index_name": symbol_name}).mappings().all()]
+        except SQLAlchemyError:
+            return []
+
     def _build_basis_value_by_date(self, symbol_name: str) -> tuple[dict[str, float], dict[str, float]]:
         rows = self.stock_service.list_index_futures_basis()
         grouped_main: dict[str, list[float]] = defaultdict(list)
@@ -461,6 +483,12 @@ class QuantService:
             trade_date: sum(values) / len(values) for trade_date, values in grouped_month.items() if values
         }
         return main_map, month_map
+
+    def _build_breadth_value_by_date(self) -> dict[str, float]:
+        return {
+            _date_text(item["trade_date"]): float(item["up_ratio_pct"])
+            for item in self.list_index_breadth()
+        }
 
     def _build_index_snapshots(self, symbol_name: str, params: dict, candles: list[dict]) -> list[dict]:
         sorted_candles = _sort_candles(candles)
@@ -501,11 +529,28 @@ class QuantService:
             int(kdj_params.get("dSmoothing", 3)),
         )
         wr_values = _calc_wr(sorted_candles, int(wr_params.get("period", 14)))
-        emotion_map = self._build_emotion_value_by_date(symbol_name)
-        basis_main_map, basis_month_map = self._build_basis_value_by_date(symbol_name)
-        breadth_map = {
-            _date_text(item["trade_date"]): float(item["up_ratio_pct"]) for item in self.list_index_breadth()
-        }
+        precomputed_rows = self._load_precomputed_index_indicator_rows(symbol_name)
+        if precomputed_rows:
+            emotion_map = {
+                _date_text(item["trade_date"]): _to_float(item.get("emotion_value")) or 50.0
+                for item in precomputed_rows
+            }
+            basis_main_map = {
+                _date_text(item["trade_date"]): _to_float(item.get("main_basis")) or 0.0
+                for item in precomputed_rows
+            }
+            basis_month_map = {
+                _date_text(item["trade_date"]): _to_float(item.get("month_basis")) or 0.0
+                for item in precomputed_rows
+            }
+            breadth_map = {
+                _date_text(item["trade_date"]): _to_float(item.get("up_ratio_pct")) or 0.0
+                for item in precomputed_rows
+            }
+        else:
+            emotion_map = self._build_emotion_value_by_date(symbol_name)
+            basis_main_map, basis_month_map = self._build_basis_value_by_date(symbol_name)
+            breadth_map = self._build_breadth_value_by_date()
 
         snapshots: list[dict] = []
         for index, trade_date in enumerate(times):
@@ -760,7 +805,9 @@ class QuantService:
             f"SELECT "
             f"`{settings.etf_daily_date_column}` AS trade_date, "
             f"`{settings.etf_daily_open_column}` AS open, "
-            f"`{settings.etf_daily_close_column}` AS close "
+            f"`{settings.etf_daily_close_column}` AS close, "
+            f"`{settings.etf_daily_high_column}` AS high, "
+            f"`{settings.etf_daily_low_column}` AS low "
             f"FROM `{settings.etf_daily_table_name}` "
             f"WHERE `{settings.etf_daily_code_column}` = :etf_code "
             f"AND `{settings.etf_daily_data_source_column}` = :hist_source "
@@ -771,9 +818,15 @@ class QuantService:
                 "trade_date": row["trade_date"],
                 "open": float(row["open"]),
                 "close": float(row["close"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
             }
             for row in self.db.execute(hist_sql, params).mappings().all()
-            if row.get("trade_date") is not None and row.get("open") is not None and row.get("close") is not None
+            if row.get("trade_date") is not None
+            and row.get("open") is not None
+            and row.get("close") is not None
+            and row.get("high") is not None
+            and row.get("low") is not None
         }
 
         latest_spot_date_sql = text(
@@ -788,7 +841,9 @@ class QuantService:
                 f"SELECT "
                 f"`{settings.etf_daily_date_column}` AS trade_date, "
                 f"`{settings.etf_daily_open_column}` AS open, "
-                f"`{settings.etf_daily_close_column}` AS close "
+                f"`{settings.etf_daily_close_column}` AS close, "
+                f"`{settings.etf_daily_high_column}` AS high, "
+                f"`{settings.etf_daily_low_column}` AS low "
                 f"FROM `{settings.etf_daily_table_name}` "
                 f"WHERE `{settings.etf_daily_code_column}` = :etf_code "
                 f"AND `{settings.etf_daily_data_source_column}` = :spot_source "
@@ -796,11 +851,19 @@ class QuantService:
                 f"LIMIT 1"
             )
             spot_row = self.db.execute(spot_sql, {**params, "latest_spot_date": latest_spot_date}).mappings().first()
-            if spot_row and spot_row.get("open") is not None and spot_row.get("close") is not None:
+            if (
+                spot_row
+                and spot_row.get("open") is not None
+                and spot_row.get("close") is not None
+                and spot_row.get("high") is not None
+                and spot_row.get("low") is not None
+            ):
                 rows_by_date[spot_row["trade_date"]] = {
                     "trade_date": spot_row["trade_date"],
                     "open": float(spot_row["open"]),
                     "close": float(spot_row["close"]),
+                    "high": float(spot_row["high"]),
+                    "low": float(spot_row["low"]),
                 }
 
         return [rows_by_date[key] for key in sorted(rows_by_date.keys())]
@@ -841,9 +904,15 @@ class QuantService:
                     "trade_date": item["trade_date"],
                     "open": float(item["open"]),
                     "close": float(item["close"]),
+                    "high": float(item["high"]),
+                    "low": float(item["low"]),
                 }
                 for item in sorted(signal_candles, key=lambda row: _date_text(row.get("trade_date")))
-                if item.get("trade_date") is not None and item.get("open") is not None and item.get("close") is not None
+                if item.get("trade_date") is not None
+                and item.get("open") is not None
+                and item.get("close") is not None
+                and item.get("high") is not None
+                and item.get("low") is not None
             ]
 
         if not price_rows:
@@ -851,6 +920,7 @@ class QuantService:
                 "strategy": self._serialize_strategy(strategy),
                 "cumulative_return_pct": 0.0,
                 "annualized_return_pct": 0.0,
+                "max_drawdown_pct": 0.0,
                 "points": [],
             }
 
@@ -862,6 +932,7 @@ class QuantService:
                 "strategy": self._serialize_strategy(strategy),
                 "cumulative_return_pct": 0.0,
                 "annualized_return_pct": 0.0,
+                "max_drawdown_pct": 0.0,
                 "points": [],
             }
 
@@ -888,7 +959,14 @@ class QuantService:
         for row in filtered_prices:
             trade_date = _date_text(row["trade_date"])
             action = pending_actions.get(trade_date)
-            exec_price = float(row["open"] if execution_price_mode == "next_open" else row["close"])
+            if execution_price_mode == "next_open":
+                exec_price = float(row["open"])
+            elif execution_price_mode == "next_close":
+                exec_price = float(row["close"])
+            elif execution_price_mode == "next_best":
+                exec_price = float(row["low"] if action == "buy" else row["high"])
+            else:
+                exec_price = float(row["open"])
             if action == "buy" and exec_price > 0:
                 invest_cash = cash * buy_ratio
                 shares += invest_cash / exec_price
@@ -912,6 +990,14 @@ class QuantService:
             )
 
         cumulative_return_pct = (points[-1]["nav"] - 1) * 100 if points else 0.0
+        peak_nav = 0.0
+        max_drawdown_pct = 0.0
+        for point in points:
+            nav = float(point["nav"])
+            peak_nav = max(peak_nav, nav)
+            if peak_nav > 0:
+                drawdown_pct = (peak_nav - nav) / peak_nav * 100
+                max_drawdown_pct = max(max_drawdown_pct, drawdown_pct)
         start_dt = filtered_prices[0]["trade_date"]
         end_dt = filtered_prices[-1]["trade_date"]
         days_span = max((end_dt - start_dt).days, 0)
@@ -924,5 +1010,6 @@ class QuantService:
             "strategy": self._serialize_strategy(strategy),
             "cumulative_return_pct": cumulative_return_pct,
             "annualized_return_pct": annualized_return_pct,
+            "max_drawdown_pct": max_drawdown_pct,
             "points": points,
         }

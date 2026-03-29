@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -32,6 +32,23 @@ from app.tasks.collector import collect_stock_data, collect_stock_qfq_data
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
+
+
+def _serialize_task_result(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, BaseException):
+        return {
+            "type": value.__class__.__name__,
+            "message": str(value),
+        }
+    if isinstance(value, dict):
+        return {str(key): _serialize_task_result(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_serialize_task_result(item) for item in value]
+    return str(value)
 
 
 @router.get("/db-status", response_model=ApiResponse[DbStatusResponse])
@@ -272,7 +289,8 @@ def collect_task_status(task_id: str):
         data={
             "task_id": task_id,
             "state": result.state,
-            "result": result.result if result.ready() else None,
+            "result": _serialize_task_result(result.result) if result.ready() else None,
+            "traceback": result.traceback if result.failed() else None,
         }
     )
 
@@ -284,6 +302,7 @@ def qfq_collect_task_status(task_id: str):
         data={
             "task_id": task_id,
             "state": result.state,
-            "result": result.result if result.ready() else None,
+            "result": _serialize_task_result(result.result) if result.ready() else None,
+            "traceback": result.traceback if result.failed() else None,
         }
     )

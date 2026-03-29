@@ -16,6 +16,18 @@ def _stock_temp_lock_key(stock_code: str, start_date: str | None, end_date: str 
     return f"stock-temp:lock:{stock_code}:{start_date or '-'}:{end_date or '-'}"
 
 
+def _raise_with_response_detail(response: httpx.Response) -> None:
+    body_text = ""
+    try:
+        body_text = response.text.strip()
+    except Exception:
+        body_text = ""
+    detail = f"upstream returned {response.status_code}"
+    if body_text:
+        detail += f", body={body_text[:1000]}"
+    raise httpx.HTTPStatusError(detail, request=response.request, response=response)
+
+
 @celery_app.task(
     bind=True,
     name="tasks.collect_stock_data",
@@ -50,7 +62,11 @@ def collect_stock_data(
     }
 
     try:
-        with httpx.Client(base_url=settings.collector_base_url, timeout=settings.collector_timeout_seconds) as client:
+        with httpx.Client(
+            base_url=settings.collector_base_url,
+            timeout=settings.collector_timeout_seconds,
+            trust_env=False,
+        ) as client:
             response = client.post("/collect/stock-data", json=payload)
             response.raise_for_status()
             return {
@@ -99,9 +115,11 @@ def collect_stock_qfq_data(
         with httpx.Client(
             base_url=settings.stock_temp_service_base_url,
             timeout=settings.stock_temp_service_timeout_seconds,
+            trust_env=False,
         ) as client:
             response = client.post("/collect", json=payload)
-            response.raise_for_status()
+            if response.is_error:
+                _raise_with_response_detail(response)
             response_json = response.json()
             upstream_status = str(response_json.get("status", "")).upper()
             if upstream_status not in {"SUCCESS", "UNCHANGED"}:

@@ -137,7 +137,7 @@ export interface QuantFilterDataset {
 }
 
 export type QuantStrategyType = 'index' | 'stock'
-export type QuantExecutionPriceMode = 'next_open' | 'next_close'
+export type QuantExecutionPriceMode = 'next_open' | 'next_close' | 'next_best'
 export type QuantConflictMode = 'sell_first' | 'buy_first' | 'skip'
 export type QuantSignalColor = 'blue' | 'red'
 export type QuantBollFilterKey = 'boll-upper' | 'boll-middle' | 'boll-lower'
@@ -200,5 +200,6 @@ export interface QuantEquityCurveResponse {
   strategy: QuantStrategyConfig
   cumulative_return_pct: number
   annualized_return_pct: number
+  max_drawdown_pct: number
   points: QuantEquityCurvePoint[]
 }

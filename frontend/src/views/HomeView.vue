@@ -192,7 +192,7 @@ onMounted(async () => {
               :candles="indexCandles"
               :symbol-name="selectedIndexName"
               :symbol-code="indexCode"
-              :default-visible-days="30"
+              :default-visible-days="120"
               height="100%"
             />
           </section>
@@ -240,7 +240,7 @@ onMounted(async () => {
               :candles="forexCandles"
               :symbol-name="selectedForexName"
               :symbol-code="forexCode"
-              :default-visible-days="30"
+              :default-visible-days="90"
               height="100%"
             />
           </section>

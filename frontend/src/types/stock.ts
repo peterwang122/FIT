@@ -9,6 +9,7 @@ export interface KlineCandle {
   pct_chg: number
   vol: number
   amount: number
+  turnover_rate: number
   pe_ttm: number
   pb: number
   total_market_value: number
