@@ -9,7 +9,7 @@ const route = useRoute()
 const tabs = [
   { key: 'index', label: '指数', to: '/quant/index' },
   { key: 'stock', label: '股票', to: '/quant/stock' },
-  { key: 'strategies', label: '策略存储和收益曲线', to: '/quant/strategies' },
+  { key: 'strategies', label: '策略回测', to: '/quant/strategies' },
 ]
 
 const activeTab = computed(() => {
@@ -27,8 +27,8 @@ const activeTab = computed(() => {
       <section class="card quant-toolbar-card">
         <div class="quant-page-head">
           <div>
-            <h2>量化展示</h2>
-            <p class="muted">按指数、股票和策略存储三个子模块组织量化数据与信号。</p>
+            <h2>量化分析</h2>
+            <p class="muted">按指数、股票和策略回测三个子模块组织量化数据与信号。</p>
           </div>
         </div>
 

@@ -51,7 +51,10 @@ function cloneJson<T>(value: T): T {
 function cloneStrategy(strategy: QuantStrategyConfig): QuantStrategyConfig {
   return {
     ...strategy,
+    notes: strategy.notes ?? '',
     indicator_params: cloneJson(strategy.indicator_params),
+    blue_filter_groups: cloneJson(strategy.blue_filter_groups),
+    red_filter_groups: cloneJson(strategy.red_filter_groups),
     blue_filters: cloneJson(strategy.blue_filters),
     red_filters: cloneJson(strategy.red_filters),
     blue_boll_filter: cloneJson(strategy.blue_boll_filter),
@@ -62,10 +65,13 @@ function cloneStrategy(strategy: QuantStrategyConfig): QuantStrategyConfig {
 function toPayload(strategy: QuantStrategyConfig): QuantStrategyPayload {
   return {
     name: strategy.name,
+    notes: strategy.notes ?? '',
     strategy_type: strategy.strategy_type,
     target_code: strategy.target_code,
     target_name: strategy.target_name,
     indicator_params: strategy.indicator_params,
+    blue_filter_groups: strategy.blue_filter_groups,
+    red_filter_groups: strategy.red_filter_groups,
     blue_filters: strategy.blue_filters,
     red_filters: strategy.red_filters,
     blue_boll_filter: strategy.blue_boll_filter,
@@ -222,6 +228,14 @@ onMounted(() => {
             <span class="quant-field-label">策略名称</span>
             <input v-model="editingStrategy.name" class="input" />
           </label>
+          <label class="quant-field quant-field-full">
+            <span class="quant-field-label">策略备注</span>
+            <textarea
+              v-model="editingStrategy.notes"
+              class="input progress-textarea progress-textarea-compact"
+              placeholder="这里可以记录这条策略的思路、适用场景或注意事项。"
+            />
+          </label>
           <label class="quant-field">
             <span class="quant-field-label">买入信号颜色</span>
             <select v-model="editingStrategy.signal_buy_color" class="input">
@@ -299,7 +313,7 @@ onMounted(() => {
 
       <template v-else>
         <div class="quant-stock-empty">
-          <h3>策略存储和收益曲线</h3>
+          <h3>策略回测</h3>
           <p class="muted">从左侧选择一个已保存策略后，这里会显示交易规则和收益曲线。</p>
         </div>
       </template>

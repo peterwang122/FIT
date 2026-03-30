@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StockCandle(BaseModel):
@@ -146,14 +146,17 @@ class QfqCollectTaskPayload(BaseModel):
 
 class QuantStrategySavePayload(BaseModel):
     name: str
+    notes: str = ""
     strategy_type: str
     target_code: str
     target_name: str
     indicator_params: dict
-    blue_filters: dict = {}
-    red_filters: dict = {}
-    blue_boll_filter: dict = {}
-    red_boll_filter: dict = {}
+    blue_filter_groups: list[dict] = Field(default_factory=list)
+    red_filter_groups: list[dict] = Field(default_factory=list)
+    blue_filters: dict = Field(default_factory=dict)
+    red_filters: dict = Field(default_factory=dict)
+    blue_boll_filter: dict = Field(default_factory=dict)
+    red_boll_filter: dict = Field(default_factory=dict)
     signal_buy_color: str = "blue"
     signal_sell_color: str = "red"
     purple_conflict_mode: str = "sell_first"
@@ -166,10 +169,13 @@ class QuantStrategySavePayload(BaseModel):
 class QuantStrategyConfigResponse(BaseModel):
     id: int
     name: str
+    notes: str = ""
     strategy_type: str
     target_code: str
     target_name: str
     indicator_params: dict
+    blue_filter_groups: list[dict] = Field(default_factory=list)
+    red_filter_groups: list[dict] = Field(default_factory=list)
     blue_filters: dict
     red_filters: dict
     blue_boll_filter: dict

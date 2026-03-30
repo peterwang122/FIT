@@ -35,6 +35,8 @@ INDEX_STRATEGY_FILTER_KEYS = [
     "kdj-j",
 ]
 STOCK_STRATEGY_FILTER_KEYS = [
+    "turnover-rate",
+    "rsi",
     "wr",
     "macd-dif",
     "macd-dea",
@@ -86,6 +88,7 @@ def _sort_candles(candles: list[dict]) -> list[dict]:
                 "low": low_price,
                 "close": close_price,
                 "pct_chg": _to_float(item.get("pct_chg")) or 0.0,
+                "turnover_rate": _to_float(item.get("turnover_rate")),
             }
         )
     return sorted(normalized, key=lambda item: item["trade_date"])
@@ -200,6 +203,35 @@ def _calc_wr(candles: list[dict], period: int) -> list[float | None]:
         lowest_low = min(item["low"] for item in window)
         denominator = highest_high - lowest_low
         result[index] = 0.0 if denominator == 0 else ((highest_high - candles[index]["close"]) / denominator) * 100
+    return result
+
+
+def _calc_rsi(values: list[float], period: int) -> list[float | None]:
+    result: list[float | None] = [None] * len(values)
+    if len(values) <= period:
+        return result
+
+    gain_sum = 0.0
+    loss_sum = 0.0
+    for index in range(1, period + 1):
+        change = values[index] - values[index - 1]
+        if change >= 0:
+            gain_sum += change
+        else:
+            loss_sum += abs(change)
+
+    average_gain = gain_sum / period
+    average_loss = loss_sum / period
+    result[period] = 100.0 if average_loss == 0 else 100 - 100 / (1 + average_gain / average_loss)
+
+    for index in range(period + 1, len(values)):
+        change = values[index] - values[index - 1]
+        gain = change if change > 0 else 0.0
+        loss = abs(change) if change < 0 else 0.0
+        average_gain = (average_gain * (period - 1) + gain) / period
+        average_loss = (average_loss * (period - 1) + loss) / period
+        result[index] = 100.0 if average_loss == 0 else 100 - 100 / (1 + average_gain / average_loss)
+
     return result
 
 
@@ -501,6 +533,7 @@ class QuantService:
         macd_params = params.get("macd", {})
         kdj_params = params.get("kdj", {})
         wr_params = params.get("wr", {})
+        rsi_params = params.get("rsi", {})
         boll_params = params.get("boll", {})
         boll_period = int(boll_params.get("period", 20))
         boll_multiplier = float(boll_params.get("multiplier", 2))
@@ -529,6 +562,7 @@ class QuantService:
             int(kdj_params.get("dSmoothing", 3)),
         )
         wr_values = _calc_wr(sorted_candles, int(wr_params.get("period", 14)))
+        rsi_values = _calc_rsi(closes, int(rsi_params.get("period", 14)))
         precomputed_rows = self._load_precomputed_index_indicator_rows(symbol_name)
         if precomputed_rows:
             emotion_map = {
@@ -558,6 +592,8 @@ class QuantService:
                 {
                     "trade_date": trade_date,
                     "close": closes[index],
+                    "high": sorted_candles[index]["high"],
+                    "low": sorted_candles[index]["low"],
                     "values": {
                         "emotion": emotion_map.get(trade_date, 50.0),
                         "basis-main": basis_main_map.get(trade_date, 0.0),
@@ -593,6 +629,7 @@ class QuantService:
         macd_params = params.get("macd", {})
         kdj_params = params.get("kdj", {})
         wr_params = params.get("wr", {})
+        rsi_params = params.get("rsi", {})
         boll_params = params.get("boll", {})
         boll_period = int(boll_params.get("period", 20))
         boll_multiplier = float(boll_params.get("multiplier", 2))
@@ -621,6 +658,7 @@ class QuantService:
             int(kdj_params.get("dSmoothing", 3)),
         )
         wr_values = _calc_wr(sorted_candles, int(wr_params.get("period", 14)))
+        rsi_values = _calc_rsi(closes, int(rsi_params.get("period", 14)))
 
         snapshots: list[dict] = []
         for index, trade_date in enumerate(times):
@@ -628,7 +666,15 @@ class QuantService:
                 {
                     "trade_date": trade_date,
                     "close": closes[index],
+                    "high": sorted_candles[index]["high"],
+                    "low": sorted_candles[index]["low"],
                     "values": {
+                        "turnover-rate": (
+                            sorted_candles[index]["turnover_rate"] * 100
+                            if sorted_candles[index].get("turnover_rate") is not None
+                            else None
+                        ),
+                        "rsi": rsi_values[index],
                         "wr": wr_values[index],
                         "macd-dif": macd_dif[index],
                         "macd-dea": macd_dea[index],
@@ -648,60 +694,158 @@ class QuantService:
             )
         return snapshots
 
-    def _matches_numeric_filters(self, snapshot: dict, filters: dict, allowed_keys: list[str]) -> bool:
-        for key, threshold in filters.items():
-            if key not in allowed_keys:
-                continue
-            value = snapshot["values"].get(key)
-            if value is None:
-                return False
-            gt_value = _normalize_threshold((threshold or {}).get("gt"))
-            lt_value = _normalize_threshold((threshold or {}).get("lt"))
-            if gt_value is not None and not (value > gt_value):
-                return False
-            if lt_value is not None and not (value < lt_value):
-                return False
-        return True
+    def _normalize_rule_groups(self, raw_groups: object, allowed_keys: list[str]) -> list[dict]:
+        if not isinstance(raw_groups, list):
+            return []
 
-    def _matches_boll_filter(self, snapshot: dict, boll_filter: dict) -> bool:
-        gt_key = (boll_filter or {}).get("gt")
-        lt_key = (boll_filter or {}).get("lt")
-        if not gt_key and not lt_key:
-            return True
-        close_value = snapshot.get("close")
-        if close_value is None:
+        allowed_key_set = set(allowed_keys)
+        allowed_tracks = {"boll-upper", "boll-middle", "boll-lower"}
+        normalized_groups: list[dict] = []
+
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            raw_conditions = raw_group.get("conditions")
+            if not isinstance(raw_conditions, list):
+                continue
+
+            conditions: list[dict] = []
+            for raw_condition in raw_conditions:
+                if not isinstance(raw_condition, dict):
+                    continue
+                condition_type = str(raw_condition.get("type", "")).strip()
+                operator = str(raw_condition.get("operator", "")).strip()
+                if operator not in {"gt", "lt"}:
+                    continue
+
+                if condition_type == "numeric":
+                    field = str(raw_condition.get("field", "")).strip()
+                    value = _normalize_threshold(raw_condition.get("value"))
+                    if field not in allowed_key_set or value is None:
+                        continue
+                    conditions.append(
+                        {
+                            "type": "numeric",
+                            "field": field,
+                            "operator": operator,
+                            "value": value,
+                        }
+                    )
+                    continue
+
+                if condition_type == "boll":
+                    mode = str(raw_condition.get("mode", "")).strip()
+                    track = str(raw_condition.get("track", "")).strip()
+                    if mode not in {"close", "intraday"} or track not in allowed_tracks:
+                        continue
+                    conditions.append(
+                        {
+                            "type": "boll",
+                            "mode": mode,
+                            "operator": operator,
+                            "track": track,
+                        }
+                    )
+
+            if conditions:
+                normalized_groups.append({"conditions": conditions})
+
+        return normalized_groups
+
+    def _legacy_filters_to_rule_groups(self, filters: object, boll_filter: object, allowed_keys: list[str]) -> list[dict]:
+        if not isinstance(filters, dict):
+            filters = {}
+        if not isinstance(boll_filter, dict):
+            boll_filter = {}
+
+        allowed_key_set = set(allowed_keys)
+        allowed_tracks = {"boll-upper", "boll-middle", "boll-lower"}
+        conditions: list[dict] = []
+
+        for key, threshold in filters.items():
+            if key not in allowed_key_set or not isinstance(threshold, dict):
+                continue
+            gt_value = _normalize_threshold(threshold.get("gt"))
+            lt_value = _normalize_threshold(threshold.get("lt"))
+            if gt_value is not None:
+                conditions.append({"type": "numeric", "field": key, "operator": "gt", "value": gt_value})
+            if lt_value is not None:
+                conditions.append({"type": "numeric", "field": key, "operator": "lt", "value": lt_value})
+
+        for operator, key_name in (("gt", "gt"), ("lt", "lt")):
+            track = boll_filter.get(key_name)
+            if track in allowed_tracks:
+                conditions.append({"type": "boll", "mode": "close", "operator": operator, "track": track})
+
+        for operator, key_name in (("gt", "intraday_gt"), ("lt", "intraday_lt")):
+            track = boll_filter.get(key_name)
+            if track in allowed_tracks:
+                conditions.append({"type": "boll", "mode": "intraday", "operator": operator, "track": track})
+
+        return [{"conditions": conditions}] if conditions else []
+
+    def _get_rule_groups(self, strategy: QuantStrategyConfig, color: str, allowed_keys: list[str]) -> list[dict]:
+        raw_groups = getattr(strategy, f"{color}_filter_groups", None)
+        if isinstance(raw_groups, list) and raw_groups:
+            return self._normalize_rule_groups(raw_groups, allowed_keys)
+        filters = getattr(strategy, f"{color}_filters", None)
+        boll_filter = getattr(strategy, f"{color}_boll_filter", None)
+        return self._legacy_filters_to_rule_groups(filters, boll_filter, allowed_keys)
+
+    def _matches_rule_condition(self, snapshot: dict, condition: dict, allowed_keys: list[str]) -> bool:
+        condition_type = str(condition.get("type", "")).strip()
+        operator = str(condition.get("operator", "")).strip()
+
+        if condition_type == "numeric":
+            field = str(condition.get("field", "")).strip()
+            if field not in allowed_keys:
+                return False
+            value = snapshot["values"].get(field)
+            threshold = _normalize_threshold(condition.get("value"))
+            if value is None or threshold is None:
+                return False
+            return value > threshold if operator == "gt" else value < threshold
+
+        if condition_type == "boll":
+            track = str(condition.get("track", "")).strip()
+            mode = str(condition.get("mode", "")).strip()
+            reference_value = snapshot["values"].get(track)
+            if reference_value is None:
+                return False
+            if mode == "close":
+                close_value = snapshot.get("close")
+                if close_value is None:
+                    return False
+                return close_value > reference_value if operator == "gt" else close_value < reference_value
+            if mode == "intraday":
+                if operator == "gt":
+                    high_value = snapshot.get("high")
+                    return high_value is not None and high_value > reference_value
+                low_value = snapshot.get("low")
+                return low_value is not None and low_value < reference_value
+
+        return False
+
+    def _matches_rule_group(self, snapshot: dict, group: dict, allowed_keys: list[str]) -> bool:
+        conditions = group.get("conditions")
+        if not isinstance(conditions, list) or not conditions:
             return False
-        if gt_key:
-            gt_value = snapshot["values"].get(gt_key)
-            if gt_value is None or not (close_value > gt_value):
-                return False
-        if lt_key:
-            lt_value = snapshot["values"].get(lt_key)
-            if lt_value is None or not (close_value < lt_value):
-                return False
-        return True
+        return all(self._matches_rule_condition(snapshot, condition, allowed_keys) for condition in conditions)
+
+    def _matches_rule_groups(self, snapshot: dict, groups: list[dict], allowed_keys: list[str]) -> bool:
+        if not groups:
+            return False
+        return any(self._matches_rule_group(snapshot, group, allowed_keys) for group in groups)
 
     def _build_signal_map(self, strategy: QuantStrategyConfig, snapshots: list[dict]) -> dict[str, str]:
         allowed_keys = INDEX_STRATEGY_FILTER_KEYS if strategy.strategy_type == "index" else STOCK_STRATEGY_FILTER_KEYS
-        blue_filters = strategy.blue_filters or {}
-        red_filters = strategy.red_filters or {}
-        blue_boll = strategy.blue_boll_filter or {}
-        red_boll = strategy.red_boll_filter or {}
-        has_blue = bool(blue_filters) or bool(blue_boll.get("gt")) or bool(blue_boll.get("lt"))
-        has_red = bool(red_filters) or bool(red_boll.get("gt")) or bool(red_boll.get("lt"))
+        blue_groups = self._get_rule_groups(strategy, "blue", allowed_keys)
+        red_groups = self._get_rule_groups(strategy, "red", allowed_keys)
 
         signal_map: dict[str, str] = {}
         for snapshot in snapshots:
-            is_blue = False
-            is_red = False
-            if has_blue:
-                is_blue = self._matches_numeric_filters(snapshot, blue_filters, allowed_keys) and self._matches_boll_filter(
-                    snapshot, blue_boll
-                )
-            if has_red:
-                is_red = self._matches_numeric_filters(snapshot, red_filters, allowed_keys) and self._matches_boll_filter(
-                    snapshot, red_boll
-                )
+            is_blue = self._matches_rule_groups(snapshot, blue_groups, allowed_keys)
+            is_red = self._matches_rule_groups(snapshot, red_groups, allowed_keys)
 
             if is_blue and is_red:
                 signal_map[snapshot["trade_date"]] = "purple"
@@ -712,13 +856,17 @@ class QuantService:
         return signal_map
 
     def _serialize_strategy(self, item: QuantStrategyConfig) -> dict:
+        allowed_keys = INDEX_STRATEGY_FILTER_KEYS if item.strategy_type == "index" else STOCK_STRATEGY_FILTER_KEYS
         return {
             "id": item.id,
             "name": item.name,
+            "notes": item.notes or "",
             "strategy_type": item.strategy_type,
             "target_code": item.target_code,
             "target_name": item.target_name,
             "indicator_params": item.indicator_params or {},
+            "blue_filter_groups": self._get_rule_groups(item, "blue", allowed_keys),
+            "red_filter_groups": self._get_rule_groups(item, "red", allowed_keys),
             "blue_filters": item.blue_filters or {},
             "red_filters": item.red_filters or {},
             "blue_boll_filter": item.blue_boll_filter or {},
@@ -741,10 +889,13 @@ class QuantService:
     def create_strategy(self, payload: dict) -> dict:
         item = QuantStrategyConfig(
             name=str(payload.get("name", "")).strip(),
+            notes=str(payload.get("notes", "")).strip(),
             strategy_type=str(payload.get("strategy_type", "")).strip(),
             target_code=str(payload.get("target_code", "")).strip(),
             target_name=str(payload.get("target_name", "")).strip(),
             indicator_params=payload.get("indicator_params") or {},
+            blue_filter_groups=payload.get("blue_filter_groups") or [],
+            red_filter_groups=payload.get("red_filter_groups") or [],
             blue_filters=payload.get("blue_filters") or {},
             red_filters=payload.get("red_filters") or {},
             blue_boll_filter=payload.get("blue_boll_filter") or {},
@@ -768,10 +919,13 @@ class QuantService:
             raise ValueError("strategy not found")
 
         item.name = str(payload.get("name", item.name)).strip()
+        item.notes = str(payload.get("notes", item.notes or "")).strip()
         item.strategy_type = str(payload.get("strategy_type", item.strategy_type)).strip()
         item.target_code = str(payload.get("target_code", item.target_code)).strip()
         item.target_name = str(payload.get("target_name", item.target_name)).strip()
         item.indicator_params = payload.get("indicator_params") or item.indicator_params or {}
+        item.blue_filter_groups = payload.get("blue_filter_groups") or []
+        item.red_filter_groups = payload.get("red_filter_groups") or []
         item.blue_filters = payload.get("blue_filters") or {}
         item.red_filters = payload.get("red_filters") or {}
         item.blue_boll_filter = payload.get("blue_boll_filter") or {}
@@ -968,13 +1122,22 @@ class QuantService:
             else:
                 exec_price = float(row["open"])
             if action == "buy" and exec_price > 0:
-                invest_cash = cash * buy_ratio
-                shares += invest_cash / exec_price
-                cash -= invest_cash
+                nav_before_trade = cash + shares * exec_price
+                current_position_ratio = (shares * exec_price / nav_before_trade) if nav_before_trade > 0 else 0.0
+                delta_ratio = max(min(1.0 - current_position_ratio, buy_ratio), 0.0)
+                invest_cash = min(cash, nav_before_trade * delta_ratio)
+                if invest_cash > 0:
+                    shares += invest_cash / exec_price
+                    cash -= invest_cash
             elif action == "sell" and exec_price > 0:
-                sell_shares = shares * sell_ratio
-                shares -= sell_shares
-                cash += sell_shares * exec_price
+                nav_before_trade = cash + shares * exec_price
+                current_position_ratio = (shares * exec_price / nav_before_trade) if nav_before_trade > 0 else 0.0
+                delta_ratio = max(min(current_position_ratio, sell_ratio), 0.0)
+                sell_value = nav_before_trade * delta_ratio
+                sell_shares = min(shares, sell_value / exec_price) if exec_price > 0 else 0.0
+                if sell_shares > 0:
+                    shares -= sell_shares
+                    cash += sell_shares * exec_price
 
             close_price = float(row["close"])
             nav = cash + shares * close_price
