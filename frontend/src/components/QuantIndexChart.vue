@@ -37,6 +37,8 @@ type PrimitiveBinding = {
   series: AnySeries
   primitive: DateHighlightPrimitive
 }
+type SummaryRow = { label: string; value: string; placeholder?: boolean }
+type SummaryCard = { key: string; title: string; hint?: string; rows: SummaryRow[] }
 
 const props = withDefaults(
   defineProps<{
@@ -57,6 +59,7 @@ const props = withDefaults(
     params: QuantIndicatorParams
     loading?: boolean
     defaultVisibleDays?: number
+    zoomStep?: number
   }>(),
   {
     emotionPoints: () => [],
@@ -71,11 +74,13 @@ const props = withDefaults(
     highlightBands: () => [],
     loading: false,
     defaultVisibleDays: 90,
+    zoomStep: 0.18,
   },
 )
 
 const emit = defineEmits<{
   selectIndex: [code: string]
+  openSettings: []
 }>()
 
 const mainContainerRef = ref<HTMLDivElement | null>(null)
@@ -285,6 +290,22 @@ function formatMetric(value: number | null | undefined) {
   return rounded.replace(/\.?0+$/, '')
 }
 
+function formatMetricWithSuffix(value: number | null | undefined, suffix: string) {
+  const formatted = formatMetric(value)
+  return formatted === '-' ? '-' : `${formatted}${suffix}`
+}
+
+function formatPairValue(left: number | null | undefined, right: number | null | undefined) {
+  if (left === null || left === undefined || !Number.isFinite(left) || right === null || right === undefined || !Number.isFinite(right)) {
+    return '-'
+  }
+  return `${formatMetric(left)}/${formatMetric(right)}`
+}
+
+function buildPlaceholderRow(): SummaryRow {
+  return { label: '', value: '-', placeholder: true }
+}
+
 function toLineData(points: QuantLinePoint[]) {
   return points.map((item) =>
     item.value === null
@@ -387,6 +408,78 @@ const activeIndicatorSnapshot = computed(() => {
       totalCount: breadthPointByDate.value.get(tradeDate)?.total_count ?? 0,
     },
   }
+})
+
+const summaryCards = computed<SummaryCard[]>(() => {
+  if (!activeSnapshot.value || !activeIndicatorSnapshot.value) {
+    return []
+  }
+
+  const snapshot = activeSnapshot.value
+  const indicator = activeIndicatorSnapshot.value
+  const overlayRows =
+    overlayMode.value === 'ma'
+      ? indicatorPayload.value.ma.map((item, index) => ({
+          label: item.label,
+          value: formatMetric(indicator.ma[index]),
+        }))
+      : [
+          { label: indicatorPayload.value.boll.upper.label, value: formatMetric(indicator.boll.upper) },
+          { label: indicatorPayload.value.boll.middle.label, value: formatMetric(indicator.boll.middle) },
+          { label: indicatorPayload.value.boll.lower.label, value: formatMetric(indicator.boll.lower) },
+          buildPlaceholderRow(),
+        ]
+
+  return [
+    {
+      key: 'market',
+      title: '行情',
+      hint: snapshot.trade_date,
+      rows: [
+        { label: '开盘', value: formatMetric(snapshot.open) },
+        { label: '最高', value: formatMetric(snapshot.high) },
+        { label: '最低', value: formatMetric(snapshot.low) },
+        { label: '收盘', value: formatMetric(snapshot.close) },
+        { label: '涨跌幅', value: formatMetricWithSuffix(snapshot.pct_chg, '%') },
+      ],
+    },
+    {
+      key: 'overlay',
+      title: '主图指标',
+      hint: overlayMode.value === 'ma' ? '均线' : 'BOLL',
+      rows: overlayRows,
+    },
+    {
+      key: 'macd',
+      title: 'MACD',
+      rows: [
+        { label: 'DIF', value: formatMetric(indicator.macd.dif) },
+        { label: 'DEA', value: formatMetric(indicator.macd.dea) },
+        { label: '柱值', value: formatMetric(indicator.macd.histogram) },
+      ],
+    },
+    {
+      key: 'kdj-wr',
+      title: 'KDJ / WR',
+      rows: [
+        { label: 'K', value: formatMetric(indicator.kdj.k) },
+        { label: 'D', value: formatMetric(indicator.kdj.d) },
+        { label: 'J', value: formatMetric(indicator.kdj.j) },
+        { label: 'WR', value: formatMetric(indicator.wr) },
+      ],
+    },
+    {
+      key: 'extended',
+      title: '情绪 / 期现差 / 涨跌家数',
+      rows: [
+        { label: '情绪指标', value: formatMetric(indicator.emotion) },
+        { label: '主连期现差', value: formatMetric(indicator.basis.main) },
+        { label: '月连期现差', value: formatMetric(indicator.basis.month) },
+        { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
+        { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
+      ],
+    },
+  ]
 })
 
 function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
@@ -543,6 +636,32 @@ function applyDefaultVisibleRange() {
   charts.main.timeScale().setVisibleRange({
     from: formatDateText(startDate) as Time,
     to: lastTime as Time,
+  })
+}
+
+function zoomChart(direction: 'in' | 'out') {
+  const mainChart = charts.main
+  if (!mainChart || !mainCandles.value.length) {
+    return
+  }
+
+  const visibleRange = mainChart.timeScale().getVisibleLogicalRange()
+  if (!visibleRange) {
+    applyDefaultVisibleRange()
+    return
+  }
+
+  const currentSpan = Math.max(visibleRange.to - visibleRange.from, 8)
+  const nextSpan = direction === 'in' ? currentSpan * (1 - props.zoomStep) : currentSpan * (1 + props.zoomStep)
+  const minSpan = 8
+  const maxSpan = Math.max(mainCandles.value.length + 20, props.defaultVisibleDays)
+  const clampedSpan = Math.min(maxSpan, Math.max(minSpan, nextSpan))
+  const center = (visibleRange.from + visibleRange.to) / 2
+
+  shouldResetVisibleRange = false
+  mainChart.timeScale().setVisibleLogicalRange({
+    from: center - clampedSpan / 2,
+    to: center + clampedSpan / 2,
   })
 }
 
@@ -832,6 +951,35 @@ onBeforeUnmount(() => {
           </select>
           <span class="quant-chart-symbol-code">（{{ symbolCode }}）</span>
         </div>
+        <div class="quant-chart-head-actions">
+          <button
+            type="button"
+            class="quant-chart-tool-btn"
+            :disabled="loading || !sortedCandles.length"
+            aria-label="Zoom in"
+            @click="zoomChart('in')"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            class="quant-chart-tool-btn"
+            :disabled="loading || !sortedCandles.length"
+            aria-label="Zoom out"
+            @click="zoomChart('out')"
+          >
+            -
+          </button>
+          <button
+            type="button"
+            class="quant-chart-tool-btn quant-chart-tool-btn-gear"
+            :disabled="loading"
+            aria-label="Open parameter modal"
+            @click="emit('openSettings')"
+          >
+            <span aria-hidden="true">&#9881;</span>
+          </button>
+        </div>
       </div>
 
       <div class="quant-chart-switches">
@@ -853,65 +1001,24 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div v-if="activeSnapshot && activeIndicatorSnapshot" class="quant-detail-grid">
-        <div class="quant-detail-card">
-          <h4>行情</h4>
-          <div class="quant-detail-list">
-            <span class="quant-chart-detail">日期 {{ activeSnapshot.trade_date }}</span>
-            <span class="quant-chart-detail">开 {{ formatMetric(activeSnapshot.open) }}</span>
-            <span class="quant-chart-detail">高 {{ formatMetric(activeSnapshot.high) }}</span>
-            <span class="quant-chart-detail">低 {{ formatMetric(activeSnapshot.low) }}</span>
-            <span class="quant-chart-detail">收 {{ formatMetric(activeSnapshot.close) }}</span>
-            <span class="quant-chart-detail">涨跌幅 {{ formatMetric(activeSnapshot.pct_chg) }}%</span>
+      <div v-if="summaryCards.length" class="quant-kpi-grid">
+        <article v-for="card in summaryCards" :key="card.key" class="quant-kpi-card">
+          <div class="quant-kpi-head">
+            <h4 class="quant-kpi-title">{{ card.title }}</h4>
+            <span v-if="card.hint" class="quant-kpi-hint">{{ card.hint }}</span>
           </div>
-        </div>
-
-        <div class="quant-detail-card">
-          <h4>{{ overlayMode === 'ma' ? '均线' : 'BOLL' }}</h4>
-          <div class="quant-detail-list" v-if="overlayMode === 'ma'">
-            <span class="quant-chart-detail">{{ indicatorPayload.ma[0]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[0]) }}</span>
-            <span class="quant-chart-detail">{{ indicatorPayload.ma[1]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[1]) }}</span>
-            <span class="quant-chart-detail">{{ indicatorPayload.ma[2]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[2]) }}</span>
-            <span class="quant-chart-detail">{{ indicatorPayload.ma[3]?.label }} {{ formatMetric(activeIndicatorSnapshot.ma[3]) }}</span>
+          <div class="quant-kpi-list">
+            <div
+              v-for="(row, index) in card.rows"
+              :key="`${card.key}-${index}`"
+              class="quant-kpi-row"
+              :class="{ 'quant-kpi-placeholder': row.placeholder }"
+            >
+              <span class="quant-kpi-label">{{ row.label || '\u00A0' }}</span>
+              <strong class="quant-kpi-value">{{ row.value }}</strong>
+            </div>
           </div>
-          <div class="quant-detail-list" v-else>
-            <span class="quant-chart-detail">{{ indicatorPayload.boll.upper.label }} {{ formatMetric(activeIndicatorSnapshot.boll.upper) }}</span>
-            <span class="quant-chart-detail">{{ indicatorPayload.boll.middle.label }} {{ formatMetric(activeIndicatorSnapshot.boll.middle) }}</span>
-            <span class="quant-chart-detail">{{ indicatorPayload.boll.lower.label }} {{ formatMetric(activeIndicatorSnapshot.boll.lower) }}</span>
-          </div>
-        </div>
-
-        <div class="quant-detail-card">
-          <h4>MACD</h4>
-          <div class="quant-detail-list">
-            <span class="quant-chart-detail">DIF {{ formatMetric(activeIndicatorSnapshot.macd.dif) }}</span>
-            <span class="quant-chart-detail">DEA {{ formatMetric(activeIndicatorSnapshot.macd.dea) }}</span>
-            <span class="quant-chart-detail">柱 {{ formatMetric(activeIndicatorSnapshot.macd.histogram) }}</span>
-          </div>
-        </div>
-
-        <div class="quant-detail-card">
-          <h4>KDJ / WR</h4>
-          <div class="quant-detail-list">
-            <span class="quant-chart-detail">K {{ formatMetric(activeIndicatorSnapshot.kdj.k) }}</span>
-            <span class="quant-chart-detail">D {{ formatMetric(activeIndicatorSnapshot.kdj.d) }}</span>
-            <span class="quant-chart-detail">J {{ formatMetric(activeIndicatorSnapshot.kdj.j) }}</span>
-            <span class="quant-chart-detail">WR {{ formatMetric(activeIndicatorSnapshot.wr) }}</span>
-          </div>
-        </div>
-
-        <div class="quant-detail-card">
-          <h4>情绪 / 期现差 / 涨跌家数</h4>
-          <div class="quant-detail-list">
-            <span class="quant-chart-detail">情绪 {{ formatMetric(activeIndicatorSnapshot.emotion) }}</span>
-            <span class="quant-chart-detail">主连期现差 {{ formatMetric(activeIndicatorSnapshot.basis.main) }}</span>
-            <span class="quant-chart-detail">月连期现差 {{ formatMetric(activeIndicatorSnapshot.basis.month) }}</span>
-            <span class="quant-chart-detail">上涨家数百分比 {{ formatMetric(activeIndicatorSnapshot.breadth.pct) }}%</span>
-            <span class="quant-chart-detail">
-              上涨家数 {{ activeIndicatorSnapshot.breadth.upCount }}/{{ activeIndicatorSnapshot.breadth.totalCount }}
-            </span>
-          </div>
-        </div>
+        </article>
       </div>
     </div>
 
@@ -1032,6 +1139,14 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
+.quant-chart-head-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .quant-chart-symbol-row {
   display: flex;
   align-items: center;
@@ -1061,6 +1176,38 @@ onBeforeUnmount(() => {
   font-size: 22px;
   font-weight: 700;
   color: #14213d;
+}
+
+.quant-chart-tool-btn {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(20, 33, 61, 0.12);
+  border-radius: 12px;
+  background: rgba(20, 33, 61, 0.04);
+  color: #14213d;
+  font: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.quant-chart-tool-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(15, 76, 117, 0.1);
+  box-shadow: 0 8px 16px rgba(20, 33, 61, 0.08);
+}
+
+.quant-chart-tool-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.quant-chart-tool-btn-gear {
+  font-size: 18px;
 }
 
 .quant-chart-details {
@@ -1212,6 +1359,10 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .quant-chart-summary-head {
     align-items: flex-start;
+  }
+
+  .quant-chart-head-actions {
+    margin-left: 0;
   }
 
   .quant-chart-symbol-select,

@@ -11,10 +11,13 @@ class QuantStrategyConfig(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), index=True)
+    notes: Mapped[str] = mapped_column(String(1000), default="")
     strategy_type: Mapped[str] = mapped_column(String(32), index=True)
     target_code: Mapped[str] = mapped_column(String(32), index=True)
     target_name: Mapped[str] = mapped_column(String(128))
     indicator_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    blue_filter_groups: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    red_filter_groups: Mapped[list[dict]] = mapped_column(JSON, default=list)
     blue_filters: Mapped[dict] = mapped_column(JSON, default=dict)
     red_filters: Mapped[dict] = mapped_column(JSON, default=dict)
     blue_boll_filter: Mapped[dict] = mapped_column(JSON, default=dict)

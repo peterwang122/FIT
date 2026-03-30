@@ -43,7 +43,7 @@ function openFlowerTab() {
         个股行情
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'quant' }" @click="goQuant">
-        量化展示
+        量化分析
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'progress' }" @click="goProgress">
         开发进度

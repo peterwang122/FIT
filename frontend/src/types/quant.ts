@@ -18,6 +18,10 @@ export interface WrParams {
   period: number
 }
 
+export interface RsiParams {
+  period: number
+}
+
 export interface BollParams {
   period: number
   multiplier: number
@@ -28,6 +32,7 @@ export interface QuantIndicatorParams {
   macd: MacdParams
   kdj: KdjParams
   wr: WrParams
+  rsi: RsiParams
   boll: BollParams
 }
 
@@ -67,6 +72,7 @@ export interface QuantChartPayload {
     j: QuantLineSeries
   }
   wr: QuantLineSeries
+  rsi: QuantLineSeries
 }
 
 export type QuantFilterFieldKey =
@@ -74,6 +80,8 @@ export type QuantFilterFieldKey =
   | 'basis-main'
   | 'basis-month'
   | 'breadth-up-pct'
+  | 'turnover-rate'
+  | 'rsi'
   | 'wr'
   | 'macd-dif'
   | 'macd-dea'
@@ -89,7 +97,7 @@ export type QuantFilterFieldKey =
   | 'boll-middle'
   | 'boll-lower'
 
-export type QuantFilterGroupKey = 'emotion' | 'basis' | 'breadth' | 'wr' | 'macd' | 'kdj' | 'ma' | 'boll'
+export type QuantFilterGroupKey = 'emotion' | 'basis' | 'breadth' | 'turnover' | 'rsi' | 'wr' | 'macd' | 'kdj' | 'ma' | 'boll'
 
 export interface QuantFilterFieldMeta {
   key: QuantFilterFieldKey
@@ -114,6 +122,8 @@ export type QuantFilterApplied = Partial<Record<QuantFilterFieldKey, QuantFilter
 export interface QuantDailyIndicatorSnapshot {
   tradeDate: string
   close: number | null
+  high: number | null
+  low: number | null
   values: Partial<Record<QuantFilterFieldKey, number | null>>
 }
 
@@ -141,19 +151,61 @@ export type QuantExecutionPriceMode = 'next_open' | 'next_close' | 'next_best'
 export type QuantConflictMode = 'sell_first' | 'buy_first' | 'skip'
 export type QuantSignalColor = 'blue' | 'red'
 export type QuantBollFilterKey = 'boll-upper' | 'boll-middle' | 'boll-lower'
+export type QuantRuleOperator = 'gt' | 'lt'
+export type QuantRuleTargetKey = `field:${QuantFilterFieldKey}` | 'boll:close' | 'boll:intraday'
 
 export interface QuantSavedBollFilter {
   gt: QuantBollFilterKey | null
   lt: QuantBollFilterKey | null
+  intraday_gt: QuantBollFilterKey | null
+  intraday_lt: QuantBollFilterKey | null
 }
+
+export interface QuantRuleConditionDraft {
+  id: string
+  target: QuantRuleTargetKey | ''
+  operator: QuantRuleOperator
+  value: string
+  track: QuantBollFilterKey | ''
+}
+
+export interface QuantRuleGroupDraft {
+  id: string
+  conditions: QuantRuleConditionDraft[]
+}
+
+export interface QuantNumericRuleCondition {
+  type: 'numeric'
+  field: QuantFilterFieldKey
+  operator: QuantRuleOperator
+  value: number
+}
+
+export interface QuantBollRuleCondition {
+  type: 'boll'
+  mode: 'close' | 'intraday'
+  operator: QuantRuleOperator
+  track: QuantBollFilterKey
+}
+
+export type QuantRuleCondition = QuantNumericRuleCondition | QuantBollRuleCondition
+
+export interface QuantRuleGroup {
+  conditions: QuantRuleCondition[]
+}
+
+export type QuantFilterGroupSet = QuantRuleGroup[]
 
 export interface QuantStrategyConfig {
   id: number
   name: string
+  notes: string
   strategy_type: QuantStrategyType
   target_code: string
   target_name: string
   indicator_params: QuantIndicatorParams
+  blue_filter_groups: QuantFilterGroupSet
+  red_filter_groups: QuantFilterGroupSet
   blue_filters: QuantFilterApplied
   red_filters: QuantFilterApplied
   blue_boll_filter: QuantSavedBollFilter
@@ -171,10 +223,13 @@ export interface QuantStrategyConfig {
 
 export interface QuantStrategyPayload {
   name: string
+  notes: string
   strategy_type: QuantStrategyType
   target_code: string
   target_name: string
   indicator_params: QuantIndicatorParams
+  blue_filter_groups: QuantFilterGroupSet
+  red_filter_groups: QuantFilterGroupSet
   blue_filters: QuantFilterApplied
   red_filters: QuantFilterApplied
   blue_boll_filter: QuantSavedBollFilter

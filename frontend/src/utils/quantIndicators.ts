@@ -17,6 +17,7 @@ export type QuantIndicatorCandle = {
   high: number
   low: number
   close: number
+  turnover_rate?: number | null
 }
 
 const CORE_EMOTION_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
@@ -36,6 +37,8 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
 ]
 
 export const STOCK_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+  'turnover-rate',
+  'rsi',
   'wr',
   'macd-dif',
   'macd-dea',
@@ -64,6 +67,12 @@ function sortCandles(candles: QuantIndicatorCandle[]): QuantIndicatorCandle[] {
       high: Number(item.high),
       low: Number(item.low),
       close: Number(item.close),
+      turnover_rate:
+        item.turnover_rate === null || item.turnover_rate === undefined
+          ? null
+          : isFiniteNumber(Number(item.turnover_rate))
+            ? Number(item.turnover_rate)
+            : null,
     }))
     .filter((item) => isFiniteNumber(item.high) && isFiniteNumber(item.low) && isFiniteNumber(item.close))
     .sort((left, right) => left.trade_date.localeCompare(right.trade_date))
@@ -263,6 +272,36 @@ function calculateWr(times: string[], candles: QuantIndicatorCandle[], period: n
   return buildLineSeries('wr', 'WR', '#7c3aed', times, wrValues)
 }
 
+function calculateRsi(times: string[], closes: number[], period: number) {
+  const rsiValues: Array<number | null> = new Array(closes.length).fill(null)
+  if (closes.length <= period) {
+    return buildLineSeries('rsi', `RSI${period}`, '#db2777', times, rsiValues)
+  }
+
+  let gainSum = 0
+  let lossSum = 0
+  for (let index = 1; index <= period; index += 1) {
+    const change = closes[index] - closes[index - 1]
+    if (change >= 0) gainSum += change
+    else lossSum += Math.abs(change)
+  }
+
+  let averageGain = gainSum / period
+  let averageLoss = lossSum / period
+  rsiValues[period] = averageLoss === 0 ? 100 : 100 - 100 / (1 + averageGain / averageLoss)
+
+  for (let index = period + 1; index < closes.length; index += 1) {
+    const change = closes[index] - closes[index - 1]
+    const gain = change > 0 ? change : 0
+    const loss = change < 0 ? Math.abs(change) : 0
+    averageGain = (averageGain * (period - 1) + gain) / period
+    averageLoss = (averageLoss * (period - 1) + loss) / period
+    rsiValues[index] = averageLoss === 0 ? 100 : 100 - 100 / (1 + averageGain / averageLoss)
+  }
+
+  return buildLineSeries('rsi', `RSI${period}`, '#db2777', times, rsiValues)
+}
+
 export function calculateQuantIndicators(candles: QuantIndicatorCandle[], params: QuantIndicatorParams): QuantChartPayload {
   const sortedCandles = sortCandles(candles)
   const times = sortedCandles.map((item) => item.trade_date)
@@ -274,6 +313,7 @@ export function calculateQuantIndicators(candles: QuantIndicatorCandle[], params
     macd: calculateMacd(times, closes, params.macd.fast, params.macd.slow, params.macd.signal),
     kdj: calculateKdj(times, sortedCandles, params.kdj.period, params.kdj.kSmoothing, params.kdj.dSmoothing),
     wr: calculateWr(times, sortedCandles, params.wr.period),
+    rsi: calculateRsi(times, closes, params.rsi.period),
   }
 }
 
@@ -437,6 +477,8 @@ function buildStockQuantFilterFields(payload: QuantChartPayload): QuantFilterFie
     { key: 'ma-2', group: 'ma', label: payload.ma[1]?.label ?? 'MA2' },
     { key: 'ma-3', group: 'ma', label: payload.ma[2]?.label ?? 'MA3' },
     { key: 'ma-4', group: 'ma', label: payload.ma[3]?.label ?? 'MA4' },
+    { key: 'turnover-rate', group: 'turnover', label: '换手率(%)' },
+    { key: 'rsi', group: 'rsi', label: payload.rsi.label },
     { key: 'wr', group: 'wr', label: payload.wr.label },
     { key: 'macd-dif', group: 'macd', label: payload.macd.dif.label },
     { key: 'macd-dea', group: 'macd', label: payload.macd.dea.label },
@@ -453,7 +495,14 @@ function buildBaseSnapshots(payload: QuantChartPayload, candles: QuantIndicatorC
   return times.map((tradeDate, index) => ({
     tradeDate,
     close: sortedCandles[index]?.close ?? null,
+    high: sortedCandles[index]?.high ?? null,
+    low: sortedCandles[index]?.low ?? null,
     values: {
+      'turnover-rate':
+        sortedCandles[index]?.turnover_rate === null || sortedCandles[index]?.turnover_rate === undefined
+          ? null
+          : (sortedCandles[index]?.turnover_rate ?? 0) * 100,
+      rsi: payload.rsi.data[index]?.value ?? null,
       wr: payload.wr.data[index]?.value ?? null,
       'macd-dif': payload.macd.dif.data[index]?.value ?? null,
       'macd-dea': payload.macd.dea.data[index]?.value ?? null,

@@ -508,6 +508,175 @@ body::before {
   margin-right: 0;
 }
 
+.quant-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(20, 33, 61, 0.24);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.quant-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 80;
+  transform: translate(-50%, -50%);
+  width: min(1180px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 22px 24px;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  isolation: isolate;
+  box-shadow: 0 24px 52px rgba(20, 33, 61, 0.22);
+}
+
+.quant-param-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.quant-param-modal .quant-form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.quant-param-modal .quant-param-group {
+  min-width: 0;
+  padding: 18px;
+  gap: 14px;
+}
+
+.quant-param-modal .quant-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.quant-param-modal .quant-field {
+  min-width: 0;
+}
+
+.quant-param-modal .quant-field .input,
+.quant-param-modal .quant-field-compact .input {
+  width: 100%;
+  min-width: 0;
+}
+
+.quant-param-modal .quant-param-group-footer {
+  justify-content: flex-start;
+}
+
+.quant-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.quant-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.quant-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.quant-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  grid-auto-rows: 1fr;
+}
+
+.quant-kpi-card {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 14px;
+  min-height: 172px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(20, 33, 61, 0.08);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.92));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.quant-kpi-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.quant-kpi-title {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.quant-kpi-hint {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quant-kpi-list {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  min-height: 0;
+}
+
+.quant-kpi-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(20, 33, 61, 0.06);
+}
+
+.quant-kpi-row:last-child {
+  border-bottom: none;
+}
+
+.quant-kpi-label {
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quant-kpi-value {
+  color: #14213d;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.quant-kpi-placeholder .quant-kpi-label,
+.quant-kpi-placeholder .quant-kpi-value {
+  color: #94a3b8;
+}
+
 .quant-toolbar-card,
 .quant-params-card,
 .quant-chart-card {
@@ -698,6 +867,31 @@ body::before {
   gap: 14px;
 }
 
+.quant-rule-group-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.quant-rule-empty {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px dashed rgba(20, 33, 61, 0.14);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+}
+
+.quant-rule-or-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(15, 76, 117, 0.08);
+  color: #0f4c75;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .quant-filter-group {
   display: grid;
   gap: 12px;
@@ -715,6 +909,67 @@ body::before {
 .quant-filter-group-head h4 {
   margin: 0;
   font-size: 17px;
+}
+
+.quant-rule-group-card {
+  gap: 14px;
+}
+
+.quant-rule-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.quant-rule-group-head h4 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.quant-rule-group-head p {
+  margin: 4px 0 0;
+}
+
+.quant-rule-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.quant-rule-condition-list {
+  display: grid;
+  gap: 10px;
+}
+
+.quant-rule-condition {
+  display: grid;
+  gap: 6px;
+}
+
+.quant-rule-condition-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(88px, 0.7fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.quant-rule-condition-target,
+.quant-rule-condition-operator,
+.quant-rule-condition-value {
+  min-width: 0;
+  width: 100%;
+}
+
+.quant-rule-delete-btn {
+  white-space: nowrap;
+}
+
+.quant-rule-add-group {
+  width: 100%;
+  justify-content: center;
 }
 
 .quant-filter-header-row,
@@ -761,6 +1016,25 @@ body::before {
   gap: 10px;
   flex-wrap: wrap;
   padding-top: 6px;
+}
+
+@media (max-width: 1180px) {
+  .quant-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quant-rule-condition-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(88px, 0.7fr);
+  }
+
+  .quant-param-modal .quant-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quant-rule-delete-btn {
+    grid-column: 1 / -1;
+    justify-self: flex-start;
+  }
 }
 
 .quant-save-box {
@@ -935,6 +1209,10 @@ body::before {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 18px;
+}
+
+.quant-strategy-form .quant-field-full .input {
+  width: 100%;
 }
 
 .quant-strategy-summary {
@@ -1124,6 +1402,10 @@ body::before {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .quant-modal {
+    padding: 18px;
+  }
+
   .quant-body {
     grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
   }
@@ -1160,6 +1442,15 @@ body::before {
   }
 
   .quant-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .quant-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .quant-param-modal .quant-form-grid,
+  .quant-param-modal .quant-field-grid {
     grid-template-columns: 1fr;
   }
 
