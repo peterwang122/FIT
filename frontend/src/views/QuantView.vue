@@ -9,11 +9,13 @@ const route = useRoute()
 const tabs = [
   { key: 'index', label: '指数', to: '/quant/index' },
   { key: 'stock', label: '股票', to: '/quant/stock' },
+  { key: 'sequence', label: '条件策略', to: '/quant/sequence' },
   { key: 'strategies', label: '策略回测', to: '/quant/strategies' },
 ]
 
 const activeTab = computed(() => {
   if (route.path.startsWith('/quant/stock')) return 'stock'
+  if (route.path.startsWith('/quant/sequence')) return 'sequence'
   if (route.path.startsWith('/quant/strategies')) return 'strategies'
   return 'index'
 })
@@ -28,7 +30,7 @@ const activeTab = computed(() => {
         <div class="quant-page-head">
           <div>
             <h2>量化分析</h2>
-            <p class="muted">按指数、股票和策略回测三个子模块组织量化数据与信号。</p>
+            <p class="muted">按指数、股票、条件策略和策略回测四个子模块组织量化数据与信号。</p>
           </div>
         </div>
 

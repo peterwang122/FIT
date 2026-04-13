@@ -5,19 +5,38 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
+  type LogicalRange,
   type Time,
   type WhitespaceData,
 } from 'lightweight-charts'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { KlineCandle } from '../types/stock'
+import type { QuantHighlightBand } from '../types/quant'
+import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 
-const props = defineProps<{
-  candles: KlineCandle[]
-  symbolName: string
-  symbolCode: string
-  height?: number | string
-  defaultVisibleDays?: number
+const HISTORY_REQUEST_THRESHOLD = 15
+
+const props = withDefaults(
+  defineProps<{
+    candles: KlineCandle[]
+    symbolName: string
+    symbolCode: string
+    height?: number | string
+    defaultVisibleDays?: number
+    hasMoreHistory?: boolean
+    loadingMoreHistory?: boolean
+    highlightBands?: QuantHighlightBand[]
+  }>(),
+  {
+    hasMoreHistory: false,
+    loadingMoreHistory: false,
+    highlightBands: () => [],
+  },
+)
+
+const emit = defineEmits<{
+  requestMoreHistory: [earliestTradeDate: string]
 }>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
@@ -26,6 +45,10 @@ const renderError = ref('')
 
 let chart: IChartApi | null = null
 let candleSeries: ISeriesApi<'Candlestick'> | null = null
+let shouldResetVisibleRange = true
+let lastRequestedHistoryBoundary: string | null = null
+let visibleRangeUnsubscribe: (() => void) | null = null
+let highlightPrimitive: DateHighlightPrimitive | null = null
 
 function parseDateText(value: string): number {
   return new Date(`${value}T00:00:00`).getTime()
@@ -63,9 +86,15 @@ const dataMap = computed(() => {
   return result
 })
 
-const hasFixedHeight = computed(() => typeof props.height === 'number')
+const hasFixedHeight = computed(() => typeof props.height === "number")
 
 const shellStyle = computed(() => {
+  if (!hasFixedHeight.value) return undefined
+  const value = `${props.height}px`
+  return { height: value, minHeight: value }
+})
+
+const containerStyle = computed(() => {
   if (!hasFixedHeight.value) return undefined
   const value = `${props.height}px`
   return { height: value, minHeight: value }
@@ -94,12 +123,6 @@ function applyVisibleRange() {
   })
 }
 
-const containerStyle = computed(() => {
-  if (!hasFixedHeight.value) return undefined
-  const value = `${props.height}px`
-  return { height: value, minHeight: value }
-})
-
 function buildSeries(targetChart: IChartApi): ISeriesApi<'Candlestick'> {
   const anyChart = targetChart as any
   if (typeof anyChart.addCandlestickSeries === 'function') {
@@ -119,6 +142,24 @@ function buildSeries(targetChart: IChartApi): ISeriesApi<'Candlestick'> {
     wickUpColor: '#ef4444',
     wickDownColor: '#10b981',
   })
+}
+
+function maybeRequestMoreHistory(range: LogicalRange | null) {
+  if (!range || !props.hasMoreHistory || props.loadingMoreHistory || !klineData.value.length) {
+    return
+  }
+
+  if (range.from > HISTORY_REQUEST_THRESHOLD) {
+    return
+  }
+
+  const earliestTradeDate = String(klineData.value[0]?.time ?? '')
+  if (!earliestTradeDate || lastRequestedHistoryBoundary === earliestTradeDate) {
+    return
+  }
+
+  lastRequestedHistoryBoundary = earliestTradeDate
+  emit('requestMoreHistory', earliestTradeDate)
 }
 
 function bindCrosshairTooltip() {
@@ -180,29 +221,91 @@ function renderChart() {
     })
 
     candleSeries = buildSeries(chart)
+    highlightPrimitive = new DateHighlightPrimitive(props.highlightBands)
+    candleSeries.attachPrimitive(highlightPrimitive)
     candleSeries.setData(klineData.value as (WhitespaceData<Time> | any)[])
     applyVisibleRange()
+    if (klineData.value.length) {
+      shouldResetVisibleRange = false
+    }
     bindCrosshairTooltip()
+
+    const visibleRangeHandler = (range: LogicalRange | null) => maybeRequestMoreHistory(range)
+    chart.timeScale().subscribeVisibleLogicalRangeChange(visibleRangeHandler)
+    visibleRangeUnsubscribe = () => chart?.timeScale().unsubscribeVisibleLogicalRangeChange(visibleRangeHandler)
   } catch (error) {
     renderError.value = `K 线渲染失败：${String(error)}`
     console.error(error)
   }
 }
 
-watch(klineData, (next) => {
-  if (!candleSeries) return
-  candleSeries.setData(next as (WhitespaceData<Time> | any)[])
-  applyVisibleRange()
-})
+watch(
+  klineData,
+  (next, previous) => {
+    if (!candleSeries || !chart) return
+
+    const previousEarliest = String(previous[0]?.time ?? '')
+    const previousVisibleRange = chart.timeScale().getVisibleLogicalRange()
+    candleSeries.setData(next as (WhitespaceData<Time> | any)[])
+
+    if (shouldResetVisibleRange) {
+      applyVisibleRange()
+      shouldResetVisibleRange = false
+      return
+    }
+
+    const nextEarliest = String(next[0]?.time ?? '')
+    const prependedBars =
+      previousVisibleRange && previousEarliest && nextEarliest && nextEarliest < previousEarliest
+        ? next.filter((item) => String(item.time) < previousEarliest).length
+        : 0
+
+    if (previousVisibleRange && prependedBars > 0) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: previousVisibleRange.from + prependedBars,
+        to: previousVisibleRange.to + prependedBars,
+      })
+    }
+  },
+  { deep: false },
+)
+
+watch(
+  () => props.symbolCode,
+  () => {
+    shouldResetVisibleRange = true
+    lastRequestedHistoryBoundary = null
+  },
+)
+
+watch(
+  () => props.highlightBands,
+  (next) => {
+    highlightPrimitive?.setHighlights(next)
+  },
+  { deep: true },
+)
+
+watch(
+  () => props.candles[0]?.trade_date ?? null,
+  (nextEarliest, previousEarliest) => {
+    if (nextEarliest && nextEarliest !== previousEarliest) {
+      lastRequestedHistoryBoundary = null
+    }
+  },
+)
 
 onMounted(() => {
   renderChart()
 })
 
 onBeforeUnmount(() => {
+  visibleRangeUnsubscribe?.()
+  visibleRangeUnsubscribe = null
   chart?.remove()
   chart = null
   candleSeries = null
+  highlightPrimitive = null
 })
 </script>
 
@@ -210,6 +313,7 @@ onBeforeUnmount(() => {
   <div class="kline-shell" :class="{ 'has-explicit-height': hasFixedHeight }" :style="shellStyle">
     <p v-if="candles.length === 0" class="muted">当前没有查到 K 线数据，请检查代码和数据表内容。</p>
     <p v-if="renderError" class="error">{{ renderError }}</p>
+    <p v-else-if="loadingMoreHistory" class="muted">正在加载更早历史数据...</p>
     <div ref="containerRef" class="kline-container" :style="containerStyle">
       <div ref="tooltipRef" class="kline-tooltip"></div>
     </div>

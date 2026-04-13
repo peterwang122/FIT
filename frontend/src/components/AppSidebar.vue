@@ -2,30 +2,33 @@
 import { useRouter } from 'vue-router'
 
 const props = defineProps<{
-  active: 'overview' | 'stocks' | 'progress' | 'quant'
+  active: 'overview' | 'stocks' | 'progress' | 'quant' | 'account' | 'tasks'
 }>()
 
 const router = useRouter()
-const flowerUrl = import.meta.env.VITE_FLOWER_URL ?? 'http://127.0.0.1:5555'
 
 function goOverview() {
-  router.push('/')
+  void router.push('/')
 }
 
 function goStocks() {
-  router.push('/stocks')
+  void router.push('/stocks')
 }
 
 function goQuant() {
-  router.push('/quant/index')
+  void router.push('/quant/index')
+}
+
+function goTasks() {
+  void router.push('/tasks/manage')
 }
 
 function goProgress() {
-  router.push('/progress')
+  void router.push('/progress')
 }
 
-function openFlowerTab() {
-  window.open(flowerUrl, '_blank', 'noopener,noreferrer')
+function goAccount() {
+  void router.push('/account')
 }
 </script>
 
@@ -45,10 +48,15 @@ function openFlowerTab() {
       <button type="button" class="sidebar-link" :class="{ active: active === 'quant' }" @click="goQuant">
         量化分析
       </button>
+      <button type="button" class="sidebar-link" :class="{ active: active === 'tasks' }" @click="goTasks">
+        任务中心
+      </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'progress' }" @click="goProgress">
         开发进度
       </button>
-      <button type="button" class="sidebar-link" @click="openFlowerTab">任务监控（Flower）</button>
+      <button type="button" class="sidebar-link" :class="{ active: active === 'account' }" @click="goAccount">
+        个人中心
+      </button>
     </nav>
   </aside>
 </template>

@@ -9,6 +9,31 @@ class Settings(BaseSettings):
 
     database_url: str = "mysql+pymysql://root:865418267@127.0.0.1:3306/stock_info"
     redis_url: str = "redis://127.0.0.1:6379/0"
+    auth_session_cookie_name: str = "fit_session"
+    auth_session_ttl_seconds: int = 604800
+    auth_cookie_secure: bool = False
+    auth_cookie_samesite: str = "lax"
+    auth_sms_code_ttl_seconds: int = 300
+    auth_sms_resend_cooldown_seconds: int = 60
+    auth_sms_daily_limit: int = 10
+    auth_sms_max_attempts: int = 5
+    root_username: str = "root"
+    root_password: str = "root123456"
+    guest_username: str = "guest"
+    guest_password: str = "guest123456"
+    alibaba_cloud_access_key_id: str = ""
+    alibaba_cloud_access_key_secret: str = ""
+    aliyun_sms_access_key_id: str = ""
+    aliyun_sms_access_key_secret: str = ""
+    aliyun_sms_sign_name: str = ""
+    aliyun_sms_template_code: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    smtp_from_email: str = ""
+    smtp_from_name: str = "FIT 股票量化系统"
 
     # read-only existing table mapping (defaults aligned with current DB)
     stock_table_name: str = "stock_daily_data"
@@ -39,24 +64,25 @@ class Settings(BaseSettings):
     stock_basic_info_code_column: str = "stock_code"
     stock_basic_info_prefixed_code_column: str = "prefixed_code"
     stock_basic_info_name_column: str = "stock_name"
+    stock_basic_info_board_column: str = "board"
     stock_basic_cache_key: str = "fit:stock_basic_info:all"
     stock_basic_cache_ttl_seconds: int = 86400
 
-    stock_qfq_table_name: str = "stock_qfq_daily_data"
-    stock_qfq_code_column: str = "stock_code"
-    stock_qfq_prefixed_code_column: str = "prefixed_code"
-    stock_qfq_name_column: str = "stock_name"
-    stock_qfq_date_column: str = "trade_date"
-    stock_qfq_open_column: str = "open_price"
-    stock_qfq_high_column: str = "high_price"
-    stock_qfq_low_column: str = "low_price"
-    stock_qfq_close_column: str = "close_price"
-    stock_qfq_change_column: str = "price_change_amount"
-    stock_qfq_pct_chg_column: str = "price_change_rate"
-    stock_qfq_vol_column: str = "volume"
-    stock_qfq_amount_column: str = "turnover_amount"
-    stock_qfq_turnover_rate_column: str = "turnover_rate"
-    stock_qfq_data_source_column: str = "data_source"
+    stock_hfq_table_name: str = "stock_hfq_daily_data"
+    stock_hfq_code_column: str = "stock_code"
+    stock_hfq_prefixed_code_column: str = "prefixed_code"
+    stock_hfq_name_column: str = "stock_name"
+    stock_hfq_date_column: str = "trade_date"
+    stock_hfq_open_column: str = "open_price"
+    stock_hfq_high_column: str = "high_price"
+    stock_hfq_low_column: str = "low_price"
+    stock_hfq_close_column: str = "close_price"
+    stock_hfq_change_column: str = "price_change_amount"
+    stock_hfq_pct_chg_column: str = "price_change_rate"
+    stock_hfq_vol_column: str = "volume"
+    stock_hfq_amount_column: str = "turnover_amount"
+    stock_hfq_turnover_rate_column: str = "turnover_rate"
+    stock_hfq_data_source_column: str = "data_source"
 
     index_basic_info_table_name: str = "index_basic_info"
     index_basic_info_code_column: str = "index_code"

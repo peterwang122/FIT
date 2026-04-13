@@ -8,12 +8,13 @@ import type {
   Time,
 } from 'lightweight-charts'
 
-import type { QuantHighlightBand, QuantHighlightColor } from '../types/quant'
+import type { QuantHighlightBand, QuantHighlightColor, QuantHighlightVariant } from '../types/quant'
 
 type VisibleRect = {
   left: number
   right: number
   color: QuantHighlightColor
+  variant: QuantHighlightVariant
 }
 
 const HIGHLIGHT_FILL: Record<QuantHighlightColor, string> = {
@@ -42,6 +43,23 @@ class DateHighlightRenderer implements IPrimitivePaneRenderer {
         const width = Math.max(1, right - left)
         context.fillStyle = HIGHLIGHT_FILL[rect.color]
         context.fillRect(left, 0, width, bitmapSize.height)
+        if (rect.variant === 'striped') {
+          const stripeGap = Math.max(6, Math.round(10 * horizontalPixelRatio))
+          const stripeWidth = Math.max(2, Math.round(4 * horizontalPixelRatio))
+          context.save()
+          context.beginPath()
+          context.rect(left, 0, width, bitmapSize.height)
+          context.clip()
+          context.strokeStyle = 'rgba(255, 255, 255, 0.38)'
+          context.lineWidth = stripeWidth
+          for (let start = left - bitmapSize.height; start < right + bitmapSize.height; start += stripeGap) {
+            context.beginPath()
+            context.moveTo(start, bitmapSize.height)
+            context.lineTo(start + bitmapSize.height, 0)
+            context.stroke()
+          }
+          context.restore()
+        }
       }
 
       context.restore()
@@ -107,7 +125,7 @@ export class DateHighlightPrimitive implements ISeriesPrimitive<Time> {
       return []
     }
 
-    const highlightMap = new Map(this.highlights.map((item) => [item.tradeDate, item.color]))
+    const highlightMap = new Map(this.highlights.map((item) => [item.tradeDate, item]))
     if (!highlightMap.size) {
       return []
     }
@@ -130,8 +148,8 @@ export class DateHighlightPrimitive implements ISeriesPrimitive<Time> {
 
     for (let index = 0; index < points.length; index += 1) {
       const point = points[index]
-      const color = highlightMap.get(point.time)
-      if (!color) {
+      const band = highlightMap.get(point.time)
+      if (!band) {
         continue
       }
 
@@ -146,7 +164,8 @@ export class DateHighlightPrimitive implements ISeriesPrimitive<Time> {
       rects.push({
         left: point.x - leftHalf,
         right: point.x + rightHalf,
-        color,
+        color: band.color,
+        variant: band.variant ?? 'solid',
       })
     }
 
@@ -165,7 +184,7 @@ function mergeRects(rects: VisibleRect[]) {
     const current = rects[index]
     const previous = merged[merged.length - 1]
 
-    if (previous.color === current.color && current.left <= previous.right + 1) {
+    if (previous.color === current.color && previous.variant === current.variant && current.left <= previous.right + 1) {
       previous.right = Math.max(previous.right, current.right)
       continue
     }

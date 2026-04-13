@@ -138,7 +138,6 @@ const kdjLegend = computed(() => [
 const wrLegend = computed(() => [{ label: indicatorPayload.value.wr.label, color: indicatorPayload.value.wr.color }])
 const turnoverLegend = computed(() => [{ label: '换手率', color: '#ec4899' }])
 const rsiLegend = computed(() => [{ label: indicatorPayload.value.rsi.label, color: indicatorPayload.value.rsi.color }])
-
 function formatMetric(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
   return value.toFixed(4).replace(/\.?0+$/, '')
@@ -147,6 +146,13 @@ function formatMetric(value: number | null | undefined) {
 function formatMetricWithSuffix(value: number | null | undefined, suffix: string) {
   const formatted = formatMetric(value)
   return formatted === '-' ? '-' : `${formatted}${suffix}`
+}
+
+function formatRuleGroupList(prefix: string, groups: number[] | undefined) {
+  if (!groups?.length) return '-'
+  const visibleGroups = groups.slice(0, 3)
+  const base = `${prefix}规则组${visibleGroups.join('、')}`
+  return groups.length > 3 ? `${base} +${groups.length - 3}` : base
 }
 
 function buildPlaceholderRow(): SummaryRow {
@@ -233,6 +239,11 @@ const activeIndicatorSnapshot = computed(() => {
   }
 })
 
+const activeHighlightBand = computed(() => {
+  if (!activeTradeDate.value) return null
+  return props.highlightBands.find((item) => item.tradeDate === activeTradeDate.value) ?? null
+})
+
 const summaryCards = computed<SummaryCard[]>(() => {
   if (!activeSnapshot.value || !activeIndicatorSnapshot.value) return []
 
@@ -299,17 +310,74 @@ const summaryCards = computed<SummaryCard[]>(() => {
       title: 'RSI',
       rows: [{ label: indicatorPayload.value.rsi.label, value: formatMetric(indicator.rsi) }],
     },
+    {
+      key: 'rule-hits',
+      title: '命中规则',
+      rows: [
+        { label: '蓝色命中', value: formatRuleGroupList('蓝色', activeHighlightBand.value?.blueHitGroups) },
+        { label: '红色命中', value: formatRuleGroupList('红色', activeHighlightBand.value?.redHitGroups) },
+        {
+          label: '状态',
+          value:
+            !activeHighlightBand.value
+              ? '-'
+              : activeHighlightBand.value.color === 'purple'
+                ? '紫色重叠'
+                : activeHighlightBand.value.variant === 'striped'
+                  ? '同色多组'
+                  : '单组命中',
+        },
+        {
+          label: '说明',
+          value:
+            !activeHighlightBand.value
+              ? '-'
+              : activeHighlightBand.value.variant === 'striped'
+                ? '条纹表示该日存在多组同时命中'
+                : '纯色表示该日仅单个规则组命中',
+        },
+      ],
+    },
   ]
 })
 
-function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
+const mergedSummaryCards = computed<SummaryCard[]>(() => {
+  let mergedInserted = false
+  const turnoverCard = summaryCards.value.find((item) => item.key === 'turnover')
+  const rsiCard = summaryCards.value.find((item) => item.key === 'rsi')
+
+  if (!turnoverCard && !rsiCard) {
+    return summaryCards.value
+  }
+
+  const mergedCard: SummaryCard = {
+    key: 'turnover-rsi',
+    title: '换手率 / RSI',
+    rows: [...(turnoverCard?.rows ?? []), ...(rsiCard?.rows ?? [])],
+  }
+
+  return summaryCards.value.reduce<SummaryCard[]>((cards, card) => {
+    if (card.key === 'turnover' || card.key === 'rsi') {
+      if (!mergedInserted) {
+        cards.push(mergedCard)
+        mergedInserted = true
+      }
+      return cards
+    }
+    cards.push(card)
+    return cards
+  }, [])
+})
+
+function createBaseChart(container: HTMLDivElement, showTimeScale: boolean, showLeftPriceScale = false) {
   return createChart(container, {
     autoSize: true,
     layout: {
       background: { type: ColorType.Solid, color: '#ffffff' },
       textColor: '#14213d',
     },
-    rightPriceScale: { borderColor: '#e2e8f0', autoScale: true },
+    rightPriceScale: { borderColor: '#e2e8f0', autoScale: true, visible: true },
+    leftPriceScale: { borderColor: '#e2e8f0', autoScale: true, visible: showLeftPriceScale },
     timeScale: { borderColor: '#e2e8f0', timeVisible: true, visible: showTimeScale },
     grid: { vertLines: { color: '#f3f4f6' }, horzLines: { color: '#eef2f7' } },
     crosshair: {
@@ -321,8 +389,15 @@ function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
   })
 }
 
-function addLineSeries(chart: IChartApi, color: string, lineWidth: LineWidth = 2) {
-  return chart.addSeries(LineSeries, { color, lineWidth, lastValueVisible: false, priceLineVisible: false, crosshairMarkerRadius: 3 })
+function addLineSeries(chart: IChartApi, color: string, lineWidth: LineWidth = 2, priceScaleId?: string) {
+  return chart.addSeries(LineSeries, {
+    color,
+    lineWidth,
+    lastValueVisible: false,
+    priceLineVisible: false,
+    crosshairMarkerRadius: 3,
+    priceScaleId,
+  })
 }
 
 function addHistogramSeries(chart: IChartApi) {
@@ -647,8 +722,8 @@ onBeforeUnmount(() => {
         <button type="button" class="quant-switch" :class="{ active: overlayMode === 'boll' }" @click="overlayMode = 'boll'">BOLL</button>
       </div>
 
-      <div v-if="summaryCards.length" class="quant-kpi-grid">
-        <article v-for="card in summaryCards" :key="card.key" class="quant-kpi-card">
+      <div v-if="mergedSummaryCards.length" class="quant-kpi-grid">
+        <article v-for="card in mergedSummaryCards" :key="card.key" class="quant-kpi-card">
           <div class="quant-kpi-head">
             <h4 class="quant-kpi-title">{{ card.title }}</h4>
             <span v-if="card.hint" class="quant-kpi-hint">{{ card.hint }}</span>

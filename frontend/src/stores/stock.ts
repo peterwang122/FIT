@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 
 import {
-  fetchCffexNetPositions,
   fetchCffexNetPositionSeries,
+  fetchCffexNetPositions,
   fetchForexKline,
   fetchForexOptions,
   fetchIndexEmotions,
@@ -24,9 +24,66 @@ import type {
 
 const DEFAULT_FOREX_CODE = 'UDI'
 const DEFAULT_FOREX_NAME = '美元指数'
+const INDEX_RECENT_MONTHS = 4
+const FOREX_RECENT_MONTHS = 3
+const EMOTION_RECENT_MONTHS = 6
+const NET_POSITION_SERIES_RECENT_MONTHS = 12
+
+type ChunkedHistoryState = {
+  candles: KlineCandle[]
+  earliestLoadedDate: string | null
+  hasMoreHistory: boolean
+  pendingWindowKey: string | null
+}
+
+function formatDateOnly(value: Date): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function monthsAgo(months: number): string {
+  const value = new Date()
+  value.setMonth(value.getMonth() - months)
+  return formatDateOnly(value)
+}
+
+function shiftMonths(value: string, months: number): string {
+  const date = new Date(`${value}T00:00:00`)
+  date.setMonth(date.getMonth() + months)
+  return formatDateOnly(date)
+}
+
+function shiftDays(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00`)
+  date.setDate(date.getDate() + days)
+  return formatDateOnly(date)
+}
 
 function buildIdempotencyKey(tsCode: string): string {
   return `collect:${tsCode}:${new Date().toISOString().slice(0, 10)}`
+}
+
+function mergeCandles(existing: KlineCandle[], incoming: KlineCandle[]) {
+  const byDate = new Map<string, KlineCandle>()
+  for (const item of [...existing, ...incoming]) {
+    byDate.set(item.trade_date, item)
+  }
+  return [...byDate.values()].sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+}
+
+function buildChunkState(
+  candles: KlineCandle[],
+  hasMoreHistory = true,
+  pendingWindowKey: string | null = null,
+): ChunkedHistoryState {
+  return {
+    candles,
+    earliestLoadedDate: candles[0]?.trade_date ?? null,
+    hasMoreHistory: candles.length > 0 ? hasMoreHistory : false,
+    pendingWindowKey,
+  }
 }
 
 export const useStockStore = defineStore('stock', {
@@ -42,9 +99,15 @@ export const useStockStore = defineStore('stock', {
     indexCode: '',
     indexOptions: [] as MarketOption[],
     indexCandles: [] as KlineCandle[],
+    indexHasMoreHistory: false,
+    indexHistoryLoadingMore: false,
     forexCode: '',
     forexOptions: [] as MarketOption[],
     forexCandles: [] as KlineCandle[],
+    forexHasMoreHistory: false,
+    forexHistoryLoadingMore: false,
+    indexHistoryByCode: {} as Record<string, ChunkedHistoryState>,
+    forexHistoryByCode: {} as Record<string, ChunkedHistoryState>,
     loading: false,
     indexEmotionLoading: false,
     netPositionLoading: false,
@@ -87,6 +150,22 @@ export const useStockStore = defineStore('stock', {
         this.forexCode = preferredOption.code
       }
     },
+    applyIndexHistoryState(indexCode: string, state: ChunkedHistoryState | null) {
+      this.indexCandles = state?.candles ?? []
+      this.indexHasMoreHistory = state?.hasMoreHistory ?? false
+      this.indexHistoryLoadingMore = Boolean(state?.pendingWindowKey)
+      if (state) {
+        this.indexHistoryByCode[indexCode] = state
+      }
+    },
+    applyForexHistoryState(forexCode: string, state: ChunkedHistoryState | null) {
+      this.forexCandles = state?.candles ?? []
+      this.forexHasMoreHistory = state?.hasMoreHistory ?? false
+      this.forexHistoryLoadingMore = Boolean(state?.pendingWindowKey)
+      if (state) {
+        this.forexHistoryByCode[forexCode] = state
+      }
+    },
     async loadSymbols() {
       this.symbols = await fetchSymbols()
       this.ensureDefaultStockSelection()
@@ -101,13 +180,9 @@ export const useStockStore = defineStore('stock', {
         this.ensureDefaultIndexSelection()
         this.ensureDefaultForexSelection()
 
-        await Promise.all([
-          this.loadIndexEmotionPoints(),
-          this.loadNetPositionTables(),
-          this.loadNetPositionSeries(),
-          this.loadIndexKline(),
-          this.loadForexKline(),
-        ])
+        await Promise.allSettled([this.loadIndexKline(), this.loadForexKline(), this.loadNetPositionTables()])
+        void this.loadIndexEmotionPoints()
+        void this.loadNetPositionSeries()
       } catch (error) {
         this.error = `初始化失败：${String(error)}`
       }
@@ -135,7 +210,7 @@ export const useStockStore = defineStore('stock', {
     async loadIndexEmotionPoints() {
       this.indexEmotionLoading = true
       try {
-        this.indexEmotionPoints = await fetchIndexEmotions()
+        this.indexEmotionPoints = await fetchIndexEmotions(monthsAgo(EMOTION_RECENT_MONTHS))
       } catch (error) {
         this.error = `加载指数情绪图失败：${String(error)}`
       } finally {
@@ -168,7 +243,7 @@ export const useStockStore = defineStore('stock', {
     async loadNetPositionSeries() {
       this.netPositionSeriesLoading = true
       try {
-        this.netPositionSeries = await fetchCffexNetPositionSeries()
+        this.netPositionSeries = await fetchCffexNetPositionSeries(monthsAgo(NET_POSITION_SERIES_RECENT_MONTHS))
       } catch (error) {
         this.error = `加载中金所净空单折线图失败：${String(error)}`
       } finally {
@@ -177,26 +252,100 @@ export const useStockStore = defineStore('stock', {
     },
     async loadIndexKline() {
       if (!this.indexCode) return
+      const cached = this.indexHistoryByCode[this.indexCode]
+      if (cached?.candles.length) {
+        this.applyIndexHistoryState(this.indexCode, cached)
+        return
+      }
       this.indexLoading = true
       this.error = ''
       try {
-        this.indexCandles = await fetchIndexKline(this.indexCode)
+        const candles = await fetchIndexKline(this.indexCode, monthsAgo(INDEX_RECENT_MONTHS))
+        this.applyIndexHistoryState(this.indexCode, buildChunkState(candles, candles.length > 0))
       } catch (error) {
         this.error = `加载指数 K 线失败：${String(error)}`
       } finally {
         this.indexLoading = false
       }
     },
+    async loadMoreIndexHistory() {
+      if (!this.indexCode) return
+      const currentState = this.indexHistoryByCode[this.indexCode]
+      if (!currentState?.earliestLoadedDate || !currentState.hasMoreHistory || currentState.pendingWindowKey) {
+        return
+      }
+
+      const endDate = shiftDays(currentState.earliestLoadedDate, -1)
+      const startDate = shiftMonths(endDate, -INDEX_RECENT_MONTHS)
+      const windowKey = `${startDate}:${endDate}`
+      this.applyIndexHistoryState(this.indexCode, {
+        ...currentState,
+        pendingWindowKey: windowKey,
+      })
+
+      try {
+        const candles = await fetchIndexKline(this.indexCode, startDate, endDate)
+        const mergedCandles = mergeCandles(currentState.candles, candles)
+        const hasOlderCandles =
+          candles.length > 0 &&
+          Boolean(mergedCandles[0]?.trade_date) &&
+          mergedCandles[0].trade_date < currentState.earliestLoadedDate
+        this.applyIndexHistoryState(this.indexCode, buildChunkState(mergedCandles, hasOlderCandles))
+      } catch (error) {
+        this.error = `加载更早指数 K 线失败：${String(error)}`
+        this.applyIndexHistoryState(this.indexCode, {
+          ...currentState,
+          pendingWindowKey: null,
+        })
+      }
+    },
     async loadForexKline() {
       if (!this.forexCode) return
+      const cached = this.forexHistoryByCode[this.forexCode]
+      if (cached?.candles.length) {
+        this.applyForexHistoryState(this.forexCode, cached)
+        return
+      }
       this.forexLoading = true
       this.error = ''
       try {
-        this.forexCandles = await fetchForexKline(this.forexCode)
+        const candles = await fetchForexKline(this.forexCode, monthsAgo(FOREX_RECENT_MONTHS))
+        this.applyForexHistoryState(this.forexCode, buildChunkState(candles, candles.length > 0))
       } catch (error) {
         this.error = `加载汇率 K 线失败：${String(error)}`
       } finally {
         this.forexLoading = false
+      }
+    },
+    async loadMoreForexHistory() {
+      if (!this.forexCode) return
+      const currentState = this.forexHistoryByCode[this.forexCode]
+      if (!currentState?.earliestLoadedDate || !currentState.hasMoreHistory || currentState.pendingWindowKey) {
+        return
+      }
+
+      const endDate = shiftDays(currentState.earliestLoadedDate, -1)
+      const startDate = shiftMonths(endDate, -FOREX_RECENT_MONTHS)
+      const windowKey = `${startDate}:${endDate}`
+      this.applyForexHistoryState(this.forexCode, {
+        ...currentState,
+        pendingWindowKey: windowKey,
+      })
+
+      try {
+        const candles = await fetchForexKline(this.forexCode, startDate, endDate)
+        const mergedCandles = mergeCandles(currentState.candles, candles)
+        const hasOlderCandles =
+          candles.length > 0 &&
+          Boolean(mergedCandles[0]?.trade_date) &&
+          mergedCandles[0].trade_date < currentState.earliestLoadedDate
+        this.applyForexHistoryState(this.forexCode, buildChunkState(mergedCandles, hasOlderCandles))
+      } catch (error) {
+        this.error = `加载更早汇率 K 线失败：${String(error)}`
+        this.applyForexHistoryState(this.forexCode, {
+          ...currentState,
+          pendingWindowKey: null,
+        })
       }
     },
     async triggerCollect() {

@@ -67,6 +67,30 @@ export function createEmptyRuleGroupDraft(): QuantRuleGroupDraft {
   }
 }
 
+export function deserializeRuleGroups(groups: QuantFilterGroupSet): QuantRuleGroupDraft[] {
+  return groups.map((group) => ({
+    id: nextDraftId('group'),
+    conditions: group.conditions.map((condition) => {
+      if (condition.type === 'numeric') {
+        return {
+          id: nextDraftId('condition'),
+          target: createFieldTarget(condition.field),
+          operator: condition.operator,
+          value: String(condition.value),
+          track: '',
+        }
+      }
+      return {
+        id: nextDraftId('condition'),
+        target: condition.mode === 'intraday' ? 'boll:intraday' : 'boll:close',
+        operator: condition.operator,
+        value: '',
+        track: condition.track,
+      }
+    }),
+  }))
+}
+
 export function normalizeRuleGroups(
   drafts: QuantRuleGroupDraft[],
   allowedFields: QuantFilterFieldKey[],
@@ -171,6 +195,16 @@ export function matchRuleCondition(snapshot: QuantDailyIndicatorSnapshot, condit
 
 export function matchRuleGroup(snapshot: QuantDailyIndicatorSnapshot, group: QuantRuleGroup): boolean {
   return group.conditions.every((condition) => matchRuleCondition(snapshot, condition))
+}
+
+export function matchRuleGroupIndexes(snapshot: QuantDailyIndicatorSnapshot, groups: QuantFilterGroupSet): number[] {
+  if (!groups.length) return []
+  return groups.reduce<number[]>((matches, group, index) => {
+    if (matchRuleGroup(snapshot, group)) {
+      matches.push(index + 1)
+    }
+    return matches
+  }, [])
 }
 
 export function matchRuleGroups(snapshot: QuantDailyIndicatorSnapshot, groups: QuantFilterGroupSet): boolean {

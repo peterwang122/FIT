@@ -17,6 +17,7 @@ export type QuantIndicatorCandle = {
   high: number
   low: number
   close: number
+  pct_chg?: number | null
   turnover_rate?: number | null
 }
 
@@ -37,6 +38,7 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
 ]
 
 export const STOCK_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+  'pct-chg',
   'turnover-rate',
   'rsi',
   'wr',
@@ -67,6 +69,12 @@ function sortCandles(candles: QuantIndicatorCandle[]): QuantIndicatorCandle[] {
       high: Number(item.high),
       low: Number(item.low),
       close: Number(item.close),
+      pct_chg:
+        item.pct_chg === null || item.pct_chg === undefined
+          ? null
+          : isFiniteNumber(Number(item.pct_chg))
+            ? Number(item.pct_chg)
+            : null,
       turnover_rate:
         item.turnover_rate === null || item.turnover_rate === undefined
           ? null
@@ -477,6 +485,7 @@ function buildStockQuantFilterFields(payload: QuantChartPayload): QuantFilterFie
     { key: 'ma-2', group: 'ma', label: payload.ma[1]?.label ?? 'MA2' },
     { key: 'ma-3', group: 'ma', label: payload.ma[2]?.label ?? 'MA3' },
     { key: 'ma-4', group: 'ma', label: payload.ma[3]?.label ?? 'MA4' },
+    { key: 'pct-chg', group: 'change', label: '涨跌幅(%)' },
     { key: 'turnover-rate', group: 'turnover', label: '换手率(%)' },
     { key: 'rsi', group: 'rsi', label: payload.rsi.label },
     { key: 'wr', group: 'wr', label: payload.wr.label },
@@ -498,6 +507,7 @@ function buildBaseSnapshots(payload: QuantChartPayload, candles: QuantIndicatorC
     high: sortedCandles[index]?.high ?? null,
     low: sortedCandles[index]?.low ?? null,
     values: {
+      'pct-chg': sortedCandles[index]?.pct_chg ?? null,
       'turnover-rate':
         sortedCandles[index]?.turnover_rate === null || sortedCandles[index]?.turnover_rate === undefined
           ? null
