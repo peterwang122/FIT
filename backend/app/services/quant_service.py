@@ -1,8 +1,9 @@
 import json
+from hashlib import sha1
 from bisect import bisect_right
 from collections import defaultdict
-from datetime import date
-from math import sqrt
+from datetime import date, timedelta
+from math import ceil, sqrt
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.redis_client import redis_client
 from app.models.quant_strategy_config import QuantStrategyConfig
+from app.models.user import User
+from app.services.notification_service import NotificationService
 from app.services.stock_service import StockService
 
 CORE_INDEX_NAMES = ["上证50", "沪深300", "中证500", "中证1000"]
@@ -34,7 +37,13 @@ INDEX_STRATEGY_FILTER_KEYS = [
     "kdj-d",
     "kdj-j",
 ]
+SEQUENCE_STRATEGY_SERIES_KEYS = [
+    "market-breadth-up-pct",
+    "target-up-pct",
+    "target-down-pct",
+]
 STOCK_STRATEGY_FILTER_KEYS = [
+    "pct-chg",
     "turnover-rate",
     "rsi",
     "wr",
@@ -54,6 +63,20 @@ INDEX_BREADTH_CACHE_TTL_SECONDS = 600
 INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v1"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 INDEX_DASHBOARD_RECENT_LIMIT = 750
+BUY_POSITION_SEARCH_RATIOS = [step / 100 for step in range(20, 101, 5)]
+SELL_POSITION_SEARCH_RATIOS = [step / 100 for step in range(5, 101, 5)]
+OPTIMIZATION_TOLERANCE = 1e-9
+DEFAULT_SCAN_INITIAL_CAPITAL = 1_000_000.0
+DEFAULT_SCAN_BUY_AMOUNT = 10_000.0
+DEFAULT_SCAN_BUY_OFFSET = 1
+DEFAULT_SCAN_SELL_OFFSET = 2
+DEFAULT_SCAN_BUY_PRICE_BASIS = "open"
+DEFAULT_SCAN_SELL_PRICE_BASIS = "open"
+SCAN_PRICE_BASES = {"open", "close"}
+SCAN_RESULT_CACHE_KEY_PREFIX = "fit:quant:sequence_scan:v1"
+SCAN_RESULT_CACHE_TTL_SECONDS = 3600
+SCAN_EVENT_PAGE_SIZE = 100
+SCAN_EVENT_PAGE_SIZE_MAX = 500
 
 
 def _date_text(value: object) -> str:
@@ -248,10 +271,112 @@ def _normalize_ratio(value: object) -> float:
     return max(min(parsed, 1.0), 0.0)
 
 
+def _position_bucket(position_pct: float) -> str:
+    if position_pct <= 0:
+        return "flat"
+    if position_pct <= 0.25:
+        return "light"
+    if position_pct <= 0.5:
+        return "medium"
+    if position_pct <= 0.75:
+        return "heavy"
+    return "full"
+
+
+def _round_metric(value: float) -> float:
+    return round(float(value), 6)
+
+
 class QuantService:
     def __init__(self, db: Session):
         self.db = db
         self.stock_service = StockService(db)
+        self.notification_service = NotificationService(db)
+
+    def _normalize_strategy_engine(self, value: object) -> str:
+        normalized = str(value or "snapshot").strip().lower()
+        return "sequence" if normalized == "sequence" else "snapshot"
+
+    def _normalize_sequence_mode(self, value: object) -> str:
+        normalized = str(value or "single_target").strip().lower()
+        return "market_scan" if normalized == "market_scan" else "single_target"
+
+    def _default_scan_trade_config(self) -> dict:
+        return {
+            "initial_capital": DEFAULT_SCAN_INITIAL_CAPITAL,
+            "buy_amount_per_event": DEFAULT_SCAN_BUY_AMOUNT,
+            "buy_offset_trading_days": DEFAULT_SCAN_BUY_OFFSET,
+            "sell_offset_trading_days": DEFAULT_SCAN_SELL_OFFSET,
+            "buy_price_basis": DEFAULT_SCAN_BUY_PRICE_BASIS,
+            "sell_price_basis": DEFAULT_SCAN_SELL_PRICE_BASIS,
+        }
+
+    def _normalize_scan_trade_config(self, raw_config: object) -> dict:
+        config = raw_config if isinstance(raw_config, dict) else {}
+        default = self._default_scan_trade_config()
+
+        initial_capital = _to_float(config.get("initial_capital"))
+        if initial_capital is None or initial_capital <= 0:
+            initial_capital = default["initial_capital"]
+
+        buy_amount_per_event = _to_float(config.get("buy_amount_per_event"))
+        if buy_amount_per_event is None or buy_amount_per_event <= 0:
+            buy_amount_per_event = default["buy_amount_per_event"]
+
+        try:
+            buy_offset_trading_days = int(config.get("buy_offset_trading_days", default["buy_offset_trading_days"]))
+        except (TypeError, ValueError):
+            buy_offset_trading_days = default["buy_offset_trading_days"]
+        try:
+            sell_offset_trading_days = int(
+                config.get("sell_offset_trading_days", default["sell_offset_trading_days"])
+            )
+        except (TypeError, ValueError):
+            sell_offset_trading_days = default["sell_offset_trading_days"]
+
+        buy_offset_trading_days = max(buy_offset_trading_days, 1)
+        sell_offset_trading_days = max(sell_offset_trading_days, 1)
+
+        buy_price_basis = str(config.get("buy_price_basis", default["buy_price_basis"])).strip().lower()
+        sell_price_basis = str(config.get("sell_price_basis", default["sell_price_basis"])).strip().lower()
+        if buy_price_basis not in SCAN_PRICE_BASES:
+            buy_price_basis = default["buy_price_basis"]
+        if sell_price_basis not in SCAN_PRICE_BASES:
+            sell_price_basis = default["sell_price_basis"]
+
+        buy_order_key = (buy_offset_trading_days, 0 if buy_price_basis == "open" else 1)
+        sell_order_key = (sell_offset_trading_days, 0 if sell_price_basis == "open" else 1)
+        if sell_order_key <= buy_order_key:
+            raise ValueError("scan sell execution must be later than buy execution")
+
+        return {
+            "initial_capital": float(initial_capital),
+            "buy_amount_per_event": float(buy_amount_per_event),
+            "buy_offset_trading_days": buy_offset_trading_days,
+            "sell_offset_trading_days": sell_offset_trading_days,
+            "buy_price_basis": buy_price_basis,
+            "sell_price_basis": sell_price_basis,
+        }
+
+    def _allowed_snapshot_filter_keys(self, strategy_type: str) -> list[str]:
+        return INDEX_STRATEGY_FILTER_KEYS if strategy_type == "index" else STOCK_STRATEGY_FILTER_KEYS
+
+    def _normalize_price_rows(self, candles: list[dict]) -> list[dict]:
+        return [
+            {
+                "trade_date": item["trade_date"],
+                "open": float(item["open"]),
+                "close": float(item["close"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+            }
+            for item in sorted(candles, key=lambda row: _date_text(row.get("trade_date")))
+            if item.get("trade_date") is not None
+            and item.get("open") is not None
+            and item.get("close") is not None
+            and item.get("high") is not None
+            and item.get("low") is not None
+        ]
 
     def _resolve_index_option(self, index_code: str) -> dict | None:
         for item in self.stock_service.list_index_options():
@@ -280,7 +405,12 @@ class QuantService:
         )
         return self.db.execute(sql, {"index_code": index_code}).scalar()
 
-    def _load_index_dashboard_rows(self, index_code: str, start_date: date | None = None) -> list[dict]:
+    def _load_index_dashboard_rows(
+        self,
+        index_code: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
         sql = (
             f"SELECT "
             f"`{settings.quant_index_dashboard_date_column}` AS trade_date, "
@@ -297,10 +427,19 @@ class QuantService:
         if start_date is not None:
             sql += f" AND `{settings.quant_index_dashboard_date_column}` >= :start_date"
             params["start_date"] = start_date
+        if end_date is not None:
+            sql += f" AND `{settings.quant_index_dashboard_date_column}` <= :end_date"
+            params["end_date"] = end_date
         sql += f" ORDER BY `{settings.quant_index_dashboard_date_column}` ASC"
         return [dict(row) for row in self.db.execute(text(sql), params).mappings().all()]
 
-    def get_index_dashboard(self, index_code: str, mode: str = "recent") -> dict:
+    def get_index_dashboard(
+        self,
+        index_code: str,
+        mode: str = "recent",
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
         normalized_mode = mode.strip().lower()
         if normalized_mode not in {"recent", "full"}:
             raise ValueError("unsupported mode")
@@ -309,7 +448,14 @@ class QuantService:
         if option is None:
             raise ValueError("index not found")
 
-        cache_key = f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:{index_code}:{normalized_mode}"
+        using_explicit_window = start_date is not None or end_date is not None
+        response_mode = "window" if using_explicit_window else normalized_mode
+
+        cache_key = (
+            f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:{index_code}:{response_mode}:"
+            f"{start_date.isoformat() if start_date else 'none'}:"
+            f"{end_date.isoformat() if end_date else 'none'}"
+        )
         cached = redis_client.get(cache_key)
         if cached:
             try:
@@ -319,18 +465,29 @@ class QuantService:
             except json.JSONDecodeError:
                 pass
 
-        start_date = self._resolve_recent_index_start_date(index_code) if normalized_mode == "recent" else None
-        candles = self.stock_service.list_index_daily_kline(index_code=index_code, start_date=start_date)
+        resolved_start_date = start_date
+        if resolved_start_date is None and normalized_mode == "recent":
+            resolved_start_date = self._resolve_recent_index_start_date(index_code)
+
+        candles = self.stock_service.list_index_daily_kline(
+            index_code=index_code,
+            start_date=resolved_start_date,
+            end_date=end_date,
+        )
 
         try:
             self._ensure_index_dashboard_table_ready()
-            rows = self._load_index_dashboard_rows(index_code=index_code, start_date=start_date)
+            rows = self._load_index_dashboard_rows(
+                index_code=index_code,
+                start_date=resolved_start_date,
+                end_date=end_date,
+            )
         except SQLAlchemyError as exc:
             raise RuntimeError("failed to load precomputed quant index dashboard data") from exc
 
         result = {
             "index": {"code": option["code"], "name": option["name"]},
-            "range_mode": normalized_mode,
+            "range_mode": response_mode,
             "candles": candles,
             "emotion_points": [
                 {
@@ -669,6 +826,7 @@ class QuantService:
                     "high": sorted_candles[index]["high"],
                     "low": sorted_candles[index]["low"],
                     "values": {
+                        "pct-chg": sorted_candles[index]["pct_chg"],
                         "turnover-rate": (
                             sorted_candles[index]["turnover_rate"] * 100
                             if sorted_candles[index].get("turnover_rate") is not None
@@ -693,6 +851,853 @@ class QuantService:
                 }
             )
         return snapshots
+
+    def _normalize_sequence_groups(self, raw_groups: object) -> list[dict]:
+        if not isinstance(raw_groups, list):
+            return []
+
+        normalized_groups: list[dict] = []
+        allowed_series_keys = set(SEQUENCE_STRATEGY_SERIES_KEYS)
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            raw_conditions = raw_group.get("conditions")
+            if not isinstance(raw_conditions, list):
+                continue
+
+            conditions: list[dict] = []
+            for raw_condition in raw_conditions:
+                if not isinstance(raw_condition, dict):
+                    continue
+                series_key = str(raw_condition.get("series_key", "")).strip()
+                operator = str(raw_condition.get("operator", "")).strip()
+                threshold = _normalize_threshold(raw_condition.get("threshold"))
+                consecutive_days = raw_condition.get("consecutive_days")
+                try:
+                    consecutive_days_value = int(consecutive_days)
+                except (TypeError, ValueError):
+                    consecutive_days_value = 0
+                if (
+                    series_key not in allowed_series_keys
+                    or operator not in {"gt", "lt"}
+                    or threshold is None
+                    or consecutive_days_value <= 0
+                ):
+                    continue
+                conditions.append(
+                    {
+                        "series_key": series_key,
+                        "operator": operator,
+                        "threshold": threshold,
+                        "consecutive_days": consecutive_days_value,
+                    }
+                )
+
+            if conditions:
+                normalized_groups.append({"conditions": conditions})
+
+        return normalized_groups
+
+    def _get_sequence_groups(self, strategy: QuantStrategyConfig, side: str) -> list[dict]:
+        raw_groups = getattr(strategy, f"{side}_sequence_groups", None)
+        return self._normalize_sequence_groups(raw_groups)
+
+    def _sequence_group_hit_indexes(self, snapshots: list[dict], index: int, groups: list[dict]) -> list[int]:
+        matches: list[int] = []
+        for group_index, group in enumerate(groups):
+            if self._matches_sequence_group_at(snapshots, index, group):
+                matches.append(group_index + 1)
+        return matches
+
+    def _max_consecutive_days_in_groups(self, groups: list[dict]) -> int:
+        max_days = 0
+        for group in groups:
+            for condition in group.get("conditions", []):
+                try:
+                    max_days = max(max_days, int(condition.get("consecutive_days") or 0))
+                except (TypeError, ValueError):
+                    continue
+        return max_days
+
+    def _sequence_groups_require_breadth(self, groups: list[dict]) -> bool:
+        for group in groups:
+            for condition in group.get("conditions", []):
+                if str(condition.get("series_key", "")).strip() == "market-breadth-up-pct":
+                    return True
+        return False
+
+    def _build_sequence_snapshots(self, strategy: QuantStrategyConfig) -> list[dict]:
+        strategy_type = str(strategy.strategy_type or "").strip().lower()
+        if strategy_type == "index":
+            target_candles = self.stock_service.list_index_daily_kline(strategy.target_code)
+        elif strategy_type == "stock":
+            target_candles = self.stock_service.list_daily_kline(strategy.target_code)
+        elif strategy_type == "etf":
+            target_candles = self.stock_service.list_etf_daily_kline(strategy.target_code)
+        else:
+            return []
+
+        sorted_candles = _sort_candles(target_candles)
+        if not sorted_candles:
+            return []
+
+        buy_groups = self._get_sequence_groups(strategy, "buy")
+        sell_groups = self._get_sequence_groups(strategy, "sell")
+        requires_breadth = self._sequence_groups_require_breadth(buy_groups) or self._sequence_groups_require_breadth(sell_groups)
+        breadth_by_date = (
+            {
+                _date_text(item.get("trade_date")): _to_float(item.get("up_ratio_pct"))
+                for item in self.list_index_breadth()
+                if item.get("trade_date") is not None
+            }
+            if requires_breadth
+            else {}
+        )
+
+        snapshots: list[dict] = []
+        for candle in sorted_candles:
+            trade_date = candle["trade_date"]
+            snapshots.append(
+                {
+                    "trade_date": trade_date,
+                    "values": {
+                        "target-up-pct": candle.get("pct_chg") if _to_float(candle.get("pct_chg")) and _to_float(candle.get("pct_chg")) > 0 else None,
+                        "target-down-pct": abs(_to_float(candle.get("pct_chg"))) if _to_float(candle.get("pct_chg")) and _to_float(candle.get("pct_chg")) < 0 else None,
+                        "market-breadth-up-pct": breadth_by_date.get(trade_date),
+                    },
+                }
+            )
+        return snapshots
+
+    def _matches_sequence_condition_at(self, snapshots: list[dict], index: int, condition: dict) -> bool:
+        consecutive_days = int(condition.get("consecutive_days") or 0)
+        if consecutive_days <= 0 or index - consecutive_days + 1 < 0:
+            return False
+
+        series_key = str(condition.get("series_key", "")).strip()
+        operator = str(condition.get("operator", "")).strip()
+        threshold = _normalize_threshold(condition.get("threshold"))
+        if series_key not in SEQUENCE_STRATEGY_SERIES_KEYS or operator not in {"gt", "lt"} or threshold is None:
+            return False
+
+        start_index = index - consecutive_days + 1
+        for cursor in range(start_index, index + 1):
+            value = _to_float(snapshots[cursor].get("values", {}).get(series_key))
+            if value is None:
+                return False
+            if operator == "gt" and value <= threshold:
+                return False
+            if operator == "lt" and value >= threshold:
+                return False
+        return True
+
+    def _matches_sequence_group_at(self, snapshots: list[dict], index: int, group: dict) -> bool:
+        conditions = group.get("conditions")
+        if not isinstance(conditions, list) or not conditions:
+            return False
+        return all(self._matches_sequence_condition_at(snapshots, index, condition) for condition in conditions)
+
+    def _build_sequence_signal_map(self, strategy: QuantStrategyConfig, snapshots: list[dict]) -> dict[str, str]:
+        buy_groups = self._get_sequence_groups(strategy, "buy")
+        sell_groups = self._get_sequence_groups(strategy, "sell")
+        signal_map: dict[str, str] = {}
+        for index, snapshot in enumerate(snapshots):
+            is_buy = any(self._matches_sequence_group_at(snapshots, index, group) for group in buy_groups)
+            is_sell = any(self._matches_sequence_group_at(snapshots, index, group) for group in sell_groups)
+            if is_buy and is_sell:
+                signal_map[snapshot["trade_date"]] = "purple"
+            elif is_buy:
+                signal_map[snapshot["trade_date"]] = "blue"
+            elif is_sell:
+                signal_map[snapshot["trade_date"]] = "red"
+        return signal_map
+
+    def _parse_optional_date(self, value: object) -> date | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, date):
+            return value
+        text_value = str(value).strip()
+        if not text_value:
+            return None
+        return date.fromisoformat(text_value)
+
+    def _normalize_scan_payload(self, payload: dict) -> dict:
+        strategy_type = str(payload.get("strategy_type", "")).strip().lower()
+        if strategy_type not in {"stock", "etf"}:
+            raise ValueError("market scan only supports stock or etf")
+        buy_groups = self._normalize_sequence_groups(payload.get("buy_sequence_groups"))
+        if not buy_groups:
+            raise ValueError("market scan requires at least one buy rule group")
+        scan_start_date = self._parse_optional_date(payload.get("scan_start_date"))
+        scan_end_date = self._parse_optional_date(payload.get("scan_end_date"))
+        if scan_start_date is None or scan_end_date is None:
+            raise ValueError("market scan requires scan_start_date and scan_end_date")
+        if scan_end_date < scan_start_date:
+            raise ValueError("scan_end_date must be later than or equal to scan_start_date")
+        return {
+            "strategy_type": strategy_type,
+            "buy_sequence_groups": buy_groups,
+            "scan_trade_config": self._normalize_scan_trade_config(payload.get("scan_trade_config") or {}),
+            "scan_start_date": scan_start_date,
+            "scan_end_date": scan_end_date,
+        }
+
+    def _resolve_scan_query_start_date(self, start_date: date, buy_groups: list[dict]) -> date:
+        max_days = self._max_consecutive_days_in_groups(buy_groups)
+        lookback_days = max(60, max_days * 5)
+        return start_date - timedelta(days=lookback_days)
+
+    def _normalize_scan_page(self, page: int | None = None, page_size: int | None = None) -> tuple[int, int]:
+        normalized_page = int(page or 1)
+        normalized_size = int(page_size or SCAN_EVENT_PAGE_SIZE)
+        normalized_page = max(normalized_page, 1)
+        normalized_size = max(1, min(normalized_size, SCAN_EVENT_PAGE_SIZE_MAX))
+        return normalized_page, normalized_size
+
+    def _serialize_scan_payload_for_cache(self, normalized_payload: dict) -> dict:
+        return {
+            "strategy_type": normalized_payload["strategy_type"],
+            "buy_sequence_groups": normalized_payload["buy_sequence_groups"],
+            "scan_trade_config": normalized_payload["scan_trade_config"],
+            "scan_start_date": normalized_payload["scan_start_date"].isoformat(),
+            "scan_end_date": normalized_payload["scan_end_date"].isoformat(),
+        }
+
+    def _build_scan_result_id(self, owner_user_id: int, serialized_payload: dict) -> str:
+        serialized_text = json.dumps(serialized_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return sha1(f"{owner_user_id}:{serialized_text}".encode("utf-8")).hexdigest()
+
+    def _scan_result_cache_key(self, scan_result_id: str) -> str:
+        return f"{SCAN_RESULT_CACHE_KEY_PREFIX}:{scan_result_id}"
+
+    def _store_scan_result(
+        self,
+        *,
+        scan_result_id: str,
+        owner_user_id: int,
+        normalized_payload: dict,
+        matched_events: list[dict],
+    ) -> dict:
+        payload = {
+            "scan_result_id": scan_result_id,
+            "owner_user_id": owner_user_id,
+            "normalized_payload": self._serialize_scan_payload_for_cache(normalized_payload),
+            "matched_events": matched_events,
+            "matched_event_count": len(matched_events),
+            "tradable_event_count": sum(1 for event in matched_events if event.get("tradable")),
+        }
+        redis_client.set(
+            self._scan_result_cache_key(scan_result_id),
+            json.dumps(payload, ensure_ascii=False, default=str),
+            ex=SCAN_RESULT_CACHE_TTL_SECONDS,
+        )
+        return payload
+
+    def _load_scan_result(self, scan_result_id: str, owner_user_id: int) -> dict:
+        cached = redis_client.get(self._scan_result_cache_key(scan_result_id))
+        if not cached:
+            raise ValueError("scan result not found")
+        try:
+            payload = json.loads(cached)
+        except json.JSONDecodeError as exc:
+            raise ValueError("scan result not found") from exc
+        if int(payload.get("owner_user_id") or 0) != owner_user_id:
+            raise ValueError("scan result not found")
+        redis_client.expire(self._scan_result_cache_key(scan_result_id), SCAN_RESULT_CACHE_TTL_SECONDS)
+        return payload
+
+    def _paginate_scan_events(self, matched_events: list[dict], page: int | None = None, page_size: int | None = None) -> dict:
+        normalized_page, normalized_size = self._normalize_scan_page(page, page_size)
+        total_count = len(matched_events)
+        offset = (normalized_page - 1) * normalized_size
+        return {
+            "page": normalized_page,
+            "page_size": normalized_size,
+            "total_event_count": total_count,
+            "matched_events": matched_events[offset : offset + normalized_size],
+        }
+
+    def _resolve_scan_lot_rule(self, strategy_type: str, board: str | None) -> dict | None:
+        if strategy_type == "etf":
+            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "ETF 100浠借捣锛?00浠介€掑"}
+        normalized_board = str(board or "").strip()
+        if not normalized_board:
+            return None
+        if "绉戝垱鏉?" in normalized_board:
+            return {"min_qty": 200, "step": 1, "mode": "after_minimum", "label": "绉戝垱鏉?00鑲¤捣锛?00鑲′互涓婃瘡娆?鑲?"}
+        if "鍖椾氦鎵?" in normalized_board or "鍖楄瘉" in normalized_board:
+            return {"min_qty": 100, "step": 1, "mode": "after_minimum", "label": "鍖椾氦鎵?00鑲¤捣锛?00鑲′互涓婃瘡娆?鑲?"}
+        if "涓绘澘" in normalized_board:
+            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "涓绘澘 100鑲¤捣锛?00鑲￠€掑"}
+        if "鍒涗笟鏉?" in normalized_board:
+            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "鍒涗笟鏉?00鑲¤捣锛?00鑲￠€掑"}
+        return None
+
+    def _round_up_lot_quantity(self, raw_quantity: float, lot_rule: dict) -> int | None:
+        if raw_quantity <= 0:
+            return None
+        min_qty = int(lot_rule.get("min_qty") or 0)
+        step = int(lot_rule.get("step") or 1)
+        mode = str(lot_rule.get("mode") or "multiple")
+        if mode == "after_minimum":
+            return max(min_qty, int(ceil(raw_quantity)))
+        return max(min_qty, int(ceil(raw_quantity / step) * step))
+
+    def _build_scan_snapshots(self, candles: list[dict], breadth_by_date: dict[str, float | None]) -> list[dict]:
+        snapshots: list[dict] = []
+        for candle in candles:
+            trade_date = _date_text(candle.get("trade_date"))
+            pct_chg = _to_float(candle.get("pct_chg"))
+            snapshots.append(
+                {
+                    "trade_date": trade_date,
+                    "values": {
+                        "target-up-pct": pct_chg if pct_chg is not None and pct_chg > 0 else None,
+                        "target-down-pct": abs(pct_chg) if pct_chg is not None and pct_chg < 0 else None,
+                        "market-breadth-up-pct": breadth_by_date.get(trade_date),
+                    },
+                }
+            )
+        return snapshots
+
+    def _sequence_condition_cache_key(self, condition: dict) -> tuple[str, str, float, int] | None:
+        series_key = str(condition.get("series_key", "")).strip()
+        operator = str(condition.get("operator", "")).strip()
+        threshold = _normalize_threshold(condition.get("threshold"))
+        consecutive_days = int(condition.get("consecutive_days") or 0)
+        if (
+            series_key not in SEQUENCE_STRATEGY_SERIES_KEYS
+            or operator not in {"gt", "lt"}
+            or threshold is None
+            or consecutive_days <= 0
+        ):
+            return None
+        return (series_key, operator, float(threshold), consecutive_days)
+
+    def _build_scan_group_hits(self, snapshots: list[dict], groups: list[dict]) -> list[list[int]]:
+        if not snapshots or not groups:
+            return [[] for _ in snapshots]
+
+        condition_keys: dict[tuple[str, str, float, int], tuple[str, str, float, int]] = {}
+        group_condition_keys: list[list[tuple[str, str, float, int]]] = []
+        for group in groups:
+            normalized_keys: list[tuple[str, str, float, int]] = []
+            for condition in group.get("conditions", []):
+                condition_key = self._sequence_condition_cache_key(condition)
+                if condition_key is None:
+                    continue
+                condition_keys[condition_key] = condition_key
+                normalized_keys.append(condition_key)
+            group_condition_keys.append(normalized_keys)
+
+        if not condition_keys:
+            return [[] for _ in snapshots]
+
+        condition_matches: dict[tuple[str, str, float, int], list[bool]] = {}
+        for condition_key in condition_keys:
+            series_key, operator, threshold, consecutive_days = condition_key
+            streak = 0
+            matches = [False] * len(snapshots)
+            for index, snapshot in enumerate(snapshots):
+                value = _to_float(snapshot.get("values", {}).get(series_key))
+                is_match = value is not None and (
+                    (operator == "gt" and value > threshold) or (operator == "lt" and value < threshold)
+                )
+                streak = streak + 1 if is_match else 0
+                matches[index] = streak >= consecutive_days
+            condition_matches[condition_key] = matches
+
+        hit_indexes_by_snapshot: list[list[int]] = [[] for _ in snapshots]
+        for group_index, normalized_keys in enumerate(group_condition_keys):
+            if not normalized_keys:
+                continue
+            for index in range(len(snapshots)):
+                if all(condition_matches[condition_key][index] for condition_key in normalized_keys):
+                    hit_indexes_by_snapshot[index].append(group_index + 1)
+        return hit_indexes_by_snapshot
+
+    def _build_market_scan_events(self, payload: dict) -> tuple[dict, list[dict]]:
+        normalized_payload = self._normalize_scan_payload(payload)
+        query_start_date = self._resolve_scan_query_start_date(
+            normalized_payload["scan_start_date"],
+            normalized_payload["buy_sequence_groups"],
+        )
+        strategy_type = normalized_payload["strategy_type"]
+        if strategy_type == "stock":
+            scan_universe = self.stock_service.list_stock_scan_universe(
+                start_date=query_start_date,
+                end_date=normalized_payload["scan_end_date"],
+            )
+        else:
+            scan_universe = self.stock_service.list_etf_scan_universe(
+                start_date=query_start_date,
+                end_date=normalized_payload["scan_end_date"],
+            )
+
+        breadth_by_date = (
+            {
+                _date_text(item.get("trade_date")): _to_float(item.get("up_ratio_pct"))
+                for item in self.list_index_breadth()
+                if item.get("trade_date") is not None
+            }
+            if self._sequence_groups_require_breadth(normalized_payload["buy_sequence_groups"])
+            else {}
+        )
+
+        trade_config = normalized_payload["scan_trade_config"]
+        buy_offset = int(trade_config["buy_offset_trading_days"])
+        sell_offset = int(trade_config["sell_offset_trading_days"])
+        buy_basis = str(trade_config["buy_price_basis"])
+        sell_basis = str(trade_config["sell_price_basis"])
+        scan_start_date_text = normalized_payload["scan_start_date"].isoformat()
+        scan_end_date_text = normalized_payload["scan_end_date"].isoformat()
+
+        matched_events: list[dict] = []
+
+        for target_code, target_payload in sorted(scan_universe.items()):
+            target_candles = target_payload.get("candles") or []
+            if not target_candles:
+                continue
+            snapshots = self._build_scan_snapshots(target_candles, breadth_by_date)
+            if not snapshots:
+                continue
+            hit_buy_groups_by_index = self._build_scan_group_hits(snapshots, normalized_payload["buy_sequence_groups"])
+            board = target_payload.get("board")
+            lot_rule = self._resolve_scan_lot_rule(strategy_type, board)
+            for index, (snapshot, hit_buy_groups) in enumerate(zip(snapshots, hit_buy_groups_by_index, strict=False)):
+                signal_date = _date_text(snapshot["trade_date"])
+                if signal_date < scan_start_date_text or signal_date > scan_end_date_text:
+                    continue
+                if not hit_buy_groups:
+                    continue
+
+                buy_index = index + buy_offset
+                sell_index = index + sell_offset
+                disabled_reason: str | None = None
+                buy_date: str | None = None
+                sell_date: str | None = None
+                buy_price: float | None = None
+                sell_price: float | None = None
+                planned_quantity: int | None = None
+                planned_buy_amount: float | None = None
+                tradable = True
+
+                if buy_index >= len(target_candles):
+                    tradable = False
+                    disabled_reason = "涔板叆鏃ユ湡涓嶈冻"
+                else:
+                    buy_candle = target_candles[buy_index]
+                    buy_date = buy_candle["trade_date"]
+                    buy_price = float(buy_candle[buy_basis])
+
+                if tradable and sell_index >= len(target_candles):
+                    tradable = False
+                    disabled_reason = "鍗栧嚭鏃ユ湡涓嶈冻"
+                elif tradable:
+                    sell_candle = target_candles[sell_index]
+                    sell_date = sell_candle["trade_date"]
+                    sell_price = float(sell_candle[sell_basis])
+
+                if tradable and buy_date and sell_date:
+                    buy_rank = (buy_index, 0 if buy_basis == "open" else 1)
+                    sell_rank = (sell_index, 0 if sell_basis == "open" else 1)
+                    if sell_rank <= buy_rank:
+                        tradable = False
+                        disabled_reason = "鍗栧嚭鎵ц鏃剁偣蹇呴』鏅氫簬涔板叆"
+
+                if tradable and ((buy_price or 0) <= 0 or (sell_price or 0) <= 0):
+                    tradable = False
+                    disabled_reason = "涔板崠浠锋牸涓嶅彲鐢?"
+
+                if tradable and lot_rule is None:
+                    tradable = False
+                    disabled_reason = "鏃犳硶鏍规嵁 board 鍒ゆ柇鏈€灏忎氦鏄撳崟浣?"
+
+                if tradable and buy_price and lot_rule is not None:
+                    raw_quantity = float(trade_config["buy_amount_per_event"]) / buy_price
+                    planned_quantity = self._round_up_lot_quantity(raw_quantity, lot_rule)
+                    if planned_quantity is None:
+                        tradable = False
+                        disabled_reason = "鏃犳硶璁＄畻鍚堟硶涔板叆鏁伴噺"
+                    else:
+                        planned_buy_amount = _round_metric(planned_quantity * buy_price)
+
+                matched_events.append(
+                    {
+                        "event_id": f"{strategy_type}:{target_code}:{signal_date}",
+                        "target_type": strategy_type,
+                        "target_code": target_code,
+                        "target_name": target_payload.get("target_name") or target_code,
+                        "signal_date": signal_date,
+                        "buy_date": buy_date,
+                        "sell_date": sell_date,
+                        "hit_buy_groups": hit_buy_groups,
+                        "tradable": tradable,
+                        "disabled_reason": disabled_reason,
+                        "board": board,
+                        "lot_rule": lot_rule["label"] if lot_rule else None,
+                        "buy_price": _round_metric(buy_price) if buy_price is not None else None,
+                        "sell_price": _round_metric(sell_price) if sell_price is not None else None,
+                        "planned_quantity": planned_quantity,
+                        "planned_buy_amount": planned_buy_amount,
+                    }
+                )
+
+        matched_events.sort(key=lambda item: (item["signal_date"], item["target_code"], item["event_id"]))
+        return normalized_payload, matched_events
+
+    def _get_or_create_market_scan_result(self, payload: dict, owner_user_id: int) -> dict:
+        normalized_payload = self._normalize_scan_payload(payload)
+        serialized_payload = self._serialize_scan_payload_for_cache(normalized_payload)
+        scan_result_id = self._build_scan_result_id(owner_user_id, serialized_payload)
+        cache_key = self._scan_result_cache_key(scan_result_id)
+        cached = redis_client.get(cache_key)
+        if cached:
+            try:
+                payload_data = json.loads(cached)
+            except json.JSONDecodeError:
+                payload_data = None
+            if isinstance(payload_data, dict) and int(payload_data.get("owner_user_id") or 0) == owner_user_id:
+                redis_client.expire(cache_key, SCAN_RESULT_CACHE_TTL_SECONDS)
+                return payload_data
+
+        normalized_payload, matched_events = self._build_market_scan_events(payload)
+        return self._store_scan_result(
+            scan_result_id=scan_result_id,
+            owner_user_id=owner_user_id,
+            normalized_payload=normalized_payload,
+            matched_events=matched_events,
+        )
+
+    def _load_market_scan_candles_for_events(self, strategy_type: str, matched_events: list[dict]) -> dict[str, list[dict]]:
+        relevant_events = [
+            event for event in matched_events if event.get("tradable") and event.get("buy_date") and event.get("sell_date")
+        ]
+        if not relevant_events:
+            return {}
+
+        target_codes = sorted({str(event["target_code"]) for event in relevant_events})
+        start_date = min(date.fromisoformat(str(event["buy_date"])) for event in relevant_events)
+        end_date = max(date.fromisoformat(str(event["sell_date"])) for event in relevant_events)
+
+        if strategy_type == "stock":
+            scan_universe = self.stock_service.list_stock_scan_universe(
+                start_date=start_date,
+                end_date=end_date,
+                target_codes=target_codes,
+            )
+        else:
+            scan_universe = self.stock_service.list_etf_scan_universe(
+                start_date=start_date,
+                end_date=end_date,
+                target_codes=target_codes,
+            )
+
+        return {
+            target_code: _sort_candles(payload.get("candles") or [])
+            for target_code, payload in scan_universe.items()
+            if payload.get("candles")
+        }
+
+    def _simulate_market_scan_backtest(
+        self,
+        *,
+        normalized_payload: dict,
+        matched_events: list[dict],
+        use_all_events: bool,
+        excluded_event_ids: list[str] | None,
+        selected_event_ids: list[str] | None,
+        candles_by_target: dict[str, list[dict]],
+    ) -> dict:
+        excluded_id_set = {str(item).strip() for item in (excluded_event_ids or []) if str(item).strip()}
+        explicit_selected_id_set = (
+            {str(item).strip() for item in (selected_event_ids or []) if str(item).strip()}
+            if not use_all_events
+            else None
+        )
+        execution_events: list[dict] = []
+        events_by_target: dict[str, list[dict]] = defaultdict(list)
+        output_events: list[dict] = []
+        trade_config = normalized_payload["scan_trade_config"]
+        initial_capital = float(trade_config["initial_capital"])
+
+        for event in matched_events:
+            event_copy = dict(event)
+            default_selected = bool(event_copy.get("tradable")) and event_copy["event_id"] not in excluded_id_set
+            is_selected = default_selected if use_all_events else event_copy["event_id"] in (explicit_selected_id_set or set())
+            event_copy["selected"] = is_selected
+            event_copy["executed"] = False
+            event_copy["skip_reason"] = None
+            event_copy["actual_quantity"] = None
+            event_copy["actual_buy_amount"] = None
+            event_copy["actual_sell_amount"] = None
+            event_copy["pnl_amount"] = None
+            event_copy["return_pct"] = None
+            output_events.append(event_copy)
+            if is_selected and event_copy.get("tradable"):
+                execution_events.append(event_copy)
+                events_by_target[event_copy["target_code"]].append(event_copy)
+
+        basis_order = {"open": 0, "close": 1}
+        execution_events.sort(
+            key=lambda item: (
+                item["buy_date"],
+                basis_order.get(str(normalized_payload["scan_trade_config"]["buy_price_basis"]), 0),
+                item["target_code"],
+                item["event_id"],
+            )
+        )
+
+        cash = initial_capital
+        open_positions: list[dict] = []
+        event_by_id = {event["event_id"]: event for event in output_events}
+        all_dates: set[str] = set()
+
+        for target_code, target_events in events_by_target.items():
+            candle_map = {candle["trade_date"]: candle for candle in candles_by_target.get(target_code, [])}
+            if not candle_map:
+                continue
+            min_date = min(event["buy_date"] for event in target_events if event.get("buy_date"))
+            max_date = max(event["sell_date"] for event in target_events if event.get("sell_date"))
+            for candle in candles_by_target.get(target_code, []):
+                trade_date = candle["trade_date"]
+                if min_date <= trade_date <= max_date:
+                    all_dates.add(trade_date)
+
+        sorted_dates = sorted(all_dates)
+        date_to_buys: dict[str, list[dict]] = defaultdict(list)
+        date_to_sells: dict[str, list[dict]] = defaultdict(list)
+        for event in execution_events:
+            date_to_buys[str(event["buy_date"])].append(event)
+            date_to_sells[str(event["sell_date"])].append(event)
+
+        for items in date_to_buys.values():
+            items.sort(key=lambda item: (item["target_code"], item["event_id"]))
+        for items in date_to_sells.values():
+            items.sort(key=lambda item: (item["target_code"], item["event_id"]))
+
+        candle_maps = {
+            target_code: {candle["trade_date"]: candle for candle in rows}
+            for target_code, rows in candles_by_target.items()
+        }
+
+        points: list[dict] = []
+        peak_nav = 0.0
+        max_drawdown_pct = 0.0
+
+        for trade_date in sorted_dates:
+            for position in list(open_positions):
+                if position["sell_date"] != trade_date:
+                    continue
+                cash += position["quantity"] * position["sell_price"]
+                event_item = event_by_id[position["event_id"]]
+                event_item["executed"] = True
+                event_item["actual_sell_amount"] = _round_metric(position["quantity"] * position["sell_price"])
+                event_item["pnl_amount"] = _round_metric(event_item["actual_sell_amount"] - position["actual_buy_amount"])
+                event_item["return_pct"] = _round_metric(
+                    ((event_item["actual_sell_amount"] / position["actual_buy_amount"]) - 1) * 100
+                    if position["actual_buy_amount"] > 0
+                    else 0.0
+                )
+                open_positions.remove(position)
+
+            for event in date_to_buys.get(trade_date, []):
+                planned_buy_amount = float(event.get("planned_buy_amount") or 0)
+                planned_quantity = int(event.get("planned_quantity") or 0)
+                if planned_buy_amount <= 0 or planned_quantity <= 0:
+                    event["skip_reason"] = "invalid_trade_plan"
+                    continue
+                if planned_buy_amount > cash + OPTIMIZATION_TOLERANCE:
+                    event["skip_reason"] = "insufficient_cash"
+                    continue
+                cash -= planned_buy_amount
+                event["actual_quantity"] = planned_quantity
+                event["actual_buy_amount"] = _round_metric(planned_buy_amount)
+                open_positions.append(
+                    {
+                        "event_id": event["event_id"],
+                        "target_code": event["target_code"],
+                        "quantity": planned_quantity,
+                        "sell_date": event["sell_date"],
+                        "sell_price": float(event["sell_price"]),
+                        "actual_buy_amount": float(event["actual_buy_amount"]),
+                    }
+                )
+
+            position_value = 0.0
+            for position in open_positions:
+                candle = candle_maps.get(position["target_code"], {}).get(trade_date)
+                if candle is None:
+                    continue
+                position_value += position["quantity"] * float(candle["close"])
+            nav = cash + position_value
+            position_pct = max(min((position_value / nav) if nav > 0 else 0.0, 1.0), 0.0)
+            points.append(
+                {
+                    "trade_date": trade_date,
+                    "nav": nav / initial_capital if initial_capital > 0 else 0.0,
+                    "benchmark_nav": None,
+                    "signal": None,
+                    "close_price": None,
+                    "position_pct": position_pct,
+                    "position_bucket": _position_bucket(position_pct),
+                }
+            )
+            peak_nav = max(peak_nav, nav)
+            if peak_nav > 0:
+                max_drawdown_pct = max(max_drawdown_pct, (peak_nav - nav) / peak_nav * 100)
+
+        normalized_last_nav = points[-1]["nav"] if points else 1.0
+        cumulative_return_pct = (normalized_last_nav - 1) * 100 if points else 0.0
+        if len(points) >= 2:
+            start_dt = date.fromisoformat(points[0]["trade_date"])
+            end_dt = date.fromisoformat(points[-1]["trade_date"])
+            days_span = max((end_dt - start_dt).days, 0)
+            if days_span > 0 and normalized_last_nav > 0:
+                annualized_return_pct = ((normalized_last_nav ** (365 / days_span)) - 1) * 100
+            else:
+                annualized_return_pct = cumulative_return_pct
+        else:
+            annualized_return_pct = cumulative_return_pct if points else 0.0
+
+        executed_event_count = sum(1 for event in output_events if event.get("executed"))
+        skipped_event_count = sum(
+            1
+            for event in output_events
+            if event.get("selected") and event.get("tradable") and not event.get("executed")
+        )
+
+        return {
+            "matched_events": output_events,
+            "cumulative_return_pct": cumulative_return_pct,
+            "annualized_return_pct": annualized_return_pct,
+            "max_drawdown_pct": max_drawdown_pct,
+            "points": points,
+            "summary": {
+                "matched_event_count": len(matched_events),
+                "tradable_event_count": sum(1 for event in matched_events if event.get("tradable")),
+                "selected_event_count": sum(1 for event in output_events if event.get("selected")),
+                "executed_event_count": executed_event_count,
+                "skipped_event_count": skipped_event_count,
+            },
+        }
+
+    def preview_market_scan(self, payload: dict, owner_user_id: int, page: int = 1, page_size: int = SCAN_EVENT_PAGE_SIZE) -> dict:
+        scan_result = self._get_or_create_market_scan_result(payload, owner_user_id)
+        page_payload = self._paginate_scan_events(scan_result["matched_events"], page=page, page_size=page_size)
+        return {
+            "scan_result_id": scan_result["scan_result_id"],
+            "strategy_type": scan_result["normalized_payload"]["strategy_type"],
+            "matched_events": page_payload["matched_events"],
+            "matched_event_count": scan_result["matched_event_count"],
+            "tradable_event_count": scan_result["tradable_event_count"],
+            "total_event_count": page_payload["total_event_count"],
+            "page": page_payload["page"],
+            "page_size": page_payload["page_size"],
+        }
+
+    def get_market_scan_events(
+        self,
+        scan_result_id: str,
+        owner_user_id: int,
+        page: int = 1,
+        page_size: int = SCAN_EVENT_PAGE_SIZE,
+    ) -> dict:
+        scan_result = self._load_scan_result(scan_result_id, owner_user_id)
+        page_payload = self._paginate_scan_events(scan_result["matched_events"], page=page, page_size=page_size)
+        return {
+            "scan_result_id": scan_result["scan_result_id"],
+            "strategy_type": scan_result["normalized_payload"]["strategy_type"],
+            "matched_events": page_payload["matched_events"],
+            "matched_event_count": scan_result["matched_event_count"],
+            "tradable_event_count": scan_result["tradable_event_count"],
+            "total_event_count": page_payload["total_event_count"],
+            "page": page_payload["page"],
+            "page_size": page_payload["page_size"],
+        }
+
+    def get_market_scan_target_hits(self, scan_result_id: str, target_code: str, owner_user_id: int) -> dict:
+        scan_result = self._load_scan_result(scan_result_id, owner_user_id)
+        normalized_target_code = str(target_code or "").strip()
+        target_events = [event for event in scan_result["matched_events"] if str(event.get("target_code")) == normalized_target_code]
+        if not target_events:
+            raise ValueError("scan target not found")
+        hit_dates = sorted({str(event["signal_date"]) for event in target_events if event.get("signal_date")})
+        return {
+            "scan_result_id": scan_result["scan_result_id"],
+            "target_code": normalized_target_code,
+            "target_name": str(target_events[0].get("target_name") or normalized_target_code),
+            "hit_dates": hit_dates,
+        }
+
+    def backtest_market_scan(self, payload: dict, owner_user_id: int) -> dict:
+        scan_result_id = str(payload.get("scan_result_id", "")).strip()
+        if not scan_result_id:
+            raise ValueError("scan_result_id is required")
+        scan_result = self._load_scan_result(scan_result_id, owner_user_id)
+        use_all_events = bool(payload.get("use_all_events", True))
+        excluded_event_ids = [str(item).strip() for item in payload.get("excluded_event_ids", []) if str(item).strip()]
+        explicit_selected_event_ids = [
+            str(item).strip() for item in (payload.get("selected_event_ids") or []) if str(item).strip()
+        ]
+        normalized_payload = {
+            "strategy_type": scan_result["normalized_payload"]["strategy_type"],
+            "buy_sequence_groups": scan_result["normalized_payload"]["buy_sequence_groups"],
+            "scan_trade_config": self._normalize_scan_trade_config(
+                payload.get("scan_trade_config") or scan_result["normalized_payload"].get("scan_trade_config") or {}
+            ),
+            "scan_start_date": date.fromisoformat(scan_result["normalized_payload"]["scan_start_date"]),
+            "scan_end_date": date.fromisoformat(scan_result["normalized_payload"]["scan_end_date"]),
+        }
+        matched_events = list(scan_result["matched_events"])
+        excluded_id_set = set(excluded_event_ids)
+        explicit_selected_id_set = set(explicit_selected_event_ids)
+        selected_events = [
+            event
+            for event in matched_events
+            if event.get("tradable")
+            and (
+                (
+                    use_all_events
+                    and str(event["event_id"]) not in excluded_id_set
+                )
+                or (
+                    not use_all_events
+                    and str(event["event_id"]) in explicit_selected_id_set
+                )
+            )
+        ]
+        candles_by_target = self._load_market_scan_candles_for_events(
+            normalized_payload["strategy_type"],
+            selected_events,
+        )
+        result = self._simulate_market_scan_backtest(
+            normalized_payload=normalized_payload,
+            matched_events=matched_events,
+            use_all_events=use_all_events,
+            excluded_event_ids=excluded_event_ids,
+            selected_event_ids=explicit_selected_event_ids,
+            candles_by_target=candles_by_target,
+        )
+        page_payload = self._paginate_scan_events(
+            result["matched_events"],
+            page=payload.get("page"),
+            page_size=payload.get("page_size"),
+        )
+        return {
+            "scan_result_id": scan_result_id,
+            "strategy_type": normalized_payload["strategy_type"],
+            "matched_events": page_payload["matched_events"],
+            "total_event_count": page_payload["total_event_count"],
+            "page": page_payload["page"],
+            "page_size": page_payload["page_size"],
+            "cumulative_return_pct": result["cumulative_return_pct"],
+            "annualized_return_pct": result["annualized_return_pct"],
+            "max_drawdown_pct": result["max_drawdown_pct"],
+            "points": result["points"],
+            "summary": result["summary"],
+        }
 
     def _normalize_rule_groups(self, raw_groups: object, allowed_keys: list[str]) -> list[dict]:
         if not isinstance(raw_groups, list):
@@ -838,7 +1843,10 @@ class QuantService:
         return any(self._matches_rule_group(snapshot, group, allowed_keys) for group in groups)
 
     def _build_signal_map(self, strategy: QuantStrategyConfig, snapshots: list[dict]) -> dict[str, str]:
-        allowed_keys = INDEX_STRATEGY_FILTER_KEYS if strategy.strategy_type == "index" else STOCK_STRATEGY_FILTER_KEYS
+        if self._normalize_strategy_engine(strategy.strategy_engine) == "sequence":
+            return self._build_sequence_signal_map(strategy, snapshots)
+
+        allowed_keys = self._allowed_snapshot_filter_keys(strategy.strategy_type)
         blue_groups = self._get_rule_groups(strategy, "blue", allowed_keys)
         red_groups = self._get_rule_groups(strategy, "red", allowed_keys)
 
@@ -856,15 +1864,20 @@ class QuantService:
         return signal_map
 
     def _serialize_strategy(self, item: QuantStrategyConfig) -> dict:
-        allowed_keys = INDEX_STRATEGY_FILTER_KEYS if item.strategy_type == "index" else STOCK_STRATEGY_FILTER_KEYS
+        allowed_keys = self._allowed_snapshot_filter_keys(item.strategy_type)
         return {
             "id": item.id,
             "name": item.name,
             "notes": item.notes or "",
+            "strategy_engine": self._normalize_strategy_engine(item.strategy_engine),
+            "sequence_mode": self._normalize_sequence_mode(item.sequence_mode),
             "strategy_type": item.strategy_type,
             "target_code": item.target_code,
             "target_name": item.target_name,
             "indicator_params": item.indicator_params or {},
+            "buy_sequence_groups": self._get_sequence_groups(item, "buy"),
+            "sell_sequence_groups": self._get_sequence_groups(item, "sell"),
+            "scan_trade_config": self._normalize_scan_trade_config(item.scan_trade_config or {}),
             "blue_filter_groups": self._get_rule_groups(item, "blue", allowed_keys),
             "red_filter_groups": self._get_rule_groups(item, "red", allowed_keys),
             "blue_filters": item.blue_filters or {},
@@ -875,6 +1888,8 @@ class QuantService:
             "signal_sell_color": item.signal_sell_color,
             "purple_conflict_mode": item.purple_conflict_mode,
             "start_date": item.start_date,
+            "scan_start_date": item.scan_start_date,
+            "scan_end_date": item.scan_end_date,
             "buy_position_pct": float(item.buy_position_pct),
             "sell_position_pct": float(item.sell_position_pct),
             "execution_price_mode": item.execution_price_mode,
@@ -882,18 +1897,46 @@ class QuantService:
             "updated_at": item.updated_at,
         }
 
-    def list_strategies(self) -> list[dict]:
-        items = self.db.query(QuantStrategyConfig).order_by(QuantStrategyConfig.updated_at.desc()).all()
+    def _get_owned_strategy(self, strategy_id: int, owner_user_id: int) -> QuantStrategyConfig:
+        item = (
+            self.db.query(QuantStrategyConfig)
+            .filter(
+                QuantStrategyConfig.id == strategy_id,
+                QuantStrategyConfig.owner_user_id == owner_user_id,
+            )
+            .first()
+        )
+        if item is None:
+            raise ValueError("strategy not found")
+        return item
+
+    def list_strategies(self, owner_user_id: int) -> list[dict]:
+        items = (
+            self.db.query(QuantStrategyConfig)
+            .filter(QuantStrategyConfig.owner_user_id == owner_user_id)
+            .order_by(QuantStrategyConfig.updated_at.desc())
+            .all()
+        )
         return [self._serialize_strategy(item) for item in items]
 
-    def create_strategy(self, payload: dict) -> dict:
+    def get_strategy(self, strategy_id: int, owner_user_id: int) -> dict:
+        item = self._get_owned_strategy(strategy_id, owner_user_id)
+        return self._serialize_strategy(item)
+
+    def create_strategy(self, payload: dict, owner_user_id: int) -> dict:
         item = QuantStrategyConfig(
+            owner_user_id=owner_user_id,
             name=str(payload.get("name", "")).strip(),
             notes=str(payload.get("notes", "")).strip(),
+            strategy_engine=self._normalize_strategy_engine(payload.get("strategy_engine", "snapshot")),
+            sequence_mode=self._normalize_sequence_mode(payload.get("sequence_mode", "single_target")),
             strategy_type=str(payload.get("strategy_type", "")).strip(),
             target_code=str(payload.get("target_code", "")).strip(),
             target_name=str(payload.get("target_name", "")).strip(),
             indicator_params=payload.get("indicator_params") or {},
+            buy_sequence_groups=payload.get("buy_sequence_groups") or [],
+            sell_sequence_groups=payload.get("sell_sequence_groups") or [],
+            scan_trade_config=self._normalize_scan_trade_config(payload.get("scan_trade_config") or {}),
             blue_filter_groups=payload.get("blue_filter_groups") or [],
             red_filter_groups=payload.get("red_filter_groups") or [],
             blue_filters=payload.get("blue_filters") or {},
@@ -904,6 +1947,8 @@ class QuantService:
             signal_sell_color=str(payload.get("signal_sell_color", "red")).strip(),
             purple_conflict_mode=str(payload.get("purple_conflict_mode", "sell_first")).strip(),
             start_date=payload.get("start_date"),
+            scan_start_date=payload.get("scan_start_date"),
+            scan_end_date=payload.get("scan_end_date"),
             buy_position_pct=_normalize_ratio(payload.get("buy_position_pct", 1)),
             sell_position_pct=_normalize_ratio(payload.get("sell_position_pct", 1)),
             execution_price_mode=str(payload.get("execution_price_mode", "next_open")).strip(),
@@ -913,17 +1958,20 @@ class QuantService:
         self.db.refresh(item)
         return self._serialize_strategy(item)
 
-    def update_strategy(self, strategy_id: int, payload: dict) -> dict:
-        item = self.db.get(QuantStrategyConfig, strategy_id)
-        if item is None:
-            raise ValueError("strategy not found")
+    def update_strategy(self, strategy_id: int, payload: dict, owner_user_id: int) -> dict:
+        item = self._get_owned_strategy(strategy_id, owner_user_id)
 
         item.name = str(payload.get("name", item.name)).strip()
         item.notes = str(payload.get("notes", item.notes or "")).strip()
+        item.strategy_engine = self._normalize_strategy_engine(payload.get("strategy_engine", item.strategy_engine))
+        item.sequence_mode = self._normalize_sequence_mode(payload.get("sequence_mode", item.sequence_mode))
         item.strategy_type = str(payload.get("strategy_type", item.strategy_type)).strip()
         item.target_code = str(payload.get("target_code", item.target_code)).strip()
         item.target_name = str(payload.get("target_name", item.target_name)).strip()
         item.indicator_params = payload.get("indicator_params") or item.indicator_params or {}
+        item.buy_sequence_groups = payload.get("buy_sequence_groups") or []
+        item.sell_sequence_groups = payload.get("sell_sequence_groups") or []
+        item.scan_trade_config = self._normalize_scan_trade_config(payload.get("scan_trade_config") or item.scan_trade_config or {})
         item.blue_filter_groups = payload.get("blue_filter_groups") or []
         item.red_filter_groups = payload.get("red_filter_groups") or []
         item.blue_filters = payload.get("blue_filters") or {}
@@ -934,6 +1982,8 @@ class QuantService:
         item.signal_sell_color = str(payload.get("signal_sell_color", item.signal_sell_color)).strip()
         item.purple_conflict_mode = str(payload.get("purple_conflict_mode", item.purple_conflict_mode)).strip()
         item.start_date = payload.get("start_date", item.start_date)
+        item.scan_start_date = payload.get("scan_start_date", item.scan_start_date)
+        item.scan_end_date = payload.get("scan_end_date", item.scan_end_date)
         item.buy_position_pct = _normalize_ratio(payload.get("buy_position_pct", item.buy_position_pct))
         item.sell_position_pct = _normalize_ratio(payload.get("sell_position_pct", item.sell_position_pct))
         item.execution_price_mode = str(payload.get("execution_price_mode", item.execution_price_mode)).strip()
@@ -942,85 +1992,377 @@ class QuantService:
         self.db.refresh(item)
         return self._serialize_strategy(item)
 
-    def delete_strategy(self, strategy_id: int) -> None:
-        item = self.db.get(QuantStrategyConfig, strategy_id)
-        if item is None:
-            raise ValueError("strategy not found")
+    def delete_strategy(self, strategy_id: int, owner_user_id: int) -> None:
+        item = self._get_owned_strategy(strategy_id, owner_user_id)
         self.db.delete(item)
         self.db.commit()
 
-    def _load_etf_price_rows(self, etf_code: str) -> list[dict]:
-        params = {
-            "etf_code": etf_code,
-            "hist_source": settings.etf_daily_hist_source_value,
-            "spot_source": settings.etf_daily_spot_source_value,
-        }
-        hist_sql = text(
-            f"SELECT "
-            f"`{settings.etf_daily_date_column}` AS trade_date, "
-            f"`{settings.etf_daily_open_column}` AS open, "
-            f"`{settings.etf_daily_close_column}` AS close, "
-            f"`{settings.etf_daily_high_column}` AS high, "
-            f"`{settings.etf_daily_low_column}` AS low "
-            f"FROM `{settings.etf_daily_table_name}` "
-            f"WHERE `{settings.etf_daily_code_column}` = :etf_code "
-            f"AND `{settings.etf_daily_data_source_column}` = :hist_source "
-            f"ORDER BY `{settings.etf_daily_date_column}` ASC"
-        )
-        rows_by_date = {
-            row["trade_date"]: {
-                "trade_date": row["trade_date"],
-                "open": float(row["open"]),
-                "close": float(row["close"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-            }
-            for row in self.db.execute(hist_sql, params).mappings().all()
-            if row.get("trade_date") is not None
-            and row.get("open") is not None
-            and row.get("close") is not None
-            and row.get("high") is not None
-            and row.get("low") is not None
-        }
+    def send_strategy(self, strategy_id: int, owner_user_id: int, target_username: str) -> dict:
+        source = self._get_owned_strategy(strategy_id, owner_user_id)
+        normalized_target = target_username.strip()
+        if not normalized_target:
+            raise ValueError("target user is required")
 
-        latest_spot_date_sql = text(
-            f"SELECT MAX(`{settings.etf_daily_date_column}`) AS trade_date "
-            f"FROM `{settings.etf_daily_table_name}` "
-            f"WHERE `{settings.etf_daily_code_column}` = :etf_code "
-            f"AND `{settings.etf_daily_data_source_column}` = :spot_source"
-        )
-        latest_spot_date = self.db.execute(latest_spot_date_sql, params).scalar()
-        if latest_spot_date is not None:
-            spot_sql = text(
-                f"SELECT "
-                f"`{settings.etf_daily_date_column}` AS trade_date, "
-                f"`{settings.etf_daily_open_column}` AS open, "
-                f"`{settings.etf_daily_close_column}` AS close, "
-                f"`{settings.etf_daily_high_column}` AS high, "
-                f"`{settings.etf_daily_low_column}` AS low "
-                f"FROM `{settings.etf_daily_table_name}` "
-                f"WHERE `{settings.etf_daily_code_column}` = :etf_code "
-                f"AND `{settings.etf_daily_data_source_column}` = :spot_source "
-                f"AND `{settings.etf_daily_date_column}` = :latest_spot_date "
-                f"LIMIT 1"
+        target_user = (
+            self.db.query(User)
+            .filter(
+                User.role == "user",
+                (User.username == normalized_target) | (User.phone == normalized_target),
             )
-            spot_row = self.db.execute(spot_sql, {**params, "latest_spot_date": latest_spot_date}).mappings().first()
-            if (
-                spot_row
-                and spot_row.get("open") is not None
-                and spot_row.get("close") is not None
-                and spot_row.get("high") is not None
-                and spot_row.get("low") is not None
-            ):
-                rows_by_date[spot_row["trade_date"]] = {
-                    "trade_date": spot_row["trade_date"],
-                    "open": float(spot_row["open"]),
-                    "close": float(spot_row["close"]),
-                    "high": float(spot_row["high"]),
-                    "low": float(spot_row["low"]),
-                }
+            .first()
+        )
+        if target_user is None:
+            raise ValueError("target user not found")
+        if target_user.id == owner_user_id:
+            raise ValueError("cannot send strategy to yourself")
 
-        return [rows_by_date[key] for key in sorted(rows_by_date.keys())]
+        copied = QuantStrategyConfig(
+            owner_user_id=target_user.id,
+            name=source.name,
+            notes=source.notes or "",
+            strategy_engine=self._normalize_strategy_engine(source.strategy_engine),
+            sequence_mode=self._normalize_sequence_mode(source.sequence_mode),
+            strategy_type=source.strategy_type,
+            target_code=source.target_code,
+            target_name=source.target_name,
+            indicator_params=source.indicator_params or {},
+            buy_sequence_groups=source.buy_sequence_groups or [],
+            sell_sequence_groups=source.sell_sequence_groups or [],
+            scan_trade_config=self._normalize_scan_trade_config(source.scan_trade_config or {}),
+            blue_filter_groups=source.blue_filter_groups or [],
+            red_filter_groups=source.red_filter_groups or [],
+            blue_filters=source.blue_filters or {},
+            red_filters=source.red_filters or {},
+            blue_boll_filter=source.blue_boll_filter or {},
+            red_boll_filter=source.red_boll_filter or {},
+            signal_buy_color=source.signal_buy_color,
+            signal_sell_color=source.signal_sell_color,
+            purple_conflict_mode=source.purple_conflict_mode,
+            start_date=source.start_date,
+            scan_start_date=source.scan_start_date,
+            scan_end_date=source.scan_end_date,
+            buy_position_pct=source.buy_position_pct,
+            sell_position_pct=source.sell_position_pct,
+            execution_price_mode=source.execution_price_mode,
+        )
+        self.db.add(copied)
+        self.db.commit()
+        self.db.refresh(copied)
+        sender_user = self.db.get(User, owner_user_id)
+        if sender_user is not None:
+            self.notification_service.create_strategy_received_notification(
+                recipient_user_id=target_user.id,
+                sender_user=sender_user,
+                strategy=copied,
+            )
+        return self._serialize_strategy(copied)
+
+    def list_strategy_notification_summaries(
+        self,
+        strategy_ids: list[int],
+        owner_user_id: int,
+        basis_trade_date: date | None = None,
+    ) -> list[dict]:
+        return self._list_strategy_notification_summaries_fixed(strategy_ids, owner_user_id, basis_trade_date)
+        """
+        if not strategy_ids:
+            return []
+
+        owned_items = (
+            self.db.query(QuantStrategyConfig)
+            .filter(
+                QuantStrategyConfig.owner_user_id == owner_user_id,
+                QuantStrategyConfig.id.in_(strategy_ids),
+            )
+            .all()
+        )
+        strategy_map = {item.id: item for item in owned_items}
+        results: list[dict] = []
+
+        for strategy_id in strategy_ids:
+            item = strategy_map.get(strategy_id)
+            if item is None:
+                results.append(
+                    {
+                        "strategy_id": strategy_id,
+                        "strategy_name": f"策略#{strategy_id}",
+                        "target_name": "-",
+                        "latest_trade_date": "-",
+                        "signal": None,
+                        "signal_text": "无操作",
+                        "note": "策略不存在或不再属于当前用户",
+                    }
+                )
+                continue
+
+            strategy_engine = self._normalize_strategy_engine(item.strategy_engine)
+            sequence_mode = self._normalize_sequence_mode(item.sequence_mode)
+            if strategy_engine == "sequence" and sequence_mode == "market_scan":
+                scan_payload = {
+                    "strategy_type": item.strategy_type,
+                    "buy_sequence_groups": item.buy_sequence_groups or [],
+                    "scan_trade_config": item.scan_trade_config or {},
+                    "start_date": item.start_date,
+                }
+                scan_result = self.preview_market_scan(scan_payload, int(item.owner_user_id or 0))
+                basis_date_text = basis_trade_date.isoformat() if basis_trade_date else None
+                candidate_events = scan_result["matched_events"]
+                if basis_date_text:
+                    candidate_events = [
+                        event for event in candidate_events if str(event.get("signal_date")) <= basis_date_text
+                    ]
+                latest_trade_date = "-"
+                signal = None
+                note = "褰撴棩鏃犳搷浣?"
+                if candidate_events:
+                    latest_trade_date = max(str(event["signal_date"]) for event in candidate_events)
+                    today_events = [event for event in candidate_events if str(event["signal_date"]) == latest_trade_date]
+                    if today_events:
+                        signal = "blue"
+                        sample_targets = "銆?join(
+                            sorted({str(event["target_name"]) for event in today_events if event.get("target_name")})[:3]
+                        )
+                        note = f"褰撴棩鏂板懡涓?{len(today_events)} 鏉′簨浠?{f'锛氬寘鍚?{sample_targets}' if sample_targets else ''}"
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": latest_trade_date,
+                        "signal": signal,
+                        "signal_text": "钃?" if signal else "鏃犳搷浣?",
+                        "note": note,
+                    }
+                )
+                continue
+
+            if strategy_engine == "sequence":
+                snapshots = self._build_sequence_snapshots(item)
+            else:
+                if item.strategy_type == "index":
+                    signal_candles = self.stock_service.list_index_daily_kline(item.target_code)
+                    snapshots = self._build_index_snapshots(item.target_name, item.indicator_params or {}, signal_candles)
+                else:
+                    signal_candles = self.stock_service.list_hfq_daily_kline(item.target_code)
+                    snapshots = self._build_stock_snapshots(item.indicator_params or {}, signal_candles)
+
+            if not snapshots:
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": "-",
+                        "signal": None,
+                        "signal_text": "无操作",
+                        "note": "当前策略暂无可用于通知的行情数据",
+                    }
+                )
+                continue
+
+            eligible_snapshots = snapshots
+            if basis_trade_date is not None:
+                basis_date_text = basis_trade_date.isoformat()
+                eligible_snapshots = [
+                    snapshot
+                    for snapshot in snapshots
+                    if _date_text(snapshot.get("trade_date")) <= basis_date_text
+                ]
+            if not eligible_snapshots:
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": "-",
+                        "signal": None,
+                        "signal_text": "无操作",
+                        "note": "在当前通知基准交易日前暂无可用行情数据",
+                    }
+                )
+                continue
+
+            latest_snapshot = eligible_snapshots[-1]
+            latest_trade_date = _date_text(latest_snapshot.get("trade_date"))
+            signal_map = self._build_signal_map(item, snapshots)
+            signal = signal_map.get(latest_trade_date)
+            signal_text_map = {
+                "blue": "蓝",
+                "red": "红",
+                "purple": "紫",
+            }
+            results.append(
+                {
+                    "strategy_id": item.id,
+                    "strategy_name": item.name,
+                    "target_name": item.target_name,
+                    "latest_trade_date": latest_trade_date,
+                    "signal": signal,
+                    "signal_text": signal_text_map.get(signal, "无操作"),
+                    "note": "出现操作信号" if signal else "当日无红蓝信号",
+                }
+            )
+
+        return results
+        """
+
+    def _list_strategy_notification_summaries_fixed(
+        self,
+        strategy_ids: list[int],
+        owner_user_id: int,
+        basis_trade_date: date | None = None,
+    ) -> list[dict]:
+        if not strategy_ids:
+            return []
+
+        owned_items = (
+            self.db.query(QuantStrategyConfig)
+            .filter(
+                QuantStrategyConfig.owner_user_id == owner_user_id,
+                QuantStrategyConfig.id.in_(strategy_ids),
+            )
+            .all()
+        )
+        strategy_map = {item.id: item for item in owned_items}
+        results: list[dict] = []
+
+        for strategy_id in strategy_ids:
+            item = strategy_map.get(strategy_id)
+            if item is None:
+                results.append(
+                    {
+                        "strategy_id": strategy_id,
+                        "strategy_name": f"策略#{strategy_id}",
+                        "target_name": "-",
+                        "latest_trade_date": "-",
+                        "signal": None,
+                        "signal_text": "无操作",
+                        "note": "策略不存在或不再属于当前用户",
+                    }
+                )
+                continue
+
+            strategy_engine = self._normalize_strategy_engine(item.strategy_engine)
+            sequence_mode = self._normalize_sequence_mode(item.sequence_mode)
+            if strategy_engine == "sequence" and sequence_mode == "market_scan":
+                scan_payload = {
+                    "strategy_type": item.strategy_type,
+                    "buy_sequence_groups": item.buy_sequence_groups or [],
+                    "scan_trade_config": item.scan_trade_config or {},
+                    "start_date": item.start_date,
+                }
+                scan_result = self.preview_market_scan(scan_payload, int(item.owner_user_id or 0))
+                basis_date_text = basis_trade_date.isoformat() if basis_trade_date else None
+                candidate_events = scan_result["matched_events"]
+                if basis_date_text:
+                    candidate_events = [
+                        event for event in candidate_events if str(event.get("signal_date")) <= basis_date_text
+                    ]
+                latest_trade_date = "-"
+                signal = None
+                note = "当日无操作"
+                if candidate_events:
+                    latest_trade_date = max(str(event["signal_date"]) for event in candidate_events)
+                    today_events = [event for event in candidate_events if str(event["signal_date"]) == latest_trade_date]
+                    if today_events:
+                        signal = "blue"
+                        sample_targets = "、".join(
+                            sorted({str(event["target_name"]) for event in today_events if event.get("target_name")})[:3]
+                        )
+                        note = f"当日新命中 {len(today_events)} 条事件{f'，包含 {sample_targets}' if sample_targets else ''}"
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": latest_trade_date,
+                        "signal": signal,
+                        "signal_text": "蓝" if signal else "无操作",
+                        "note": note,
+                    }
+                )
+                continue
+
+            if strategy_engine == "sequence":
+                snapshots = self._build_sequence_snapshots(item)
+            else:
+                if item.strategy_type == "index":
+                    signal_candles = self.stock_service.list_index_daily_kline(item.target_code)
+                    snapshots = self._build_index_snapshots(item.target_name, item.indicator_params or {}, signal_candles)
+                else:
+                    signal_candles = self.stock_service.list_hfq_daily_kline(item.target_code)
+                    snapshots = self._build_stock_snapshots(item.indicator_params or {}, signal_candles)
+
+            if not snapshots:
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": "-",
+                        "signal": None,
+                        "signal_text": "无操作",
+                        "note": "当前策略暂无可用于通知的行情数据",
+                    }
+                )
+                continue
+
+            eligible_snapshots = snapshots
+            if basis_trade_date is not None:
+                basis_date_text = basis_trade_date.isoformat()
+                eligible_snapshots = [
+                    snapshot
+                    for snapshot in snapshots
+                    if _date_text(snapshot.get("trade_date")) <= basis_date_text
+                ]
+            if not eligible_snapshots:
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": "-",
+                        "signal": None,
+                        "signal_text": "无操作",
+                        "note": "在当前通知基准交易日前暂无可用行情数据",
+                    }
+                )
+                continue
+
+            latest_snapshot = eligible_snapshots[-1]
+            latest_trade_date = _date_text(latest_snapshot.get("trade_date"))
+            signal_map = self._build_signal_map(item, snapshots)
+            signal = signal_map.get(latest_trade_date)
+            signal_text_map = {
+                "blue": "蓝",
+                "red": "红",
+                "purple": "紫",
+            }
+            results.append(
+                {
+                    "strategy_id": item.id,
+                    "strategy_name": item.name,
+                    "target_name": item.target_name,
+                    "latest_trade_date": latest_trade_date,
+                    "signal": signal,
+                    "signal_text": signal_text_map.get(signal, "无操作"),
+                    "note": "出现操作信号" if signal else "当日无红蓝信号",
+                }
+            )
+
+        return results
+
+    def _build_market_scan_payload_from_strategy(self, strategy: QuantStrategyConfig) -> dict:
+        return {
+            "strategy_type": strategy.strategy_type,
+            "buy_sequence_groups": strategy.buy_sequence_groups or [],
+            "scan_trade_config": strategy.scan_trade_config or {},
+            "scan_start_date": strategy.scan_start_date,
+            "scan_end_date": strategy.scan_end_date,
+        }
+
+    def _load_etf_price_rows(self, etf_code: str) -> list[dict]:
+        return self._normalize_price_rows(self.stock_service.list_etf_daily_kline(etf_code))
 
     def _resolve_action(self, color: str | None, strategy: QuantStrategyConfig) -> str | None:
         if color is None:
@@ -1038,57 +2380,44 @@ class QuantService:
             return "sell"
         return None
 
-    def calculate_equity_curve(self, strategy_id: int) -> dict:
-        strategy = self.db.get(QuantStrategyConfig, strategy_id)
-        if strategy is None:
-            raise ValueError("strategy not found")
+    def _build_equity_curve_context(self, strategy: QuantStrategyConfig) -> tuple[list[dict], dict[str, str], dict[str, str], float]:
+        strategy_type = str(strategy.strategy_type or "").strip().lower()
+        strategy_engine = self._normalize_strategy_engine(strategy.strategy_engine)
 
-        if strategy.strategy_type == "index":
-            signal_candles = self.stock_service.list_index_daily_kline(strategy.target_code)
-            snapshots = self._build_index_snapshots(strategy.target_name, strategy.indicator_params or {}, signal_candles)
-            etf_code = INDEX_TO_ETF_CODE.get(strategy.target_name)
-            if not etf_code:
-                raise ValueError("unsupported index target")
-            price_rows = self._load_etf_price_rows(etf_code)
+        if strategy_engine == "sequence":
+            snapshots = self._build_sequence_snapshots(strategy)
+            if strategy_type == "index":
+                etf_code = INDEX_TO_ETF_CODE.get(strategy.target_name)
+                if not etf_code:
+                    raise ValueError("unsupported index target")
+                price_rows = self._load_etf_price_rows(etf_code)
+            elif strategy_type == "stock":
+                price_rows = self._normalize_price_rows(self.stock_service.list_daily_kline(strategy.target_code))
+            elif strategy_type == "etf":
+                price_rows = self._normalize_price_rows(self.stock_service.list_etf_daily_kline(strategy.target_code))
+            else:
+                raise ValueError("unsupported sequence target")
         else:
-            signal_candles = self.stock_service.list_qfq_daily_kline(strategy.target_code)
-            snapshots = self._build_stock_snapshots(strategy.indicator_params or {}, signal_candles)
-            price_rows = [
-                {
-                    "trade_date": item["trade_date"],
-                    "open": float(item["open"]),
-                    "close": float(item["close"]),
-                    "high": float(item["high"]),
-                    "low": float(item["low"]),
-                }
-                for item in sorted(signal_candles, key=lambda row: _date_text(row.get("trade_date")))
-                if item.get("trade_date") is not None
-                and item.get("open") is not None
-                and item.get("close") is not None
-                and item.get("high") is not None
-                and item.get("low") is not None
-            ]
+            if strategy_type == "index":
+                signal_candles = self.stock_service.list_index_daily_kline(strategy.target_code)
+                snapshots = self._build_index_snapshots(strategy.target_name, strategy.indicator_params or {}, signal_candles)
+                etf_code = INDEX_TO_ETF_CODE.get(strategy.target_name)
+                if not etf_code:
+                    raise ValueError("unsupported index target")
+                price_rows = self._load_etf_price_rows(etf_code)
+            else:
+                signal_candles = self.stock_service.list_hfq_daily_kline(strategy.target_code)
+                snapshots = self._build_stock_snapshots(strategy.indicator_params or {}, signal_candles)
+                price_rows = self._normalize_price_rows(signal_candles)
 
         if not price_rows:
-            return {
-                "strategy": self._serialize_strategy(strategy),
-                "cumulative_return_pct": 0.0,
-                "annualized_return_pct": 0.0,
-                "max_drawdown_pct": 0.0,
-                "points": [],
-            }
+            return [], {}, {}, 1.0
 
         signal_map = self._build_signal_map(strategy, snapshots)
         start_date_text = strategy.start_date.isoformat() if strategy.start_date else _date_text(price_rows[0]["trade_date"])
         filtered_prices = [row for row in price_rows if _date_text(row["trade_date"]) >= start_date_text]
         if not filtered_prices:
-            return {
-                "strategy": self._serialize_strategy(strategy),
-                "cumulative_return_pct": 0.0,
-                "annualized_return_pct": 0.0,
-                "max_drawdown_pct": 0.0,
-                "points": [],
-            }
+            return [], signal_map, {}, 1.0
 
         price_dates = [_date_text(item["trade_date"]) for item in filtered_prices]
         pending_actions: dict[str, str] = {}
@@ -1102,14 +2431,33 @@ class QuantService:
             if action:
                 pending_actions[price_dates[current_index + 1]] = action
 
+        initial_close = float(filtered_prices[0]["close"]) if filtered_prices else 1.0
+        return filtered_prices, signal_map, pending_actions, initial_close
+
+    def _simulate_equity_curve(
+        self,
+        *,
+        filtered_prices: list[dict],
+        signal_map: dict[str, str],
+        pending_actions: dict[str, str],
+        initial_close: float,
+        buy_ratio: float,
+        sell_ratio: float,
+        execution_price_mode: str,
+        include_signals: bool,
+    ) -> dict:
+        if not filtered_prices:
+            return {
+                "cumulative_return_pct": 0.0,
+                "annualized_return_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "points": [],
+            }
+
         cash = 1.0
         shares = 0.0
-        initial_close = float(filtered_prices[0]["close"]) if filtered_prices else 1.0
-        buy_ratio = _normalize_ratio(strategy.buy_position_pct)
-        sell_ratio = _normalize_ratio(strategy.sell_position_pct)
-        execution_price_mode = (strategy.execution_price_mode or "next_open").strip()
-
         points: list[dict] = []
+
         for row in filtered_prices:
             trade_date = _date_text(row["trade_date"])
             action = pending_actions.get(trade_date)
@@ -1121,6 +2469,7 @@ class QuantService:
                 exec_price = float(row["low"] if action == "buy" else row["high"])
             else:
                 exec_price = float(row["open"])
+
             if action == "buy" and exec_price > 0:
                 nav_before_trade = cash + shares * exec_price
                 current_position_ratio = (shares * exec_price / nav_before_trade) if nav_before_trade > 0 else 0.0
@@ -1140,15 +2489,19 @@ class QuantService:
                     cash += sell_shares * exec_price
 
             close_price = float(row["close"])
-            nav = cash + shares * close_price
+            position_value = shares * close_price
+            nav = cash + position_value
             benchmark_nav = close_price / initial_close if initial_close else None
+            position_pct = max(min((position_value / nav) if nav > 0 else 0.0, 1.0), 0.0)
             points.append(
                 {
                     "trade_date": row["trade_date"],
                     "nav": nav,
                     "benchmark_nav": benchmark_nav,
-                    "signal": signal_map.get(trade_date),
+                    "signal": signal_map.get(trade_date) if include_signals else None,
                     "close_price": close_price,
+                    "position_pct": position_pct,
+                    "position_bucket": _position_bucket(position_pct),
                 }
             )
 
@@ -1161,6 +2514,7 @@ class QuantService:
             if peak_nav > 0:
                 drawdown_pct = (peak_nav - nav) / peak_nav * 100
                 max_drawdown_pct = max(max_drawdown_pct, drawdown_pct)
+
         start_dt = filtered_prices[0]["trade_date"]
         end_dt = filtered_prices[-1]["trade_date"]
         days_span = max((end_dt - start_dt).days, 0)
@@ -1170,9 +2524,140 @@ class QuantService:
             annualized_return_pct = cumulative_return_pct if points else 0.0
 
         return {
-            "strategy": self._serialize_strategy(strategy),
             "cumulative_return_pct": cumulative_return_pct,
             "annualized_return_pct": annualized_return_pct,
             "max_drawdown_pct": max_drawdown_pct,
             "points": points,
+        }
+
+    def _optimize_position_pairs(
+        self,
+        *,
+        filtered_prices: list[dict],
+        signal_map: dict[str, str],
+        pending_actions: dict[str, str],
+        initial_close: float,
+        execution_price_mode: str,
+    ) -> dict:
+        max_total_return_value: float | None = None
+        min_drawdown_value: float | None = None
+        max_total_return_pairs: list[dict] = []
+        min_drawdown_pairs: list[dict] = []
+
+        for buy_ratio in BUY_POSITION_SEARCH_RATIOS:
+            for sell_ratio in SELL_POSITION_SEARCH_RATIOS:
+                result = self._simulate_equity_curve(
+                    filtered_prices=filtered_prices,
+                    signal_map=signal_map,
+                    pending_actions=pending_actions,
+                    initial_close=initial_close,
+                    buy_ratio=buy_ratio,
+                    sell_ratio=sell_ratio,
+                    execution_price_mode=execution_price_mode,
+                    include_signals=False,
+                )
+                if not result["points"]:
+                    continue
+
+                pair = {
+                    "buy_position_pct": _round_metric(buy_ratio),
+                    "sell_position_pct": _round_metric(sell_ratio),
+                    "cumulative_return_pct": _round_metric(result["cumulative_return_pct"]),
+                }
+                total_return = float(result["cumulative_return_pct"])
+                drawdown = float(result["max_drawdown_pct"])
+
+                if max_total_return_value is None or total_return > max_total_return_value + OPTIMIZATION_TOLERANCE:
+                    max_total_return_value = total_return
+                    max_total_return_pairs = [pair]
+                elif abs(total_return - max_total_return_value) <= OPTIMIZATION_TOLERANCE:
+                    max_total_return_pairs.append(pair)
+
+                if min_drawdown_value is None or drawdown < min_drawdown_value - OPTIMIZATION_TOLERANCE:
+                    min_drawdown_value = drawdown
+                    min_drawdown_pairs = [pair]
+                elif abs(drawdown - min_drawdown_value) <= OPTIMIZATION_TOLERANCE:
+                    min_drawdown_pairs.append(pair)
+
+        return {
+            "max_total_return": {
+                "value_pct": _round_metric(max_total_return_value or 0.0),
+                "combinations": max_total_return_pairs,
+            },
+            "min_drawdown": {
+                "value_pct": _round_metric(min_drawdown_value or 0.0),
+                "combinations": min_drawdown_pairs,
+            },
+        }
+
+    def calculate_equity_curve(self, strategy_id: int, owner_user_id: int) -> dict:
+        strategy = self._get_owned_strategy(strategy_id, owner_user_id)
+        if (
+            self._normalize_strategy_engine(strategy.strategy_engine) == "sequence"
+            and self._normalize_sequence_mode(strategy.sequence_mode) == "market_scan"
+        ):
+            preview = self.preview_market_scan(self._build_market_scan_payload_from_strategy(strategy), owner_user_id)
+            scan_result = self.backtest_market_scan(
+                {
+                    "scan_result_id": preview["scan_result_id"],
+                    "scan_trade_config": strategy.scan_trade_config or {},
+                    "use_all_events": True,
+                    "excluded_event_ids": [],
+                },
+                owner_user_id,
+            )
+            empty_optimization = {
+                "max_total_return": {"value_pct": 0.0, "combinations": []},
+                "min_drawdown": {"value_pct": 0.0, "combinations": []},
+            }
+            return {
+                "strategy": self._serialize_strategy(strategy),
+                "cumulative_return_pct": scan_result["cumulative_return_pct"],
+                "annualized_return_pct": scan_result["annualized_return_pct"],
+                "max_drawdown_pct": scan_result["max_drawdown_pct"],
+                "points": scan_result["points"],
+                "position_optimization": empty_optimization,
+            }
+
+        filtered_prices, signal_map, pending_actions, initial_close = self._build_equity_curve_context(strategy)
+        empty_optimization = {
+            "max_total_return": {"value_pct": 0.0, "combinations": []},
+            "min_drawdown": {"value_pct": 0.0, "combinations": []},
+        }
+        if not filtered_prices:
+            return {
+                "strategy": self._serialize_strategy(strategy),
+                "cumulative_return_pct": 0.0,
+                "annualized_return_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "points": [],
+                "position_optimization": empty_optimization,
+            }
+
+        execution_price_mode = (strategy.execution_price_mode or "next_open").strip()
+        result = self._simulate_equity_curve(
+            filtered_prices=filtered_prices,
+            signal_map=signal_map,
+            pending_actions=pending_actions,
+            initial_close=initial_close,
+            buy_ratio=_normalize_ratio(strategy.buy_position_pct),
+            sell_ratio=_normalize_ratio(strategy.sell_position_pct),
+            execution_price_mode=execution_price_mode,
+            include_signals=True,
+        )
+        optimization = self._optimize_position_pairs(
+            filtered_prices=filtered_prices,
+            signal_map=signal_map,
+            pending_actions=pending_actions,
+            initial_close=initial_close,
+            execution_price_mode=execution_price_mode,
+        )
+
+        return {
+            "strategy": self._serialize_strategy(strategy),
+            "cumulative_return_pct": result["cumulative_return_pct"],
+            "annualized_return_pct": result["annualized_return_pct"],
+            "max_drawdown_pct": result["max_drawdown_pct"],
+            "points": result["points"],
+            "position_optimization": optimization,
         }

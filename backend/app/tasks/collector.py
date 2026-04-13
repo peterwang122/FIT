@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import uuid4
 
 import httpx
 from celery import Task
@@ -28,26 +29,15 @@ def _raise_with_response_detail(response: httpx.Response) -> None:
     raise httpx.HTTPStatusError(detail, request=response.request, response=response)
 
 
-@celery_app.task(
-    bind=True,
-    name="tasks.collect_stock_data",
-    autoretry_for=(httpx.HTTPError, TimeoutError),
-    retry_backoff=settings.collector_task_retry_backoff_seconds,
-    retry_jitter=True,
-    retry_kwargs={"max_retries": settings.collector_task_max_retries},
-    soft_time_limit=settings.collector_task_soft_time_limit_seconds,
-    time_limit=settings.collector_task_time_limit_seconds,
-)
-def collect_stock_data(
-    self: Task,
+def run_stock_data_collection_request(
     ts_code: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    request_id: str | None = None,
 ):
-    """向外部数据采集服务发送采集请求，支持重试/超时/去重幂等锁。"""
     lock_key = _collector_lock_key(ts_code=ts_code, start_date=start_date, end_date=end_date)
-    # setnx + ex：相同采集窗口在短时间内只允许一个任务对上游发起请求。
-    lock_acquired = redis_client.set(lock_key, self.request.id, nx=True, ex=settings.collector_dedupe_lock_ttl_seconds)
+    owner_token = request_id or f"manual:{uuid4()}"
+    lock_acquired = redis_client.set(lock_key, owner_token, nx=True, ex=settings.collector_dedupe_lock_ttl_seconds)
     if not lock_acquired:
         return {
             "requested_at": date.today().isoformat(),
@@ -76,28 +66,19 @@ def collect_stock_data(
             }
     finally:
         owner = redis_client.get(lock_key)
-        if owner == self.request.id:
+        if owner == owner_token:
             redis_client.delete(lock_key)
 
 
-@celery_app.task(
-    bind=True,
-    name="tasks.collect_stock_qfq_data",
-    autoretry_for=(httpx.HTTPError, TimeoutError),
-    retry_backoff=True,
-    retry_jitter=True,
-    retry_kwargs={"max_retries": settings.stock_temp_task_max_retries},
-    soft_time_limit=settings.stock_temp_task_soft_time_limit_seconds,
-    time_limit=settings.stock_temp_task_time_limit_seconds,
-)
-def collect_stock_qfq_data(
-    self: Task,
+def run_stock_hfq_collection_request(
     stock_code: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    request_id: str | None = None,
 ):
     lock_key = _stock_temp_lock_key(stock_code=stock_code, start_date=start_date, end_date=end_date)
-    lock_acquired = redis_client.set(lock_key, self.request.id, nx=True, ex=settings.collector_dedupe_lock_ttl_seconds)
+    owner_token = request_id or f"manual:{uuid4()}"
+    lock_acquired = redis_client.set(lock_key, owner_token, nx=True, ex=settings.collector_dedupe_lock_ttl_seconds)
     if not lock_acquired:
         return {
             "requested_at": date.today().isoformat(),
@@ -132,5 +113,77 @@ def collect_stock_qfq_data(
             }
     finally:
         owner = redis_client.get(lock_key)
-        if owner == self.request.id:
+        if owner == owner_token:
             redis_client.delete(lock_key)
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.collect_stock_data",
+    autoretry_for=(httpx.HTTPError, TimeoutError),
+    retry_backoff=settings.collector_task_retry_backoff_seconds,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": settings.collector_task_max_retries},
+    soft_time_limit=settings.collector_task_soft_time_limit_seconds,
+    time_limit=settings.collector_task_time_limit_seconds,
+)
+def collect_stock_data(
+    self: Task,
+    ts_code: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    return run_stock_data_collection_request(
+        ts_code=ts_code,
+        start_date=start_date,
+        end_date=end_date,
+        request_id=self.request.id,
+    )
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.collect_stock_hfq_data",
+    autoretry_for=(httpx.HTTPError, TimeoutError),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": settings.stock_temp_task_max_retries},
+    soft_time_limit=settings.stock_temp_task_soft_time_limit_seconds,
+    time_limit=settings.stock_temp_task_time_limit_seconds,
+)
+def collect_stock_hfq_data(
+    self: Task,
+    stock_code: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    return run_stock_hfq_collection_request(
+        stock_code=stock_code,
+        start_date=start_date,
+        end_date=end_date,
+        request_id=self.request.id,
+    )
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.collect_stock_qfq_data",
+    autoretry_for=(httpx.HTTPError, TimeoutError),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": settings.stock_temp_task_max_retries},
+    soft_time_limit=settings.stock_temp_task_soft_time_limit_seconds,
+    time_limit=settings.stock_temp_task_time_limit_seconds,
+)
+def collect_stock_qfq_data(
+    self: Task,
+    stock_code: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    return run_stock_hfq_collection_request(
+        stock_code=stock_code,
+        start_date=start_date,
+        end_date=end_date,
+        request_id=self.request.id,
+    )

@@ -62,7 +62,7 @@ export interface IndexDashboardResponse {
     code: string
     name: string
   }
-  range_mode: 'recent' | 'full'
+  range_mode: 'recent' | 'full' | 'window'
   candles: KlineCandle[]
   emotion_points: IndexDashboardEmotionPoint[]
   basis_points: IndexDashboardBasisPoint[]

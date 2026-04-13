@@ -39,6 +39,7 @@ type PrimitiveBinding = {
 }
 type SummaryRow = { label: string; value: string; placeholder?: boolean }
 type SummaryCard = { key: string; title: string; hint?: string; rows: SummaryRow[] }
+const HISTORY_REQUEST_THRESHOLD = 15
 
 const props = withDefaults(
   defineProps<{
@@ -60,6 +61,8 @@ const props = withDefaults(
     loading?: boolean
     defaultVisibleDays?: number
     zoomStep?: number
+    hasMoreHistory?: boolean
+    loadingMoreHistory?: boolean
   }>(),
   {
     emotionPoints: () => [],
@@ -75,12 +78,15 @@ const props = withDefaults(
     loading: false,
     defaultVisibleDays: 90,
     zoomStep: 0.18,
+    hasMoreHistory: false,
+    loadingMoreHistory: false,
   },
 )
 
 const emit = defineEmits<{
   selectIndex: [code: string]
   openSettings: []
+  requestMoreHistory: [earliestTradeDate: string]
 }>()
 
 const mainContainerRef = ref<HTMLDivElement | null>(null)
@@ -115,6 +121,7 @@ let isSyncingRange = false
 let isSyncingCrosshair = false
 let shouldResetVisibleRange = true
 let unsubs: Array<() => void> = []
+let lastRequestedHistoryBoundary: string | null = null
 
 function formatDateText(value: Date): string {
   const year = value.getFullYear()
@@ -295,6 +302,15 @@ function formatMetricWithSuffix(value: number | null | undefined, suffix: string
   return formatted === '-' ? '-' : `${formatted}${suffix}`
 }
 
+function formatRuleGroupList(prefix: string, groups: number[] | undefined) {
+  if (!groups?.length) {
+    return '-'
+  }
+  const visibleGroups = groups.slice(0, 3)
+  const base = `${prefix}规则组${visibleGroups.join('、')}`
+  return groups.length > 3 ? `${base} +${groups.length - 3}` : base
+}
+
 function formatPairValue(left: number | null | undefined, right: number | null | undefined) {
   if (left === null || left === undefined || !Number.isFinite(left) || right === null || right === undefined || !Number.isFinite(right)) {
     return '-'
@@ -410,6 +426,13 @@ const activeIndicatorSnapshot = computed(() => {
   }
 })
 
+const activeHighlightBand = computed(() => {
+  if (!activeTradeDate.value) {
+    return null
+  }
+  return props.highlightBands.find((item) => item.tradeDate === activeTradeDate.value) ?? null
+})
+
 const summaryCards = computed<SummaryCard[]>(() => {
   if (!activeSnapshot.value || !activeIndicatorSnapshot.value) {
     return []
@@ -477,6 +500,34 @@ const summaryCards = computed<SummaryCard[]>(() => {
         { label: '月连期现差', value: formatMetric(indicator.basis.month) },
         { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
         { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
+      ],
+    },
+    {
+      key: 'rule-hits',
+      title: '命中规则',
+      rows: [
+        { label: '蓝色命中', value: formatRuleGroupList('蓝色', activeHighlightBand.value?.blueHitGroups) },
+        { label: '红色命中', value: formatRuleGroupList('红色', activeHighlightBand.value?.redHitGroups) },
+        {
+          label: '状态',
+          value:
+            !activeHighlightBand.value
+              ? '-'
+              : activeHighlightBand.value.color === 'purple'
+                ? '紫色重叠'
+                : activeHighlightBand.value.variant === 'striped'
+                  ? '同色多组'
+                  : '单组命中',
+        },
+        {
+          label: '说明',
+          value:
+            !activeHighlightBand.value
+              ? '-'
+              : activeHighlightBand.value.variant === 'striped'
+                ? '条纹表示该日存在多组同时命中'
+                : '纯色表示该日仅单个规则组命中',
+        },
       ],
     },
   ]
@@ -604,8 +655,26 @@ function syncCrosshair(sourceKey: PanelKey, param: MouseEventParams<Time>) {
   }
 }
 
+function maybeRequestMoreHistory(range: LogicalRange | null) {
+  if (!range || !props.hasMoreHistory || props.loadingMoreHistory || !mainCandles.value.length) {
+    return
+  }
+  if (range.from > HISTORY_REQUEST_THRESHOLD) {
+    return
+  }
+  const earliestTradeDate = String(mainCandles.value[0]?.time ?? '')
+  if (!earliestTradeDate || lastRequestedHistoryBoundary === earliestTradeDate) {
+    return
+  }
+  lastRequestedHistoryBoundary = earliestTradeDate
+  emit('requestMoreHistory', earliestTradeDate)
+}
+
 function attachSync(panelKey: PanelKey, chart: IChartApi) {
-  const visibleRangeHandler = (range: LogicalRange | null) => syncVisibleRange(panelKey, range)
+  const visibleRangeHandler = (range: LogicalRange | null) => {
+    syncVisibleRange(panelKey, range)
+    maybeRequestMoreHistory(range)
+  }
   const crosshairHandler = (param: MouseEventParams<Time>) => syncCrosshair(panelKey, param)
   chart.timeScale().subscribeVisibleLogicalRangeChange(visibleRangeHandler)
   chart.subscribeCrosshairMove(crosshairHandler)
@@ -840,11 +909,27 @@ function renderCharts() {
   }
 }
 
-watch(mainCandles, () => {
+watch(mainCandles, (next, previous) => {
+  const previousVisibleRange = charts.main?.timeScale().getVisibleLogicalRange() ?? null
+  const previousEarliest = String(previous[0]?.time ?? '')
   updateAllSeries()
   if (shouldResetVisibleRange && mainCandles.value.length) {
     applyDefaultVisibleRange()
     shouldResetVisibleRange = false
+    return
+  }
+
+  const nextEarliest = String(next[0]?.time ?? '')
+  const prependedBars =
+    previousVisibleRange && previousEarliest && nextEarliest && nextEarliest < previousEarliest
+      ? next.filter((item) => String(item.time) < previousEarliest).length
+      : 0
+
+  if (previousVisibleRange && prependedBars > 0) {
+    charts.main?.timeScale().setVisibleLogicalRange({
+      from: previousVisibleRange.from + prependedBars,
+      to: previousVisibleRange.to + prependedBars,
+    })
   }
 })
 
@@ -865,6 +950,16 @@ watch(
   () => {
     hoveredTradeDate.value = null
     shouldResetVisibleRange = true
+    lastRequestedHistoryBoundary = null
+  },
+)
+
+watch(
+  () => props.candles[0]?.trade_date ?? null,
+  (nextEarliest, previousEarliest) => {
+    if (nextEarliest && nextEarliest !== previousEarliest) {
+      lastRequestedHistoryBoundary = null
+    }
   },
 )
 
@@ -931,6 +1026,7 @@ onBeforeUnmount(() => {
   breadthCountSeries = null
   hoveredTradeDate.value = null
   shouldResetVisibleRange = true
+  lastRequestedHistoryBoundary = null
 })
 </script>
 

@@ -80,6 +80,7 @@ export type QuantFilterFieldKey =
   | 'basis-main'
   | 'basis-month'
   | 'breadth-up-pct'
+  | 'pct-chg'
   | 'turnover-rate'
   | 'rsi'
   | 'wr'
@@ -97,7 +98,18 @@ export type QuantFilterFieldKey =
   | 'boll-middle'
   | 'boll-lower'
 
-export type QuantFilterGroupKey = 'emotion' | 'basis' | 'breadth' | 'turnover' | 'rsi' | 'wr' | 'macd' | 'kdj' | 'ma' | 'boll'
+export type QuantFilterGroupKey =
+  | 'emotion'
+  | 'basis'
+  | 'breadth'
+  | 'change'
+  | 'turnover'
+  | 'rsi'
+  | 'wr'
+  | 'macd'
+  | 'kdj'
+  | 'ma'
+  | 'boll'
 
 export interface QuantFilterFieldMeta {
   key: QuantFilterFieldKey
@@ -128,10 +140,14 @@ export interface QuantDailyIndicatorSnapshot {
 }
 
 export type QuantHighlightColor = 'blue' | 'red' | 'purple'
+export type QuantHighlightVariant = 'solid' | 'striped'
 
 export interface QuantHighlightBand {
   tradeDate: string
   color: QuantHighlightColor
+  variant?: QuantHighlightVariant
+  blueHitGroups?: number[]
+  redHitGroups?: number[]
 }
 
 export interface QuantFilterDataset {
@@ -146,7 +162,8 @@ export interface QuantFilterDataset {
   snapshots: QuantDailyIndicatorSnapshot[]
 }
 
-export type QuantStrategyType = 'index' | 'stock'
+export type QuantStrategyType = 'index' | 'stock' | 'etf'
+export type QuantStrategyEngine = 'snapshot' | 'sequence'
 export type QuantExecutionPriceMode = 'next_open' | 'next_close' | 'next_best'
 export type QuantConflictMode = 'sell_first' | 'buy_first' | 'skip'
 export type QuantSignalColor = 'blue' | 'red'
@@ -196,14 +213,91 @@ export interface QuantRuleGroup {
 
 export type QuantFilterGroupSet = QuantRuleGroup[]
 
+export type QuantSequenceSeriesKey = 'market-breadth-up-pct' | 'target-up-pct' | 'target-down-pct'
+export type QuantSequenceOperator = 'gt' | 'lt'
+export type QuantSequenceMode = 'single_target' | 'market_scan'
+export type QuantScanPriceBasis = 'open' | 'close'
+
+export interface QuantSequenceConditionDraft {
+  id: string
+  series_key: QuantSequenceSeriesKey | ''
+  operator: QuantSequenceOperator
+  threshold: string
+  consecutive_days: string
+}
+
+export interface QuantSequenceGroupDraft {
+  id: string
+  conditions: QuantSequenceConditionDraft[]
+}
+
+export interface QuantSequenceCondition {
+  series_key: QuantSequenceSeriesKey
+  operator: QuantSequenceOperator
+  threshold: number
+  consecutive_days: number
+}
+
+export interface QuantSequenceGroup {
+  conditions: QuantSequenceCondition[]
+}
+
+export type QuantSequenceGroupSet = QuantSequenceGroup[]
+
+export interface QuantScanTradeConfig {
+  initial_capital: number
+  buy_amount_per_event: number
+  buy_offset_trading_days: number
+  sell_offset_trading_days: number
+  buy_price_basis: QuantScanPriceBasis
+  sell_price_basis: QuantScanPriceBasis
+}
+
+export interface QuantScanEvent {
+  event_id: string
+  target_type: QuantStrategyType
+  target_code: string
+  target_name: string
+  signal_date: string
+  buy_date: string | null
+  sell_date: string | null
+  hit_buy_groups: number[]
+  tradable: boolean
+  disabled_reason: string | null
+  board: string | null
+  lot_rule: string | null
+  buy_price: number | null
+  sell_price: number | null
+  planned_quantity: number | null
+  planned_buy_amount: number | null
+  selected?: boolean | null
+  executed?: boolean | null
+  skip_reason?: string | null
+  actual_quantity?: number | null
+  actual_buy_amount?: number | null
+  actual_sell_amount?: number | null
+  pnl_amount?: number | null
+  return_pct?: number | null
+}
+
+export interface QuantSequenceSnapshot {
+  tradeDate: string
+  values: Partial<Record<QuantSequenceSeriesKey, number | null>>
+}
+
 export interface QuantStrategyConfig {
   id: number
   name: string
   notes: string
+  strategy_engine: QuantStrategyEngine
+  sequence_mode: QuantSequenceMode
   strategy_type: QuantStrategyType
   target_code: string
   target_name: string
   indicator_params: QuantIndicatorParams
+  buy_sequence_groups: QuantSequenceGroupSet
+  sell_sequence_groups: QuantSequenceGroupSet
+  scan_trade_config: QuantScanTradeConfig
   blue_filter_groups: QuantFilterGroupSet
   red_filter_groups: QuantFilterGroupSet
   blue_filters: QuantFilterApplied
@@ -214,6 +308,8 @@ export interface QuantStrategyConfig {
   signal_sell_color: QuantSignalColor
   purple_conflict_mode: QuantConflictMode
   start_date: string | null
+  scan_start_date: string | null
+  scan_end_date: string | null
   buy_position_pct: number
   sell_position_pct: number
   execution_price_mode: QuantExecutionPriceMode
@@ -224,10 +320,15 @@ export interface QuantStrategyConfig {
 export interface QuantStrategyPayload {
   name: string
   notes: string
+  strategy_engine: QuantStrategyEngine
+  sequence_mode: QuantSequenceMode
   strategy_type: QuantStrategyType
   target_code: string
   target_name: string
   indicator_params: QuantIndicatorParams
+  buy_sequence_groups: QuantSequenceGroupSet
+  sell_sequence_groups: QuantSequenceGroupSet
+  scan_trade_config: QuantScanTradeConfig
   blue_filter_groups: QuantFilterGroupSet
   red_filter_groups: QuantFilterGroupSet
   blue_filters: QuantFilterApplied
@@ -238,6 +339,8 @@ export interface QuantStrategyPayload {
   signal_sell_color: QuantSignalColor
   purple_conflict_mode: QuantConflictMode
   start_date: string | null
+  scan_start_date: string | null
+  scan_end_date: string | null
   buy_position_pct: number
   sell_position_pct: number
   execution_price_mode: QuantExecutionPriceMode
@@ -249,6 +352,24 @@ export interface QuantEquityCurvePoint {
   benchmark_nav: number | null
   signal: string | null
   close_price: number | null
+  position_pct: number
+  position_bucket: 'flat' | 'light' | 'medium' | 'heavy' | 'full' | null
+}
+
+export interface QuantPositionPair {
+  buy_position_pct: number
+  sell_position_pct: number
+  cumulative_return_pct?: number | null
+}
+
+export interface QuantPositionOptimizationTarget {
+  value_pct: number
+  combinations: QuantPositionPair[]
+}
+
+export interface QuantPositionOptimizationResult {
+  max_total_return: QuantPositionOptimizationTarget
+  min_drawdown: QuantPositionOptimizationTarget
 }
 
 export interface QuantEquityCurveResponse {
@@ -257,4 +378,71 @@ export interface QuantEquityCurveResponse {
   annualized_return_pct: number
   max_drawdown_pct: number
   points: QuantEquityCurvePoint[]
+  position_optimization: QuantPositionOptimizationResult
+}
+
+export interface QuantSequenceScanPreviewResponse {
+  scan_result_id: string
+  strategy_type: QuantStrategyType
+  matched_events: QuantScanEvent[]
+  matched_event_count: number
+  tradable_event_count: number
+  total_event_count: number
+  page: number
+  page_size: number
+}
+
+export interface QuantScanResultRef {
+  scan_result_id: string
+  strategy_type: QuantStrategyType
+}
+
+export interface QuantScanEventPage {
+  scan_result_id: string
+  strategy_type: QuantStrategyType
+  matched_events: QuantScanEvent[]
+  matched_event_count: number
+  tradable_event_count: number
+  total_event_count: number
+  page: number
+  page_size: number
+}
+
+export interface QuantScanTargetHits {
+  scan_result_id: string
+  target_code: string
+  target_name: string
+  hit_dates: string[]
+}
+
+export interface QuantScanBacktestSelection {
+  use_all_events: boolean
+  excluded_event_ids: string[]
+}
+
+export interface QuantSequenceScanBacktestSummary {
+  matched_event_count: number
+  tradable_event_count: number
+  selected_event_count: number
+  executed_event_count: number
+  skipped_event_count: number
+}
+
+export interface QuantSequenceScanBacktestResponse {
+  scan_result_id: string
+  strategy_type: QuantStrategyType
+  matched_events: QuantScanEvent[]
+  total_event_count: number
+  page: number
+  page_size: number
+  cumulative_return_pct: number
+  annualized_return_pct: number
+  max_drawdown_pct: number
+  points: QuantEquityCurvePoint[]
+  summary: QuantSequenceScanBacktestSummary
+}
+
+export interface QuantTargetOption {
+  code: string
+  name: string
 }

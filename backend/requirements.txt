@@ -9,3 +9,8 @@ redis==6.4.0
 httpx==0.28.1
 python-dotenv==1.1.1
 flower==2.0.1
+pandas-market-calendars>=4.4,<6
+alibabacloud-dypnsapi20170525==1.2.1
+alibabacloud-credentials==1.0.3
+alibabacloud-tea-openapi==0.4.4
+alibabacloud-tea-util==0.3.13

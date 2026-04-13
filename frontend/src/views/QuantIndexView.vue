@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
-import { createQuantStrategy, fetchIndexDashboard, fetchIndexOptions } from '../api/stocks'
+import { createQuantStrategy, fetchIndexDashboard, fetchIndexOptions, fetchQuantStrategy, updateQuantStrategy } from '../api/stocks'
 import QuantIndexChart from '../components/QuantIndexChart.vue'
 import QuantRuleGroupBuilder from '../components/QuantRuleGroupBuilder.vue'
 import type {
@@ -9,13 +10,24 @@ import type {
   QuantHighlightBand,
   QuantIndicatorParams,
   QuantRuleGroupDraft,
+  QuantStrategyConfig,
 } from '../types/quant'
-import type { FuturesBasisPoint, IndexBreadthPoint, IndexEmotionPoint, KlineCandle, MarketOption } from '../types/stock'
+import type {
+  FuturesBasisPoint,
+  IndexBreadthPoint,
+  IndexDashboardBasisPoint,
+  IndexDashboardEmotionPoint,
+  IndexDashboardResponse,
+  IndexEmotionPoint,
+  KlineCandle,
+  MarketOption,
+} from '../types/stock'
 import { INDEX_QUANT_FILTER_FIELD_KEYS, buildIndexQuantFilterDataset } from '../utils/quantIndicators'
 import {
   createEmptyRuleConditionDraft,
   createEmptyRuleGroupDraft,
-  matchRuleGroups,
+  deserializeRuleGroups,
+  matchRuleGroupIndexes,
   normalizeRuleGroups,
 } from '../utils/quantRuleGroups'
 
@@ -37,10 +49,20 @@ type QuantFormState = {
 
 type QuantFormErrors = Partial<Record<keyof QuantFormState, string>>
 type QuantFilterColor = 'blue' | 'red'
+type IndexDashboardChunkState = {
+  candles: KlineCandle[]
+  emotionPoints: IndexDashboardEmotionPoint[]
+  basisPoints: IndexDashboardBasisPoint[]
+  breadthPoints: IndexBreadthPoint[]
+  earliestLoadedDate: string | null
+  hasMoreHistory: boolean
+  pendingWindowKey: string | null
+}
 
 const DEFAULT_INDEX_NAME = '上证指数'
 const CORE_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
 const FILTER_COLORS: QuantFilterColor[] = ['blue', 'red']
+const INDEX_DASHBOARD_CHUNK_MONTHS = 12
 const DEFAULT_PARAMS: QuantIndicatorParams = {
   ma: { periods: [5, 10, 20, 60] },
   macd: { fast: 12, slow: 26, signal: 9 },
@@ -49,6 +71,97 @@ const DEFAULT_PARAMS: QuantIndicatorParams = {
   rsi: { period: 14 },
   boll: { period: 20, multiplier: 2 },
 }
+
+function formatDateOnly(value: Date): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function monthsAgo(months: number): string {
+  const value = new Date()
+  value.setMonth(value.getMonth() - months)
+  return formatDateOnly(value)
+}
+
+function shiftMonths(value: string, months: number): string {
+  const date = new Date(`${value}T00:00:00`)
+  date.setMonth(date.getMonth() + months)
+  return formatDateOnly(date)
+}
+
+function shiftDays(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00`)
+  date.setDate(date.getDate() + days)
+  return formatDateOnly(date)
+}
+
+function mergeByTradeDate<T extends { trade_date: string }>(existing: T[], incoming: T[]) {
+  const byDate = new Map<string, T>()
+  for (const item of [...existing, ...incoming]) {
+    byDate.set(item.trade_date, item)
+  }
+  return [...byDate.values()].sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+}
+
+function buildDashboardChunkState(
+  payload: Pick<IndexDashboardResponse, 'candles' | 'emotion_points' | 'basis_points' | 'breadth_points'>,
+  hasMoreHistory = true,
+  pendingWindowKey: string | null = null,
+): IndexDashboardChunkState {
+  return {
+    candles: payload.candles,
+    emotionPoints: payload.emotion_points,
+    basisPoints: payload.basis_points,
+    breadthPoints: payload.breadth_points,
+    earliestLoadedDate: payload.candles[0]?.trade_date ?? null,
+    hasMoreHistory: payload.candles.length > 0 ? hasMoreHistory : false,
+    pendingWindowKey,
+  }
+}
+
+function cloneFilterGroups(groups: QuantFilterGroupSet): QuantFilterGroupSet {
+  return JSON.parse(JSON.stringify(groups ?? [])) as QuantFilterGroupSet
+}
+
+function normalizeIndicatorParams(raw: Partial<QuantIndicatorParams> | null | undefined): QuantIndicatorParams {
+  const periods = raw?.ma?.periods
+  const maPeriods: [number, number, number, number] =
+    Array.isArray(periods) && periods.length >= 4
+      ? [
+          Number(periods[0]) || DEFAULT_PARAMS.ma.periods[0],
+          Number(periods[1]) || DEFAULT_PARAMS.ma.periods[1],
+          Number(periods[2]) || DEFAULT_PARAMS.ma.periods[2],
+          Number(periods[3]) || DEFAULT_PARAMS.ma.periods[3],
+        ]
+      : [...DEFAULT_PARAMS.ma.periods]
+
+  return {
+    ma: { periods: maPeriods },
+    macd: {
+      fast: Number(raw?.macd?.fast) || DEFAULT_PARAMS.macd.fast,
+      slow: Number(raw?.macd?.slow) || DEFAULT_PARAMS.macd.slow,
+      signal: Number(raw?.macd?.signal) || DEFAULT_PARAMS.macd.signal,
+    },
+    kdj: {
+      period: Number(raw?.kdj?.period) || DEFAULT_PARAMS.kdj.period,
+      kSmoothing: Number(raw?.kdj?.kSmoothing) || DEFAULT_PARAMS.kdj.kSmoothing,
+      dSmoothing: Number(raw?.kdj?.dSmoothing) || DEFAULT_PARAMS.kdj.dSmoothing,
+    },
+    wr: {
+      period: Number(raw?.wr?.period) || DEFAULT_PARAMS.wr.period,
+    },
+    rsi: {
+      period: Number(raw?.rsi?.period) || DEFAULT_PARAMS.rsi.period,
+    },
+    boll: {
+      period: Number(raw?.boll?.period) || DEFAULT_PARAMS.boll.period,
+      multiplier: Number(raw?.boll?.multiplier) || DEFAULT_PARAMS.boll.multiplier,
+    },
+  }
+}
+
 const PARAM_GROUPS: Array<{
   key: 'ma' | 'macd' | 'kdj' | 'wr' | 'boll'
   title: string
@@ -157,7 +270,8 @@ const emotionPoints = ref<IndexEmotionPoint[]>([])
 const futuresBasisPoints = ref<FuturesBasisPoint[]>([])
 const breadthPoints = ref<IndexBreadthPoint[]>([])
 const loading = ref(false)
-const fullLoading = ref(false)
+const loadingMoreHistory = ref(false)
+const hasMoreHistory = ref(false)
 const booting = ref(true)
 const error = ref('')
 const emotionLoading = ref(false)
@@ -171,7 +285,11 @@ const saveLoading = ref(false)
 const saveMessage = ref('')
 const saveError = ref('')
 const showParamsModal = ref(false)
+const loadedStrategyId = ref<number | null>(null)
 let activeDashboardToken = 0
+const dashboardStatesByCode = ref<Record<string, IndexDashboardChunkState>>({})
+const strategyLoadMessage = ref('')
+const route = useRoute()
 
 const appliedParams = ref<QuantIndicatorParams>(cloneParams(DEFAULT_PARAMS))
 const appliedBlueFilterGroups = ref<QuantFilterGroupSet>([])
@@ -271,11 +389,19 @@ const canApplyFilters = computed(() => {
 
 const highlightBands = computed<QuantHighlightBand[]>(() => {
   return quantFilterDataset.value.snapshots.reduce<QuantHighlightBand[]>((bands, snapshot) => {
-    const isBlue = matchRuleGroups(snapshot, appliedBlueFilterGroups.value)
-    const isRed = matchRuleGroups(snapshot, appliedRedFilterGroups.value)
-    if (isBlue && isRed) bands.push({ tradeDate: snapshot.tradeDate, color: 'purple' })
-    else if (isBlue) bands.push({ tradeDate: snapshot.tradeDate, color: 'blue' })
-    else if (isRed) bands.push({ tradeDate: snapshot.tradeDate, color: 'red' })
+    const blueHitGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value)
+    const redHitGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value)
+    const isBlue = blueHitGroups.length > 0
+    const isRed = redHitGroups.length > 0
+    const variant = blueHitGroups.length > 1 || redHitGroups.length > 1 ? 'striped' : 'solid'
+
+    if (isBlue && isRed) {
+      bands.push({ tradeDate: snapshot.tradeDate, color: 'purple', variant, blueHitGroups, redHitGroups })
+    } else if (isBlue) {
+      bands.push({ tradeDate: snapshot.tradeDate, color: 'blue', variant, blueHitGroups, redHitGroups: [] })
+    } else if (isRed) {
+      bands.push({ tradeDate: snapshot.tradeDate, color: 'red', variant, blueHitGroups: [], redHitGroups })
+    }
     return bands
   }, [])
 })
@@ -328,48 +454,66 @@ async function handleChartIndexSelect(nextCode: string) {
   await loadDashboardForIndex(nextCode)
 }
 
-function applyDashboardPayload(payload: Awaited<ReturnType<typeof fetchIndexDashboard>>) {
-  const basisIndexNames = payload.index.name === DEFAULT_INDEX_NAME ? [...CORE_INDEX_NAMES] : [payload.index.name]
-  indexCandles.value = payload.candles
-  emotionPoints.value = payload.emotion_points.flatMap((item) =>
-    basisIndexNames.map((indexName) => ({
-      emotion_date: item.trade_date,
-      index_name: indexName,
-      emotion_value: item.value,
-    })),
-  )
-  futuresBasisPoints.value = payload.basis_points.flatMap((item) =>
-    basisIndexNames.map((indexName) => ({
-      trade_date: item.trade_date,
-      index_name: indexName,
-      main_basis: item.main_basis,
-      month_basis: item.month_basis,
-    })),
-  )
-  breadthPoints.value = payload.breadth_points
+function applyDashboardState(targetCode: string, targetName: string, state: IndexDashboardChunkState | null) {
+  const basisIndexNames = targetName === DEFAULT_INDEX_NAME ? [...CORE_INDEX_NAMES] : [targetName]
+  indexCandles.value = state?.candles ?? []
+  emotionPoints.value =
+    state?.emotionPoints.flatMap((item) =>
+      basisIndexNames.map((indexName) => ({
+        emotion_date: item.trade_date,
+        index_name: indexName,
+        emotion_value: item.value,
+      })),
+    ) ?? []
+  futuresBasisPoints.value =
+    state?.basisPoints.flatMap((item) =>
+      basisIndexNames.map((indexName) => ({
+        trade_date: item.trade_date,
+        index_name: indexName,
+        main_basis: item.main_basis,
+        month_basis: item.month_basis,
+      })),
+    ) ?? []
+  breadthPoints.value = state?.breadthPoints ?? []
+  hasMoreHistory.value = state?.hasMoreHistory ?? false
+  loadingMoreHistory.value = Boolean(state?.pendingWindowKey)
+  if (state) {
+    dashboardStatesByCode.value[targetCode] = state
+  }
 }
 
-async function loadFullDashboardForIndex(targetCode: string, token: number) {
-  fullLoading.value = true
-  try {
-    const payload = await fetchIndexDashboard(targetCode, 'full')
-    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
-    applyDashboardPayload(payload)
-  } catch (loadError) {
-    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
-    console.error(loadError)
-  } finally {
-    if (token === activeDashboardToken && targetCode === indexCode.value) {
-      fullLoading.value = false
-    }
+function mergeDashboardState(
+  currentState: IndexDashboardChunkState,
+  payload: IndexDashboardResponse,
+): IndexDashboardChunkState {
+  const mergedCandles = mergeByTradeDate(currentState.candles, payload.candles)
+  const hasOlderHistory =
+    payload.candles.length > 0 &&
+    Boolean(mergedCandles[0]?.trade_date) &&
+    mergedCandles[0].trade_date < (currentState.earliestLoadedDate ?? '')
+
+  return {
+    candles: mergedCandles,
+    emotionPoints: mergeByTradeDate(currentState.emotionPoints, payload.emotion_points),
+    basisPoints: mergeByTradeDate(currentState.basisPoints, payload.basis_points),
+    breadthPoints: mergeByTradeDate(currentState.breadthPoints, payload.breadth_points),
+    earliestLoadedDate: mergedCandles[0]?.trade_date ?? null,
+    hasMoreHistory: hasOlderHistory,
+    pendingWindowKey: null,
   }
 }
 
 async function loadDashboardForIndex(targetCode: string) {
-  if (!targetCode) return
+  if (!targetCode) return false
   const token = ++activeDashboardToken
+  const cached = dashboardStatesByCode.value[targetCode]
+  if (cached) {
+    applyDashboardState(targetCode, selectedIndexName.value, cached)
+    return true
+  }
   loading.value = true
-  fullLoading.value = false
+  loadingMoreHistory.value = false
+  hasMoreHistory.value = false
   error.value = ''
   emotionError.value = ''
   futuresBasisError.value = ''
@@ -377,22 +521,58 @@ async function loadDashboardForIndex(targetCode: string) {
   emotionLoading.value = false
   futuresBasisLoading.value = false
   breadthLoading.value = false
-  indexCandles.value = []
-  emotionPoints.value = []
-  futuresBasisPoints.value = []
-  breadthPoints.value = []
+  applyDashboardState(targetCode, selectedIndexName.value, null)
   try {
-    const payload = await fetchIndexDashboard(targetCode, 'recent')
-    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
-    applyDashboardPayload(payload)
-    void loadFullDashboardForIndex(targetCode, token)
+    const payload = await fetchIndexDashboard(targetCode, {
+      startDate: monthsAgo(INDEX_DASHBOARD_CHUNK_MONTHS),
+      mode: 'recent',
+    })
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return false
+    applyDashboardState(targetCode, payload.index.name, buildDashboardChunkState(payload, payload.candles.length > 0))
+    return true
   } catch (loadError) {
-    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return false
     error.value = getErrorMessage(loadError)
+    return false
   } finally {
     if (token === activeDashboardToken && targetCode === indexCode.value) {
       loading.value = false
     }
+  }
+}
+
+async function loadMoreDashboardHistory() {
+  const targetCode = indexCode.value
+  if (!targetCode) return
+  const currentState = dashboardStatesByCode.value[targetCode]
+  if (!currentState?.earliestLoadedDate || !currentState.hasMoreHistory || currentState.pendingWindowKey) {
+    return
+  }
+
+  const token = activeDashboardToken
+  const endDate = shiftDays(currentState.earliestLoadedDate, -1)
+  const startDate = shiftMonths(endDate, -INDEX_DASHBOARD_CHUNK_MONTHS)
+  const windowKey = `${startDate}:${endDate}`
+  applyDashboardState(targetCode, selectedIndexName.value, {
+    ...currentState,
+    pendingWindowKey: windowKey,
+  })
+
+  try {
+    const payload = await fetchIndexDashboard(targetCode, {
+      startDate,
+      endDate,
+      mode: 'recent',
+    })
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
+    applyDashboardState(targetCode, payload.index.name, mergeDashboardState(currentState, payload))
+  } catch (loadError) {
+    if (token !== activeDashboardToken || targetCode !== indexCode.value) return
+    console.error(loadError)
+    applyDashboardState(targetCode, selectedIndexName.value, {
+      ...currentState,
+      pendingWindowKey: null,
+    })
   }
 }
 
@@ -430,7 +610,45 @@ function clearFilters() {
   appliedRedFilterGroups.value = []
 }
 
-async function saveStrategy() {
+function buildStrategyPayload() {
+  return {
+    name: saveName.value.trim(),
+    notes: '',
+    strategy_engine: 'snapshot' as const,
+    sequence_mode: 'single_target' as const,
+    strategy_type: 'index' as const,
+    target_code: indexCode.value,
+    target_name: selectedIndexName.value,
+    indicator_params: appliedParams.value,
+    buy_sequence_groups: [],
+    sell_sequence_groups: [],
+    scan_trade_config: {
+      initial_capital: 1_000_000,
+      buy_amount_per_event: 10_000,
+      buy_offset_trading_days: 1,
+      sell_offset_trading_days: 2,
+      buy_price_basis: 'open' as const,
+      sell_price_basis: 'open' as const,
+    },
+    blue_filter_groups: appliedBlueFilterGroups.value,
+    red_filter_groups: appliedRedFilterGroups.value,
+    blue_filters: {},
+    red_filters: {},
+    blue_boll_filter: { gt: null, lt: null, intraday_gt: null, intraday_lt: null },
+    red_boll_filter: { gt: null, lt: null, intraday_gt: null, intraday_lt: null },
+    signal_buy_color: 'blue' as const,
+    signal_sell_color: 'red' as const,
+    purple_conflict_mode: 'sell_first' as const,
+    start_date: null,
+    scan_start_date: null,
+    scan_end_date: null,
+    buy_position_pct: 1,
+    sell_position_pct: 1,
+    execution_price_mode: 'next_open' as const,
+  }
+}
+
+async function saveStrategy(asNew = false) {
   saveError.value = ''
   saveMessage.value = ''
   if (!saveName.value.trim()) {
@@ -443,32 +661,102 @@ async function saveStrategy() {
   }
   saveLoading.value = true
   try {
-    const result = await createQuantStrategy({
-      name: saveName.value.trim(),
-      notes: '',
-      strategy_type: 'index',
-      target_code: indexCode.value,
-      target_name: selectedIndexName.value,
-      indicator_params: appliedParams.value,
-      blue_filter_groups: appliedBlueFilterGroups.value,
-      red_filter_groups: appliedRedFilterGroups.value,
-      blue_filters: {},
-      red_filters: {},
-      blue_boll_filter: { gt: null, lt: null, intraday_gt: null, intraday_lt: null },
-      red_boll_filter: { gt: null, lt: null, intraday_gt: null, intraday_lt: null },
-      signal_buy_color: 'blue',
-      signal_sell_color: 'red',
-      purple_conflict_mode: 'sell_first',
-      start_date: null,
-      buy_position_pct: 1,
-      sell_position_pct: 1,
-      execution_price_mode: 'next_open',
-    })
+    const result = await createQuantStrategy(buildStrategyPayload())
+    loadedStrategyId.value = result.id
+    saveName.value = result.name
     saveMessage.value = `已保存策略：${result.name}`
   } catch (saveErr) {
     saveError.value = getErrorMessage(saveErr)
   } finally {
     saveLoading.value = false
+  }
+}
+
+async function saveCurrentStrategy() {
+  if (!loadedStrategyId.value) {
+    await saveStrategy(true)
+    return
+  }
+  saveError.value = ''
+  saveMessage.value = ''
+  if (!saveName.value.trim()) {
+    saveError.value = '璇峰厛濉啓绛栫暐鍚嶇О'
+    return
+  }
+  if (!indexCode.value || !selectedIndexName.value) {
+    saveError.value = '褰撳墠娌℃湁鍙繚瀛樼殑鎸囨暟鏍囩殑'
+    return
+  }
+  saveLoading.value = true
+  try {
+    const result = await updateQuantStrategy(loadedStrategyId.value, buildStrategyPayload())
+    loadedStrategyId.value = result.id
+    saveName.value = result.name
+    saveMessage.value = `已更新策略：${result.name}`
+  } catch (saveErr) {
+    saveError.value = getErrorMessage(saveErr)
+  } finally {
+    saveLoading.value = false
+  }
+}
+
+async function saveAsNewStrategy() {
+  await saveStrategy(true)
+}
+
+function getStrategyIdFromRoute() {
+  const raw = route.query.strategyId
+  const normalized = Array.isArray(raw) ? raw[0] : raw
+  const parsed = normalized ? Number(normalized) : Number.NaN
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function applyStrategyConfig(strategy: QuantStrategyConfig) {
+  const nextParams = normalizeIndicatorParams(strategy.indicator_params)
+  const blueGroups = cloneFilterGroups(strategy.blue_filter_groups)
+  const redGroups = cloneFilterGroups(strategy.red_filter_groups)
+
+  appliedParams.value = nextParams
+  Object.assign(formState, buildFormState(nextParams))
+  blueRuleDrafts.value = deserializeRuleGroups(blueGroups)
+  redRuleDrafts.value = deserializeRuleGroups(redGroups)
+  appliedBlueFilterGroups.value = blueGroups
+  appliedRedFilterGroups.value = redGroups
+  saveName.value = strategy.name
+  loadedStrategyId.value = strategy.id
+  showParamsModal.value = false
+}
+
+async function hydrateStrategyFromRoute() {
+  const strategyId = getStrategyIdFromRoute()
+  if (!strategyId) return
+
+  strategyLoadMessage.value = ''
+  error.value = ''
+  saveError.value = ''
+
+  try {
+    const strategy = await fetchQuantStrategy(strategyId)
+    if (strategy.strategy_engine !== 'snapshot' || strategy.strategy_type !== 'index') {
+      error.value = '当前策略不是指数策略，无法加载到指数分析页'
+      return
+    }
+    if (!indexOptions.value.some((item) => item.code === strategy.target_code)) {
+      error.value = '该策略对应的指数标的当前不可用'
+      return
+    }
+
+    indexCode.value = strategy.target_code
+    const loaded = await loadDashboardForIndex(strategy.target_code)
+    if (!loaded) {
+      error.value = error.value || '策略对应指数数据加载失败'
+      return
+    }
+
+    applyStrategyConfig(strategy)
+    strategyLoadMessage.value = `已加载策略：${strategy.name}`
+  } catch (loadError) {
+    error.value = getErrorMessage(loadError)
   }
 }
 
@@ -491,11 +779,24 @@ async function initializePage() {
   }
 }
 
-onMounted(initializePage)
+onMounted(async () => {
+  await initializePage()
+  await hydrateStrategyFromRoute()
+})
+
+watch(
+  () => route.query.strategyId,
+  (value, previousValue) => {
+    if (booting.value) return
+    if (value === previousValue) return
+    void hydrateStrategyFromRoute()
+  },
+)
 </script>
 
 <template>
   <p v-if="error" class="banner-error">{{ error }}</p>
+  <p v-else-if="strategyLoadMessage" class="muted">{{ strategyLoadMessage }}</p>
   <div v-if="showParamsModal" class="quant-modal-backdrop" @click="closeParamsModal"></div>
   <div class="quant-body">
     <div class="quant-content-column">
@@ -543,14 +844,17 @@ onMounted(initializePage)
           :breadth-loading="breadthLoading"
           :breadth-error-message="breadthError"
           :highlight-bands="highlightBands"
+          :has-more-history="hasMoreHistory"
+          :loading-more-history="loadingMoreHistory"
           :market-options="indexOptions"
           :symbol-name="selectedIndexName"
           :symbol-code="indexCode"
           :params="appliedParams"
-          :loading="loading || booting || fullLoading"
+          :loading="loading || booting"
           :default-visible-days="90"
           @select-index="handleChartIndexSelect"
           @open-settings="openParamsModal"
+          @request-more-history="loadMoreDashboardHistory"
         />
       </section>
     </div>
@@ -598,7 +902,12 @@ onMounted(initializePage)
         <div class="quant-filter-footer">
           <button class="btn primary" :disabled="!canApplyFilters" @click="applyFilters">确定</button>
           <button class="btn" @click="clearFilters">清空筛选</button>
-          <button class="btn" :disabled="saveLoading || !indexCode" @click="saveStrategy">{{ saveLoading ? '保存中...' : '保存筛选' }}</button>
+          <button class="btn" :disabled="saveLoading || !indexCode" @click="saveCurrentStrategy">
+            {{ saveLoading ? '保存中...' : loadedStrategyId ? '更新当前策略' : '保存筛选' }}
+          </button>
+          <button class="btn" :disabled="saveLoading || !indexCode" @click="saveAsNewStrategy">
+            {{ saveLoading ? '保存中...' : '另存为新策略' }}
+          </button>
         </div>
       </section>
     </aside>

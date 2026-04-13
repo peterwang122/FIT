@@ -32,9 +32,13 @@ const {
   indexCode,
   indexOptions,
   indexCandles,
+  indexHasMoreHistory,
+  indexHistoryLoadingMore,
   forexCode,
   forexOptions,
   forexCandles,
+  forexHasMoreHistory,
+  forexHistoryLoadingMore,
   indexLoading,
   forexLoading,
   netPositionSeriesLoading,
@@ -193,7 +197,10 @@ onMounted(async () => {
               :symbol-name="selectedIndexName"
               :symbol-code="indexCode"
               :default-visible-days="120"
+              :has-more-history="indexHasMoreHistory"
+              :loading-more-history="indexHistoryLoadingMore"
               height="100%"
+              @request-more-history="stockStore.loadMoreIndexHistory"
             />
           </section>
         </div>
@@ -241,7 +248,10 @@ onMounted(async () => {
               :symbol-name="selectedForexName"
               :symbol-code="forexCode"
               :default-visible-days="90"
+              :has-more-history="forexHasMoreHistory"
+              :loading-more-history="forexHistoryLoadingMore"
               height="100%"
+              @request-more-history="stockStore.loadMoreForexHistory"
             />
           </section>
         </div>

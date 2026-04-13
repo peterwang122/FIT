@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict
 from datetime import date
 
 from sqlalchemy import inspect, text
@@ -55,10 +56,54 @@ CITIC_CUSTOMER_MEMBER_NAME_LEGACY = "中信期货"
 CITIC_CUSTOMER_MEMBER_BROKER_START_DATE = date(2024, 2, 26)
 CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE = date(2024, 4, 29)
 
+INDEX_OPTIONS_CACHE_KEY = "fit:stock:index_options:v1"
+FOREX_OPTIONS_CACHE_KEY = "fit:stock:forex_options:v1"
+INDEX_EMOTIONS_CACHE_KEY_PREFIX = "fit:stock:index_emotions:v1"
+CFFEX_NET_POSITION_TABLES_CACHE_KEY_PREFIX = "fit:stock:cffex:tables:v1"
+CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX = "fit:stock:cffex:series:v1"
+INDEX_KLINE_CACHE_KEY_PREFIX = "fit:stock:index_kline:v1"
+FOREX_KLINE_CACHE_KEY_PREFIX = "fit:stock:forex_kline:v1"
+CACHE_TTL_SECONDS = 600
+
 
 class StockService:
     def __init__(self, db: Session):
         self.db = db
+
+    def _normalize_stock_scan_row(self, row: dict) -> dict:
+        item = dict(row)
+        item["change"] = item.pop("change_value", 0)
+        for field in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "pre_close",
+            "change",
+            "pct_chg",
+            "vol",
+            "amount",
+            "turnover_rate",
+            "pe_ttm",
+            "pb",
+            "total_market_value",
+            "circulating_market_value",
+        ]:
+            if item.get(field) is None:
+                item[field] = 0
+        return item
+
+    def _cache_get_json(self, key: str):
+        cached = redis_client.get(key)
+        if not cached:
+            return None
+        try:
+            return json.loads(cached)
+        except json.JSONDecodeError:
+            return None
+
+    def _cache_set_json(self, key: str, value) -> None:
+        redis_client.set(key, json.dumps(value, ensure_ascii=False, default=str), ex=CACHE_TTL_SECONDS)
 
     @property
     def mapping(self) -> dict[str, str]:
@@ -144,7 +189,8 @@ class StockService:
             f"SELECT "
             f"`{settings.stock_basic_info_code_column}` AS ts_code, "
             f"`{settings.stock_basic_info_prefixed_code_column}` AS prefixed_code, "
-            f"`{settings.stock_basic_info_name_column}` AS stock_name "
+            f"`{settings.stock_basic_info_name_column}` AS stock_name, "
+            f"`{settings.stock_basic_info_board_column}` AS board "
             f"FROM `{settings.stock_basic_info_table_name}` "
             f"ORDER BY `{settings.stock_basic_info_code_column}`"
         )
@@ -182,6 +228,294 @@ class StockService:
                 or key in str(item.get("stock_name", "")).lower()
             ]
         return items[:limit]
+
+    def search_etf_options(self, keyword: str | None = None, limit: int = 200) -> list[dict]:
+        sql = text(
+            f"SELECT DISTINCT "
+            f"`{settings.etf_basic_info_code_column}` AS code, "
+            f"`{settings.etf_basic_info_name_column}` AS name "
+            f"FROM `{settings.etf_basic_info_table_name}` "
+            f"ORDER BY `{settings.etf_basic_info_code_column}` ASC"
+        )
+        items = [dict(row) for row in self.db.execute(sql).mappings().all()]
+        if keyword:
+            key = keyword.strip().lower()
+            items = [
+                item
+                for item in items
+                if key in str(item.get("code", "")).lower() or key in str(item.get("name", "")).lower()
+            ]
+        return items[:limit]
+
+    def get_stock_basic_map(self) -> dict[str, dict]:
+        return {
+            str(item.get("ts_code", "")).strip(): item
+            for item in self._query_stock_basics_from_db()
+            if str(item.get("ts_code", "")).strip()
+        }
+
+    def get_etf_basic_map(self) -> dict[str, dict]:
+        sql = text(
+            f"SELECT DISTINCT "
+            f"`{settings.etf_basic_info_code_column}` AS code, "
+            f"`{settings.etf_basic_info_name_column}` AS name "
+            f"FROM `{settings.etf_basic_info_table_name}` "
+            f"ORDER BY `{settings.etf_basic_info_code_column}` ASC"
+        )
+        return {
+            str(row.get("code", "")).strip(): dict(row)
+            for row in self.db.execute(sql).mappings().all()
+            if str(row.get("code", "")).strip()
+        }
+
+    def _build_in_filter_sql(self, column_name: str, value_prefix: str, values: list[str], params: dict[str, object]) -> str:
+        normalized_values = [str(value).strip() for value in values if str(value).strip()]
+        if not normalized_values:
+            return " AND 1 = 0"
+        placeholders: list[str] = []
+        for index, value in enumerate(sorted(set(normalized_values))):
+            param_name = f"{value_prefix}_{index}"
+            params[param_name] = value
+            placeholders.append(f":{param_name}")
+        return f" AND `{column_name}` IN ({', '.join(placeholders)})"
+
+    def list_stock_scan_universe(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        target_codes: list[str] | None = None,
+    ) -> dict[str, dict]:
+        basics_by_code = self.get_stock_basic_map()
+        if not basics_by_code:
+            return {}
+        if target_codes is not None:
+            allowed_codes = {str(code).strip() for code in target_codes if str(code).strip()}
+            basics_by_code = {code: basic for code, basic in basics_by_code.items() if code in allowed_codes}
+            if not basics_by_code:
+                return {}
+
+        table_columns = self.get_table_columns()
+        turnover_rate_expr = (
+            f"COALESCE(`{settings.stock_turnover_rate_column}`, 0)"
+            if settings.stock_turnover_rate_column in table_columns
+            else "0"
+        )
+        params: dict[str, object] = {
+            "hist_source": settings.stock_hist_source_value,
+            "spot_source": settings.stock_spot_source_value,
+        }
+        date_filter_sql = ""
+        if start_date:
+            params["start_date"] = start_date
+            date_filter_sql += f" AND `{settings.stock_date_column}` >= :start_date"
+        if end_date:
+            params["end_date"] = end_date
+            date_filter_sql += f" AND `{settings.stock_date_column}` <= :end_date"
+        if target_codes is not None:
+            date_filter_sql += self._build_in_filter_sql(settings.stock_code_column, "stock_code", list(basics_by_code.keys()), params)
+
+        base_select = (
+            f"SELECT "
+            f"`{settings.stock_code_column}` AS stock_code, "
+            f"`{settings.stock_date_column}` AS trade_date, "
+            f"`{settings.stock_open_column}` AS open, "
+            f"`{settings.stock_high_column}` AS high, "
+            f"`{settings.stock_low_column}` AS low, "
+            f"`{settings.stock_close_column}` AS close, "
+            f"COALESCE(`{settings.stock_pre_close_column}`, 0) AS pre_close, "
+            f"COALESCE(`{settings.stock_change_column}`, 0) AS change_value, "
+            f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
+            f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
+            f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
+            f"{turnover_rate_expr} AS turnover_rate, "
+            f"0 AS pe_ttm, "
+            f"0 AS pb, "
+            f"0 AS total_market_value, "
+            f"0 AS circulating_market_value "
+            f"FROM `{settings.stock_table_name}` "
+            f"WHERE `{settings.stock_data_source_column}` = :data_source"
+            f"{date_filter_sql} "
+        )
+
+        hist_rows = self.db.execute(
+            text(base_select),
+            {**params, "data_source": settings.stock_hist_source_value},
+        ).mappings().all()
+        spot_rows = self.db.execute(
+            text(
+                (
+                    f"SELECT "
+                    f"`{settings.stock_code_column}` AS stock_code, "
+                    f"`{settings.stock_date_column}` AS trade_date, "
+                    f"`{settings.stock_open_column}` AS open, "
+                    f"`{settings.stock_high_column}` AS high, "
+                    f"`{settings.stock_low_column}` AS low, "
+                    f"COALESCE(`{settings.stock_latest_price_column}`, `{settings.stock_close_column}`) AS close, "
+                    f"COALESCE(`{settings.stock_pre_close_column}`, 0) AS pre_close, "
+                    f"COALESCE(`{settings.stock_change_column}`, 0) AS change_value, "
+                    f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
+                    f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
+                    f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
+                    f"{turnover_rate_expr} AS turnover_rate, "
+                    f"0 AS pe_ttm, "
+                    f"0 AS pb, "
+                    f"0 AS total_market_value, "
+                    f"0 AS circulating_market_value "
+                    f"FROM `{settings.stock_table_name}` "
+                    f"WHERE `{settings.stock_data_source_column}` = :data_source"
+                    f"{date_filter_sql} "
+                )
+            ),
+            {**params, "data_source": settings.stock_spot_source_value},
+        ).mappings().all()
+
+        rows_by_code: dict[str, dict[date, dict]] = defaultdict(dict)
+        for row in hist_rows:
+            stock_code = str(row.get("stock_code", "")).strip()
+            trade_date = row.get("trade_date")
+            if not stock_code or trade_date is None or stock_code not in basics_by_code:
+                continue
+            rows_by_code[stock_code][trade_date] = self._normalize_stock_scan_row(dict(row))
+        for row in spot_rows:
+            stock_code = str(row.get("stock_code", "")).strip()
+            trade_date = row.get("trade_date")
+            if not stock_code or trade_date is None or stock_code not in basics_by_code:
+                continue
+            rows_by_code[stock_code][trade_date] = self._normalize_stock_scan_row(dict(row))
+
+        result: dict[str, dict] = {}
+        for stock_code, basic in basics_by_code.items():
+            rows_by_date = rows_by_code.get(stock_code)
+            if not rows_by_date:
+                continue
+            candles = [rows_by_date[trade_date] for trade_date in sorted(rows_by_date.keys())]
+            result[stock_code] = {
+                "target_code": stock_code,
+                "target_name": str(basic.get("stock_name", "")).strip() or stock_code,
+                "board": str(basic.get("board", "")).strip() or None,
+                "candles": candles,
+            }
+        return result
+
+    def list_etf_scan_universe(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        target_codes: list[str] | None = None,
+    ) -> dict[str, dict]:
+        basics_by_code = self.get_etf_basic_map()
+        if not basics_by_code:
+            return {}
+        if target_codes is not None:
+            allowed_codes = {str(code).strip() for code in target_codes if str(code).strip()}
+            basics_by_code = {code: basic for code, basic in basics_by_code.items() if code in allowed_codes}
+            if not basics_by_code:
+                return {}
+
+        params: dict[str, object] = {
+            "hist_source": settings.etf_daily_hist_source_value,
+            "spot_source": settings.etf_daily_spot_source_value,
+        }
+        date_filter_sql = ""
+        if start_date:
+            params["start_date"] = start_date
+            date_filter_sql += f" AND `{settings.etf_daily_date_column}` >= :start_date"
+        if end_date:
+            params["end_date"] = end_date
+            date_filter_sql += f" AND `{settings.etf_daily_date_column}` <= :end_date"
+        if target_codes is not None:
+            date_filter_sql += self._build_in_filter_sql(
+                settings.etf_daily_code_column,
+                "etf_code",
+                list(basics_by_code.keys()),
+                params,
+            )
+
+        hist_sql = text(
+            f"SELECT "
+            f"`{settings.etf_daily_code_column}` AS etf_code, "
+            f"`{settings.etf_daily_date_column}` AS trade_date, "
+            f"`{settings.etf_daily_open_column}` AS open, "
+            f"`{settings.etf_daily_high_column}` AS high, "
+            f"`{settings.etf_daily_low_column}` AS low, "
+            f"`{settings.etf_daily_close_column}` AS close "
+            f"FROM `{settings.etf_daily_table_name}` "
+            f"WHERE `{settings.etf_daily_data_source_column}` = :hist_source"
+            f"{date_filter_sql} "
+            f"ORDER BY `{settings.etf_daily_code_column}` ASC, `{settings.etf_daily_date_column}` ASC"
+        )
+        spot_sql = text(
+            f"SELECT "
+            f"`{settings.etf_daily_code_column}` AS etf_code, "
+            f"`{settings.etf_daily_date_column}` AS trade_date, "
+            f"`{settings.etf_daily_open_column}` AS open, "
+            f"`{settings.etf_daily_high_column}` AS high, "
+            f"`{settings.etf_daily_low_column}` AS low, "
+            f"`{settings.etf_daily_close_column}` AS close "
+            f"FROM `{settings.etf_daily_table_name}` "
+            f"WHERE `{settings.etf_daily_data_source_column}` = :spot_source"
+            f"{date_filter_sql} "
+            f"ORDER BY `{settings.etf_daily_code_column}` ASC, `{settings.etf_daily_date_column}` ASC"
+        )
+        rows_by_key: dict[tuple[str, date], dict] = {}
+        for row in self.db.execute(hist_sql, params).mappings().all():
+            etf_code = str(row.get("etf_code", "")).strip()
+            trade_date = row.get("trade_date")
+            if not etf_code or trade_date is None or etf_code not in basics_by_code:
+                continue
+            rows_by_key[(etf_code, trade_date)] = dict(row)
+        for row in self.db.execute(spot_sql, params).mappings().all():
+            etf_code = str(row.get("etf_code", "")).strip()
+            trade_date = row.get("trade_date")
+            if not etf_code or trade_date is None or etf_code not in basics_by_code:
+                continue
+            rows_by_key[(etf_code, trade_date)] = dict(row)
+
+        grouped: dict[str, list[dict]] = {}
+        for (etf_code, _trade_date), row in sorted(rows_by_key.items(), key=lambda item: (item[0][0], item[0][1])):
+            open_price = _to_float(row.get("open"))
+            high_price = _to_float(row.get("high"))
+            low_price = _to_float(row.get("low"))
+            close_price = _to_float(row.get("close"))
+            trade_date = row.get("trade_date")
+            if trade_date is None or open_price is None or high_price is None or low_price is None or close_price is None:
+                continue
+            candles = grouped.setdefault(etf_code, [])
+            previous_close = candles[-1]["close"] if candles else close_price
+            change_value = close_price - previous_close
+            pct_chg = (change_value / previous_close * 100) if previous_close else 0.0
+            candles.append(
+                {
+                    "trade_date": trade_date,
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "pre_close": previous_close,
+                    "change": change_value,
+                    "pct_chg": pct_chg,
+                    "vol": 0.0,
+                    "amount": 0.0,
+                    "turnover_rate": 0.0,
+                    "pe_ttm": 0.0,
+                    "pb": 0.0,
+                    "total_market_value": 0.0,
+                    "circulating_market_value": 0.0,
+                }
+            )
+
+        result: dict[str, dict] = {}
+        for etf_code, basic in basics_by_code.items():
+            candles = grouped.get(etf_code)
+            if not candles:
+                continue
+            result[etf_code] = {
+                "target_code": etf_code,
+                "target_name": str(basic.get("name", "")).strip() or etf_code,
+                "board": "ETF",
+                "candles": candles,
+            }
+        return result
 
     def _resolve_stock_code(self, ts_code: str) -> str:
         normalized = str(ts_code or "").strip().lower()
@@ -228,15 +562,23 @@ class StockService:
         return result
 
     def list_index_options(self) -> list[dict]:
+        cached = self._cache_get_json(INDEX_OPTIONS_CACHE_KEY)
+        if isinstance(cached, list):
+            return cached
         sql = text(
             f"SELECT `{settings.index_basic_info_code_column}` AS code, "
             f"`{settings.index_basic_info_name_column}` AS name "
             f"FROM `{settings.index_basic_info_table_name}`"
         )
         items = [dict(row) for row in self.db.execute(sql).mappings().all()]
-        return self._filter_named_options(items, INDEX_DISPLAY_ORDER, "code", "name")
+        result = self._filter_named_options(items, INDEX_DISPLAY_ORDER, "code", "name")
+        self._cache_set_json(INDEX_OPTIONS_CACHE_KEY, result)
+        return result
 
     def list_forex_options(self) -> list[dict]:
+        cached = self._cache_get_json(FOREX_OPTIONS_CACHE_KEY)
+        if isinstance(cached, list):
+            return cached
         sql = text(
             f"SELECT DISTINCT "
             f"`{settings.forex_daily_code_column}` AS code, "
@@ -251,19 +593,26 @@ class StockService:
                 f"FROM `{settings.forex_basic_info_table_name}`"
             )
             items = [dict(row) for row in self.db.execute(fallback_sql).mappings().all()]
-        return self._filter_named_options(items, FOREX_DISPLAY_ORDER, "code", "name")
+        result = self._filter_named_options(items, FOREX_DISPLAY_ORDER, "code", "name")
+        self._cache_set_json(FOREX_OPTIONS_CACHE_KEY, result)
+        return result
 
-    def list_excel_index_emotions(self) -> list[dict]:
+    def list_excel_index_emotions(self, start_date: date | None = None) -> list[dict]:
+        cache_key = f"{INDEX_EMOTIONS_CACHE_KEY_PREFIX}:{start_date.isoformat() if start_date else 'full'}"
+        cached = self._cache_get_json(cache_key)
+        if isinstance(cached, list):
+            return cached
         sql = text(
             f"SELECT "
             f"`{settings.excel_index_emotion_date_column}` AS emotion_date, "
             f"`{settings.excel_index_emotion_name_column}` AS index_name, "
             f"`{settings.excel_index_emotion_value_column}` AS emotion_value "
             f"FROM `{settings.excel_index_emotion_table_name}` "
+            f"{f'WHERE `{settings.excel_index_emotion_date_column}` >= :start_date ' if start_date else ''}"
             f"ORDER BY `{settings.excel_index_emotion_date_column}` ASC"
         )
         allowed_names = set(EXCEL_INDEX_EMOTION_ORDER)
-        rows = self.db.execute(sql).mappings().all()
+        rows = self.db.execute(sql, {"start_date": start_date} if start_date else {}).mappings().all()
         result: list[dict] = []
         for row in rows:
             index_name = str(row.get("index_name", "")).strip()
@@ -279,6 +628,7 @@ class StockService:
                     "emotion_value": float(emotion_value),
                 }
             )
+        self._cache_set_json(cache_key, result)
         return result
 
     def list_index_futures_basis(self) -> list[dict]:
@@ -528,6 +878,10 @@ class StockService:
         }
 
     def get_cffex_net_position_tables(self, trade_date: date | None = None) -> dict:
+        cache_key = f"{CFFEX_NET_POSITION_TABLES_CACHE_KEY_PREFIX}:{trade_date.isoformat() if trade_date else 'latest'}"
+        cached = self._cache_get_json(cache_key)
+        if isinstance(cached, dict):
+            return cached
         trade_date = self._resolve_cffex_trade_date(trade_date)
         citic_customer = self._build_net_position_table(
             trade_date=trade_date,
@@ -539,10 +893,12 @@ class StockService:
             member_label="前20机构",
             sums_by_code=self._query_top20_position_sums(trade_date),
         )
-        return {
+        result = {
             "citic_customer": citic_customer,
             "top20_institutions": top20_institutions,
         }
+        self._cache_set_json(cache_key, result)
+        return result
 
     def _cffex_product_codes_sql(self) -> str:
         return ", ".join([f"'{item['product_code']}'" for item in CFFEX_PRODUCT_INDEX_MAP])
@@ -669,8 +1025,12 @@ class StockService:
             "series": series,
         }
 
-    def get_cffex_net_position_series(self) -> dict:
-        return {
+    def get_cffex_net_position_series(self, start_date: date | None = None) -> dict:
+        cache_key = f"{CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX}:{start_date.isoformat() if start_date else 'full'}"
+        cached = self._cache_get_json(cache_key)
+        if isinstance(cached, dict):
+            return cached
+        result = {
             "citic_customer": self._build_net_position_series(
                 member_label=CITIC_CUSTOMER_MEMBER_NAME,
                 rows=self._query_member_open_interest_series_rows(CITIC_CUSTOMER_MEMBER_NAME),
@@ -680,6 +1040,19 @@ class StockService:
                 rows=self._query_top20_open_interest_series_rows(),
             ),
         }
+        if start_date:
+            start_text = start_date.isoformat()
+            for group in result.values():
+                if not isinstance(group, dict):
+                    continue
+                series = group.get("series", {})
+                if not isinstance(series, dict):
+                    continue
+                for key, points in series.items():
+                    if isinstance(points, list):
+                        series[key] = [point for point in points if str(point.get("trade_date", "")) >= start_text]
+        self._cache_set_json(cache_key, result)
+        return result
 
     def _normalize_rows(
         self,
@@ -731,15 +1104,6 @@ class StockService:
         if end_date:
             date_filter_sql += f" AND `{settings.stock_date_column}` <= :end_date"
 
-        latest_spot_date_sql = text(
-            f"SELECT MAX(`{settings.stock_date_column}`) AS trade_date "
-            f"FROM `{settings.stock_table_name}` "
-            f"WHERE `{settings.stock_code_column}` = :stock_code "
-            f"AND `{settings.stock_data_source_column}` = :spot_source"
-            f"{date_filter_sql}"
-        )
-        latest_spot_date = self.db.execute(latest_spot_date_sql, params).scalar()
-
         hist_sql = text(
             f"SELECT "
             f"`{settings.stock_date_column}` AS trade_date, "
@@ -767,33 +1131,32 @@ class StockService:
 
         rows_by_date = {row["trade_date"]: row for row in hist_rows if row.get("trade_date") is not None}
 
-        if latest_spot_date is not None:
-            spot_sql = text(
-                f"SELECT "
-                f"`{settings.stock_date_column}` AS trade_date, "
-                f"`{settings.stock_open_column}` AS open, "
-                f"`{settings.stock_high_column}` AS high, "
-                f"`{settings.stock_low_column}` AS low, "
-                f"COALESCE(`{settings.stock_latest_price_column}`, `{settings.stock_close_column}`) AS close, "
-                f"COALESCE(`{settings.stock_pre_close_column}`, 0) AS pre_close, "
-                f"COALESCE(`{settings.stock_change_column}`, 0) AS change_value, "
-                f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
-                f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
-                f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
-                f"{turnover_rate_expr} AS turnover_rate, "
-                f"0 AS pe_ttm, "
-                f"0 AS pb, "
-                f"0 AS total_market_value, "
-                f"0 AS circulating_market_value "
-                f"FROM `{settings.stock_table_name}` "
-                f"WHERE `{settings.stock_code_column}` = :stock_code "
-                f"AND `{settings.stock_data_source_column}` = :spot_source "
-                f"AND `{settings.stock_date_column}` = :latest_spot_date "
-                f"LIMIT 1"
-            )
-            spot_params = {**params, "latest_spot_date": latest_spot_date}
-            spot_row = self.db.execute(spot_sql, spot_params).mappings().first()
-            if spot_row:
+        spot_sql = text(
+            f"SELECT "
+            f"`{settings.stock_date_column}` AS trade_date, "
+            f"`{settings.stock_open_column}` AS open, "
+            f"`{settings.stock_high_column}` AS high, "
+            f"`{settings.stock_low_column}` AS low, "
+            f"COALESCE(`{settings.stock_latest_price_column}`, `{settings.stock_close_column}`) AS close, "
+            f"COALESCE(`{settings.stock_pre_close_column}`, 0) AS pre_close, "
+            f"COALESCE(`{settings.stock_change_column}`, 0) AS change_value, "
+            f"COALESCE(`{settings.stock_pct_chg_column}`, 0) AS pct_chg, "
+            f"COALESCE(`{settings.stock_vol_column}`, 0) AS vol, "
+            f"COALESCE(`{settings.stock_amount_column}`, 0) AS amount, "
+            f"{turnover_rate_expr} AS turnover_rate, "
+            f"0 AS pe_ttm, "
+            f"0 AS pb, "
+            f"0 AS total_market_value, "
+            f"0 AS circulating_market_value "
+            f"FROM `{settings.stock_table_name}` "
+            f"WHERE `{settings.stock_code_column}` = :stock_code "
+            f"AND `{settings.stock_data_source_column}` = :spot_source"
+            f"{date_filter_sql} "
+            f"ORDER BY `{settings.stock_date_column}` ASC"
+        )
+        spot_rows = self.db.execute(spot_sql, params).mappings().all()
+        for spot_row in spot_rows:
+            if spot_row.get("trade_date") is not None:
                 rows_by_date[spot_row["trade_date"]] = dict(spot_row)
 
         rows = [rows_by_date[key] for key in sorted(rows_by_date.keys())]
@@ -815,7 +1178,7 @@ class StockService:
         ]
         return self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
 
-    def list_qfq_daily_kline(
+    def list_hfq_daily_kline(
         self,
         ts_code: str,
         start_date: date | None = None,
@@ -827,35 +1190,35 @@ class StockService:
 
         sql = (
             f"SELECT "
-            f"`{settings.stock_qfq_date_column}` AS trade_date, "
-            f"`{settings.stock_qfq_open_column}` AS open, "
-            f"`{settings.stock_qfq_high_column}` AS high, "
-            f"`{settings.stock_qfq_low_column}` AS low, "
-            f"`{settings.stock_qfq_close_column}` AS close, "
+            f"`{settings.stock_hfq_date_column}` AS trade_date, "
+            f"`{settings.stock_hfq_open_column}` AS open, "
+            f"`{settings.stock_hfq_high_column}` AS high, "
+            f"`{settings.stock_hfq_low_column}` AS low, "
+            f"`{settings.stock_hfq_close_column}` AS close, "
             f"CASE "
-            f"WHEN `{settings.stock_qfq_change_column}` IS NULL THEN 0 "
-            f"ELSE COALESCE(`{settings.stock_qfq_close_column}`, 0) - COALESCE(`{settings.stock_qfq_change_column}`, 0) "
+            f"WHEN `{settings.stock_hfq_change_column}` IS NULL THEN 0 "
+            f"ELSE COALESCE(`{settings.stock_hfq_close_column}`, 0) - COALESCE(`{settings.stock_hfq_change_column}`, 0) "
             f"END AS pre_close, "
-            f"COALESCE(`{settings.stock_qfq_change_column}`, 0) AS change_value, "
-            f"COALESCE(`{settings.stock_qfq_pct_chg_column}`, 0) AS pct_chg, "
-            f"COALESCE(`{settings.stock_qfq_vol_column}`, 0) AS vol, "
-            f"COALESCE(`{settings.stock_qfq_amount_column}`, 0) AS amount, "
-            f"COALESCE(`{settings.stock_qfq_turnover_rate_column}`, 0) AS turnover_rate, "
+            f"COALESCE(`{settings.stock_hfq_change_column}`, 0) AS change_value, "
+            f"COALESCE(`{settings.stock_hfq_pct_chg_column}`, 0) AS pct_chg, "
+            f"COALESCE(`{settings.stock_hfq_vol_column}`, 0) AS vol, "
+            f"COALESCE(`{settings.stock_hfq_amount_column}`, 0) AS amount, "
+            f"COALESCE(`{settings.stock_hfq_turnover_rate_column}`, 0) AS turnover_rate, "
             f"0 AS pe_ttm, "
             f"0 AS pb, "
             f"0 AS total_market_value, "
             f"0 AS circulating_market_value "
-            f"FROM `{settings.stock_qfq_table_name}` "
-            f"WHERE `{settings.stock_qfq_code_column}` = :stock_code"
+            f"FROM `{settings.stock_hfq_table_name}` "
+            f"WHERE `{settings.stock_hfq_code_column}` = :stock_code"
         )
         params: dict[str, object] = {"stock_code": stock_code}
         if start_date:
-            sql += f" AND `{settings.stock_qfq_date_column}` >= :start_date"
+            sql += f" AND `{settings.stock_hfq_date_column}` >= :start_date"
             params["start_date"] = start_date
         if end_date:
-            sql += f" AND `{settings.stock_qfq_date_column}` <= :end_date"
+            sql += f" AND `{settings.stock_hfq_date_column}` <= :end_date"
             params["end_date"] = end_date
-        sql += f" ORDER BY `{settings.stock_qfq_date_column}` ASC"
+        sql += f" ORDER BY `{settings.stock_hfq_date_column}` ASC"
 
         rows = self.db.execute(text(sql), params).mappings().all()
         numeric_fields = [
@@ -876,12 +1239,118 @@ class StockService:
         ]
         return self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
 
+    def list_etf_daily_kline(
+        self,
+        etf_code: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        normalized_code = str(etf_code or "").strip()
+        if not normalized_code:
+            return []
+
+        params: dict[str, object] = {
+            "etf_code": normalized_code,
+            "hist_source": settings.etf_daily_hist_source_value,
+            "spot_source": settings.etf_daily_spot_source_value,
+        }
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+
+        date_filter_sql = ""
+        if start_date:
+            date_filter_sql += f" AND `{settings.etf_daily_date_column}` >= :start_date"
+        if end_date:
+            date_filter_sql += f" AND `{settings.etf_daily_date_column}` <= :end_date"
+
+        hist_sql = text(
+            f"SELECT "
+            f"`{settings.etf_daily_date_column}` AS trade_date, "
+            f"`{settings.etf_daily_open_column}` AS open, "
+            f"`{settings.etf_daily_high_column}` AS high, "
+            f"`{settings.etf_daily_low_column}` AS low, "
+            f"`{settings.etf_daily_close_column}` AS close "
+            f"FROM `{settings.etf_daily_table_name}` "
+            f"WHERE `{settings.etf_daily_code_column}` = :etf_code "
+            f"AND `{settings.etf_daily_data_source_column}` = :hist_source"
+            f"{date_filter_sql} "
+            f"ORDER BY `{settings.etf_daily_date_column}` ASC"
+        )
+        rows_by_date = {
+            row["trade_date"]: dict(row)
+            for row in self.db.execute(hist_sql, params).mappings().all()
+            if row.get("trade_date") is not None
+        }
+
+        spot_sql = text(
+            f"SELECT "
+            f"`{settings.etf_daily_date_column}` AS trade_date, "
+            f"`{settings.etf_daily_open_column}` AS open, "
+            f"`{settings.etf_daily_high_column}` AS high, "
+            f"`{settings.etf_daily_low_column}` AS low, "
+            f"`{settings.etf_daily_close_column}` AS close "
+            f"FROM `{settings.etf_daily_table_name}` "
+            f"WHERE `{settings.etf_daily_code_column}` = :etf_code "
+            f"AND `{settings.etf_daily_data_source_column}` = :spot_source"
+            f"{date_filter_sql} "
+            f"ORDER BY `{settings.etf_daily_date_column}` ASC"
+        )
+        for row in self.db.execute(spot_sql, params).mappings().all():
+            if row.get("trade_date") is not None:
+                rows_by_date[row["trade_date"]] = dict(row)
+
+        ordered_rows = [rows_by_date[key] for key in sorted(rows_by_date.keys())]
+        result: list[dict] = []
+        previous_close: float | None = None
+        for row in ordered_rows:
+            open_price = _to_float(row.get("open"))
+            high_price = _to_float(row.get("high"))
+            low_price = _to_float(row.get("low"))
+            close_price = _to_float(row.get("close"))
+            trade_date = row.get("trade_date")
+            if trade_date is None or open_price is None or high_price is None or low_price is None or close_price is None:
+                continue
+            pre_close = previous_close if previous_close is not None else close_price
+            change_value = close_price - pre_close
+            pct_chg = (change_value / pre_close * 100) if pre_close else 0.0
+            result.append(
+                {
+                    "trade_date": trade_date,
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "pre_close": pre_close,
+                    "change": change_value,
+                    "pct_chg": pct_chg,
+                    "vol": 0.0,
+                    "amount": 0.0,
+                    "turnover_rate": 0.0,
+                    "pe_ttm": 0.0,
+                    "pb": 0.0,
+                    "total_market_value": 0.0,
+                    "circulating_market_value": 0.0,
+                }
+            )
+            previous_close = close_price
+
+        return result
+
     def list_index_daily_kline(
         self,
         index_code: str,
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> list[dict]:
+        cache_key = (
+            f"{INDEX_KLINE_CACHE_KEY_PREFIX}:{index_code}:"
+            f"{start_date.isoformat() if start_date else 'none'}:{end_date.isoformat() if end_date else 'none'}"
+        )
+        cached = self._cache_get_json(cache_key)
+        if isinstance(cached, list):
+            return cached
         sql = (
             f"SELECT "
             f"`{settings.index_daily_date_column}` AS trade_date, "
@@ -926,7 +1395,9 @@ class StockService:
             "total_market_value",
             "circulating_market_value",
         ]
-        return self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
+        result = self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
+        self._cache_set_json(cache_key, result)
+        return result
 
     def list_forex_daily_kline(
         self,
@@ -934,6 +1405,13 @@ class StockService:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> list[dict]:
+        cache_key = (
+            f"{FOREX_KLINE_CACHE_KEY_PREFIX}:{symbol_code}:"
+            f"{start_date.isoformat() if start_date else 'none'}:{end_date.isoformat() if end_date else 'none'}"
+        )
+        cached = self._cache_get_json(cache_key)
+        if isinstance(cached, list):
+            return cached
         sql = (
             f"SELECT "
             f"d.`{settings.forex_daily_date_column}` AS trade_date, "
@@ -984,4 +1462,6 @@ class StockService:
             "total_market_value",
             "circulating_market_value",
         ]
-        return self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
+        result = self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
+        self._cache_set_json(cache_key, result)
+        return result

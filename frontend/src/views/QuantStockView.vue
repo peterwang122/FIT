@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 import {
   createQuantStrategy,
-  fetchQfqKline,
-  fetchQfqTaskStatus,
+  fetchQuantStrategy,
+  fetchHfqKline,
+  fetchHfqTaskStatus,
   fetchSymbols,
-  submitQfqCollectTask,
+  submitHfqCollectTask,
+  updateQuantStrategy,
 } from '../api/stocks'
 import QuantRuleGroupBuilder from '../components/QuantRuleGroupBuilder.vue'
 import QuantStockChart from '../components/QuantStockChart.vue'
@@ -15,13 +18,15 @@ import type {
   QuantHighlightBand,
   QuantIndicatorParams,
   QuantRuleGroupDraft,
+  QuantStrategyConfig,
 } from '../types/quant'
 import type { KlineCandle, StockSymbol } from '../types/stock'
 import { STOCK_QUANT_FILTER_FIELD_KEYS, buildStockQuantFilterDataset } from '../utils/quantIndicators'
 import {
   createEmptyRuleConditionDraft,
   createEmptyRuleGroupDraft,
-  matchRuleGroups,
+  deserializeRuleGroups,
+  matchRuleGroupIndexes,
   normalizeRuleGroups,
 } from '../utils/quantRuleGroups'
 
@@ -144,8 +149,49 @@ function buildFormState(params: QuantIndicatorParams): QuantFormState {
   }
 }
 
+function cloneFilterGroups(groups: QuantFilterGroupSet): QuantFilterGroupSet {
+  return JSON.parse(JSON.stringify(groups ?? [])) as QuantFilterGroupSet
+}
+
+function normalizeIndicatorParams(raw: Partial<QuantIndicatorParams> | null | undefined): QuantIndicatorParams {
+  const periods = raw?.ma?.periods
+  const maPeriods: [number, number, number, number] =
+    Array.isArray(periods) && periods.length >= 4
+      ? [
+          Number(periods[0]) || DEFAULT_PARAMS.ma.periods[0],
+          Number(periods[1]) || DEFAULT_PARAMS.ma.periods[1],
+          Number(periods[2]) || DEFAULT_PARAMS.ma.periods[2],
+          Number(periods[3]) || DEFAULT_PARAMS.ma.periods[3],
+        ]
+      : [...DEFAULT_PARAMS.ma.periods]
+
+  return {
+    ma: { periods: maPeriods },
+    macd: {
+      fast: Number(raw?.macd?.fast) || DEFAULT_PARAMS.macd.fast,
+      slow: Number(raw?.macd?.slow) || DEFAULT_PARAMS.macd.slow,
+      signal: Number(raw?.macd?.signal) || DEFAULT_PARAMS.macd.signal,
+    },
+    kdj: {
+      period: Number(raw?.kdj?.period) || DEFAULT_PARAMS.kdj.period,
+      kSmoothing: Number(raw?.kdj?.kSmoothing) || DEFAULT_PARAMS.kdj.kSmoothing,
+      dSmoothing: Number(raw?.kdj?.dSmoothing) || DEFAULT_PARAMS.kdj.dSmoothing,
+    },
+    wr: {
+      period: Number(raw?.wr?.period) || DEFAULT_PARAMS.wr.period,
+    },
+    rsi: {
+      period: Number(raw?.rsi?.period) || DEFAULT_PARAMS.rsi.period,
+    },
+    boll: {
+      period: Number(raw?.boll?.period) || DEFAULT_PARAMS.boll.period,
+      multiplier: Number(raw?.boll?.multiplier) || DEFAULT_PARAMS.boll.multiplier,
+    },
+  }
+}
+
 function buildIdempotencyKey(tsCode: string): string {
-  return `qfq-collect:${tsCode}:${new Date().toISOString().slice(0, 10)}`
+  return `hfq-collect:${tsCode}:${new Date().toISOString().slice(0, 10)}`
 }
 
 function parsePositiveInteger(label: string, rawValue: string) {
@@ -191,6 +237,9 @@ const saveLoading = ref(false)
 const saveMessage = ref('')
 const saveError = ref('')
 const showParamsModal = ref(false)
+const loadedStrategyId = ref<number | null>(null)
+const strategyLoadMessage = ref('')
+const route = useRoute()
 
 const appliedParams = ref<QuantIndicatorParams>(cloneParams(DEFAULT_PARAMS))
 const appliedBlueFilterGroups = ref<QuantFilterGroupSet>([])
@@ -300,11 +349,19 @@ const canApplyParams = computed(() => Boolean(validation.value.params) && !loadi
 
 const highlightBands = computed<QuantHighlightBand[]>(() => {
   return quantFilterDataset.value.snapshots.reduce<QuantHighlightBand[]>((bands, snapshot) => {
-    const isBlue = matchRuleGroups(snapshot, appliedBlueFilterGroups.value)
-    const isRed = matchRuleGroups(snapshot, appliedRedFilterGroups.value)
-    if (isBlue && isRed) bands.push({ tradeDate: snapshot.tradeDate, color: 'purple' })
-    else if (isBlue) bands.push({ tradeDate: snapshot.tradeDate, color: 'blue' })
-    else if (isRed) bands.push({ tradeDate: snapshot.tradeDate, color: 'red' })
+    const blueHitGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value)
+    const redHitGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value)
+    const isBlue = blueHitGroups.length > 0
+    const isRed = redHitGroups.length > 0
+    const variant = blueHitGroups.length > 1 || redHitGroups.length > 1 ? 'striped' : 'solid'
+
+    if (isBlue && isRed) {
+      bands.push({ tradeDate: snapshot.tradeDate, color: 'purple', variant, blueHitGroups, redHitGroups })
+    } else if (isBlue) {
+      bands.push({ tradeDate: snapshot.tradeDate, color: 'blue', variant, blueHitGroups, redHitGroups: [] })
+    } else if (isRed) {
+      bands.push({ tradeDate: snapshot.tradeDate, color: 'red', variant, blueHitGroups: [], redHitGroups })
+    }
     return bands
   }, [])
 })
@@ -381,19 +438,25 @@ function handleSearchInput() {
   scheduleSuggestionSearch(searchKeyword.value.trim())
 }
 
-async function loadQfqKline() {
+async function loadHfqKline() {
   if (!selectedCode.value) {
     error.value = '请先选择股票'
-    return
+    return false
   }
   loading.value = true
   error.value = ''
   chartRequested.value = true
   try {
-    candles.value = await fetchQfqKline(selectedCode.value)
+    candles.value = await fetchHfqKline(selectedCode.value)
+    if (!candles.value.length) {
+      error.value = '当前暂无后复权数据，请先触发临时采集或等待采集端初始化。'
+      return false
+    }
+    return true
   } catch (loadError) {
     candles.value = []
     error.value = getErrorMessage(loadError)
+    return false
   } finally {
     loading.value = false
   }
@@ -407,7 +470,7 @@ async function triggerCollect() {
   collectLoading.value = true
   collectMessage.value = ''
   try {
-    const result = await submitQfqCollectTask(selectedCode.value, buildIdempotencyKey(selectedCode.value))
+    const result = await submitHfqCollectTask(selectedCode.value, buildIdempotencyKey(selectedCode.value))
     collectTaskId.value = result.task_id
     collectState.value = result.status
     collectMessage.value = '采集任务已提交，完成后请手动刷新股票 K 线。'
@@ -421,7 +484,7 @@ async function triggerCollect() {
 async function refreshTaskStatus() {
   if (!collectTaskId.value) return
   try {
-    const result = await fetchQfqTaskStatus(collectTaskId.value)
+    const result = await fetchHfqTaskStatus(collectTaskId.value)
     collectState.value = result.state
   } catch (taskError) {
     error.value = getErrorMessage(taskError)
@@ -478,10 +541,22 @@ async function saveStrategy() {
     const result = await createQuantStrategy({
       name: saveName.value.trim(),
       notes: '',
+      strategy_engine: 'snapshot',
+      sequence_mode: 'single_target',
       strategy_type: 'stock',
       target_code: selectedCode.value,
       target_name: selectedName.value,
       indicator_params: appliedParams.value,
+      buy_sequence_groups: [],
+      sell_sequence_groups: [],
+      scan_trade_config: {
+        initial_capital: 1_000_000,
+        buy_amount_per_event: 10_000,
+        buy_offset_trading_days: 1,
+        sell_offset_trading_days: 2,
+        buy_price_basis: 'open',
+        sell_price_basis: 'open',
+      },
       blue_filter_groups: appliedBlueFilterGroups.value,
       red_filter_groups: appliedRedFilterGroups.value,
       blue_filters: {},
@@ -492,10 +567,14 @@ async function saveStrategy() {
       signal_sell_color: 'red',
       purple_conflict_mode: 'sell_first',
       start_date: null,
+      scan_start_date: null,
+      scan_end_date: null,
       buy_position_pct: 1,
       sell_position_pct: 1,
       execution_price_mode: 'next_open',
     })
+    loadedStrategyId.value = result.id
+    saveName.value = result.name
     saveMessage.value = `已保存策略：${result.name}`
   } catch (saveErr) {
     saveError.value = getErrorMessage(saveErr)
@@ -504,9 +583,137 @@ async function saveStrategy() {
   }
 }
 
-onMounted(() => {
+async function saveCurrentStrategy() {
+  if (!loadedStrategyId.value) {
+    await saveStrategy()
+    return
+  }
+  saveError.value = ''
+  saveMessage.value = ''
+  if (!saveName.value.trim()) {
+    saveError.value = '璇峰厛濉啓绛栫暐鍚嶇О'
+    return
+  }
+  if (!selectedCode.value || !selectedName.value) {
+    saveError.value = '褰撳墠娌℃湁鍙繚瀛樼殑鑲＄エ鏍囩殑'
+    return
+  }
+  saveLoading.value = true
+  try {
+    const result = await updateQuantStrategy(loadedStrategyId.value, {
+      name: saveName.value.trim(),
+      notes: '',
+      strategy_engine: 'snapshot',
+      sequence_mode: 'single_target',
+      strategy_type: 'stock',
+      target_code: selectedCode.value,
+      target_name: selectedName.value,
+      indicator_params: appliedParams.value,
+      buy_sequence_groups: [],
+      sell_sequence_groups: [],
+      scan_trade_config: {
+        initial_capital: 1_000_000,
+        buy_amount_per_event: 10_000,
+        buy_offset_trading_days: 1,
+        sell_offset_trading_days: 2,
+        buy_price_basis: 'open',
+        sell_price_basis: 'open',
+      },
+      blue_filter_groups: appliedBlueFilterGroups.value,
+      red_filter_groups: appliedRedFilterGroups.value,
+      blue_filters: {},
+      red_filters: {},
+      blue_boll_filter: { gt: null, lt: null, intraday_gt: null, intraday_lt: null },
+      red_boll_filter: { gt: null, lt: null, intraday_gt: null, intraday_lt: null },
+      signal_buy_color: 'blue',
+      signal_sell_color: 'red',
+      purple_conflict_mode: 'sell_first',
+      start_date: null,
+      scan_start_date: null,
+      scan_end_date: null,
+      buy_position_pct: 1,
+      sell_position_pct: 1,
+      execution_price_mode: 'next_open',
+    })
+    loadedStrategyId.value = result.id
+    saveName.value = result.name
+    saveMessage.value = `已更新策略：${result.name}`
+  } catch (saveErr) {
+    saveError.value = getErrorMessage(saveErr)
+  } finally {
+    saveLoading.value = false
+  }
+}
+
+async function saveAsNewStrategy() {
+  await saveStrategy()
+}
+
+function getStrategyIdFromRoute() {
+  const raw = route.query.strategyId
+  const normalized = Array.isArray(raw) ? raw[0] : raw
+  const parsed = normalized ? Number(normalized) : Number.NaN
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function applyStrategyConfig(strategy: QuantStrategyConfig) {
+  const nextParams = normalizeIndicatorParams(strategy.indicator_params)
+  const blueGroups = cloneFilterGroups(strategy.blue_filter_groups)
+  const redGroups = cloneFilterGroups(strategy.red_filter_groups)
+
+  appliedParams.value = nextParams
+  Object.assign(formState, buildFormState(nextParams))
+  blueRuleDrafts.value = deserializeRuleGroups(blueGroups)
+  redRuleDrafts.value = deserializeRuleGroups(redGroups)
+  appliedBlueFilterGroups.value = blueGroups
+  appliedRedFilterGroups.value = redGroups
+  saveName.value = strategy.name
+  loadedStrategyId.value = strategy.id
+  showParamsModal.value = false
+}
+
+async function hydrateStrategyFromRoute() {
+  const strategyId = getStrategyIdFromRoute()
+  if (!strategyId) return
+
+  strategyLoadMessage.value = ''
+  error.value = ''
+  saveError.value = ''
+
+  try {
+    const strategy = await fetchQuantStrategy(strategyId)
+    if (strategy.strategy_engine !== 'snapshot' || strategy.strategy_type !== 'stock') {
+      error.value = '当前策略不是股票策略，无法加载到股票分析页'
+      return
+    }
+
+    pickSymbol(strategy.target_code, strategy.target_name)
+    const loaded = await loadHfqKline()
+    if (!loaded) {
+      error.value = error.value || '策略对应股票数据加载失败'
+      return
+    }
+
+    applyStrategyConfig(strategy)
+    strategyLoadMessage.value = `已加载策略：${strategy.name}`
+  } catch (loadError) {
+    error.value = getErrorMessage(loadError)
+  }
+}
+
+onMounted(async () => {
   booting.value = false
+  await hydrateStrategyFromRoute()
 })
+
+watch(
+  () => route.query.strategyId,
+  (value, previousValue) => {
+    if (booting.value) return
+    if (value === previousValue) return
+    void hydrateStrategyFromRoute()
+  },
+)
 
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer)
@@ -515,6 +722,7 @@ onBeforeUnmount(() => {
 
 <template>
   <p v-if="error" class="banner-error">{{ error }}</p>
+  <p v-else-if="strategyLoadMessage" class="muted">{{ strategyLoadMessage }}</p>
   <div v-if="showParamsModal" class="quant-modal-backdrop" @click="closeParamsModal"></div>
   <div class="quant-body">
     <div class="quant-content-column">
@@ -522,7 +730,7 @@ onBeforeUnmount(() => {
         <div class="quant-page-head">
           <div>
             <h3>股票参数</h3>
-            <p class="muted">默认不自动展示数据，选股后可手动刷新前复权 K 线或触发临时采集。</p>
+            <p class="muted">默认不自动展示数据，选股后可手动刷新后复权 K 线或触发临时采集。</p>
           </div>
         </div>
 
@@ -556,7 +764,7 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="btn-group">
-              <button class="btn primary" :disabled="loading || !selectedCode" @click="loadQfqKline">刷新股票 K 线</button>
+              <button class="btn primary" :disabled="loading || !selectedCode" @click="loadHfqKline">刷新股票 K 线</button>
               <button class="btn" :disabled="collectLoading || !selectedCode" @click="triggerCollect">
                 {{ collectLoading ? '提交中...' : '触发采集' }}
               </button>
@@ -608,7 +816,7 @@ onBeforeUnmount(() => {
 
             <section v-else-if="!chartRequested && !loading" class="card quant-stock-empty">
               <h3>股票量化图表</h3>
-              <p class="muted">先选择股票，再点击“刷新股票 K 线”加载前复权数据。</p>
+              <p class="muted">先选择股票，再点击“刷新股票 K 线”加载后复权数据。</p>
             </section>
           </div>
         </div>
@@ -618,7 +826,7 @@ onBeforeUnmount(() => {
           <div class="quant-page-head">
             <div>
               <h3>股票参数</h3>
-              <p class="muted">默认不自动展示数据，选股后可手动刷新前复权 K 线或触发临时采集。</p>
+              <p class="muted">默认不自动展示数据，选股后可手动刷新后复权 K 线或触发临时采集。</p>
             </div>
             <button type="button" class="btn" @click="closeParamsModal">关闭</button>
           </div>
@@ -701,7 +909,12 @@ onBeforeUnmount(() => {
         <div class="quant-filter-footer">
           <button class="btn primary" :disabled="!canApplyFilters" @click="applyFilters">确定</button>
           <button class="btn" @click="clearFilters">清空筛选</button>
-          <button class="btn" :disabled="saveLoading || !selectedCode" @click="saveStrategy">{{ saveLoading ? '保存中...' : '保存筛选' }}</button>
+          <button class="btn" :disabled="saveLoading || !selectedCode" @click="saveCurrentStrategy">
+            {{ saveLoading ? '保存中...' : loadedStrategyId ? '更新当前策略' : '保存筛选' }}
+          </button>
+          <button class="btn" :disabled="saveLoading || !selectedCode" @click="saveAsNewStrategy">
+            {{ saveLoading ? '保存中...' : '另存为新策略' }}
+          </button>
         </div>
       </section>
     </aside>
