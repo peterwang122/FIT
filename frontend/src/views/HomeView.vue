@@ -41,7 +41,10 @@ const {
   forexHistoryLoadingMore,
   indexLoading,
   forexLoading,
+  forexCollecting,
   netPositionSeriesLoading,
+  netPositionSeriesHasMoreHistory,
+  netPositionSeriesLoadingMore,
   error,
   indexEmotionLoading,
   netPositionLoading,
@@ -78,6 +81,10 @@ async function applyNetPositionDate(nextDate: string) {
 
 async function resetNetPositionDate() {
   await applyNetPositionDate('')
+}
+
+async function collectSelectedForex() {
+  await stockStore.collectCurrentForex()
 }
 
 watch(netPositionDate, (value) => {
@@ -148,16 +155,24 @@ onMounted(async () => {
             </div>
             <div v-else class="net-tables-stack">
               <NetPositionLineChart
-                title="中信期货(代客)净空单折线图"
+                :key="`citic-${netPositionSeriesKey}`"
+                title="中信期货（代客）净空单折线图"
                 :points="citicNetPositionSeriesPoints"
                 :loading="netPositionSeriesLoading"
+                :has-more-history="netPositionSeriesHasMoreHistory"
+                :loading-more-history="netPositionSeriesLoadingMore"
                 line-color="#dc2626"
+                @request-more-history="stockStore.loadMoreNetPositionSeries"
               />
               <NetPositionLineChart
-                title="前20机构净空单折线图"
+                :key="`top20-${netPositionSeriesKey}`"
+                title="前 20 机构净空单折线图"
                 :points="top20NetPositionSeriesPoints"
                 :loading="netPositionSeriesLoading"
+                :has-more-history="netPositionSeriesHasMoreHistory"
+                :loading-more-history="netPositionSeriesLoadingMore"
                 line-color="#2563eb"
+                @request-more-history="stockStore.loadMoreNetPositionSeries"
               />
             </div>
           </section>
@@ -214,12 +229,24 @@ onMounted(async () => {
           />
 
           <section class="card hero-panel chart-panel">
-            <div class="compact-toolbar compact-toolbar-end">
-              <select id="forex-select" v-model="forexCode" class="input select" @change="stockStore.loadForexKline">
+            <div class="compact-toolbar forex-toolbar">
+              <select
+                id="forex-select"
+                v-model="forexCode"
+                class="input select forex-select"
+                @change="stockStore.loadForexKline"
+              >
                 <option v-for="item in forexOptions" :key="item.code" :value="item.code">
                   {{ item.name }}
                 </option>
               </select>
+              <button
+                class="btn btn-compact forex-collect-btn"
+                :disabled="forexCollecting || forexLoading || !forexCode"
+                @click="collectSelectedForex"
+              >
+                {{ forexCollecting ? '采集中...' : '采集' }}
+              </button>
             </div>
 
             <section v-if="latestForexSnapshot" class="summary summary-compact">

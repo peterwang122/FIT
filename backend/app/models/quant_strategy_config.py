@@ -16,6 +16,7 @@ class QuantStrategyConfig(Base):
     strategy_engine: Mapped[str] = mapped_column(String(32), index=True, default="snapshot")
     sequence_mode: Mapped[str] = mapped_column(String(32), index=True, default="single_target")
     strategy_type: Mapped[str] = mapped_column(String(32), index=True)
+    target_market: Mapped[str] = mapped_column(String(16), index=True, default="cn")
     target_code: Mapped[str] = mapped_column(String(32), index=True)
     target_name: Mapped[str] = mapped_column(String(128))
     indicator_params: Mapped[dict] = mapped_column(JSON, default=dict)

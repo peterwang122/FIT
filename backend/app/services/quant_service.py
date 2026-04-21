@@ -16,19 +16,27 @@ from app.models.user import User
 from app.services.notification_service import NotificationService
 from app.services.stock_service import StockService
 
+SHANGHAI_INDEX_NAME = "上证指数"
+BEIJING50_INDEX_NAME = "北证50"
+SHARED_INDEX_AUXILIARY_NAMES = {SHANGHAI_INDEX_NAME, BEIJING50_INDEX_NAME}
 CORE_INDEX_NAMES = ["上证50", "沪深300", "中证500", "中证1000"]
 INDEX_TO_ETF_CODE = {
-    "上证指数": "510210",
+    SHANGHAI_INDEX_NAME: "510210",
     "上证50": "510050",
     "沪深300": "510300",
     "中证500": "510500",
     "中证1000": "512100",
 }
-INDEX_STRATEGY_FILTER_KEYS = [
+
+CN_INDEX_STRATEGY_FILTER_KEYS = [
     "emotion",
     "basis-main",
     "basis-month",
     "breadth-up-pct",
+    "vix-open",
+    "vix-high",
+    "vix-low",
+    "vix-close",
     "wr",
     "macd-dif",
     "macd-dea",
@@ -60,7 +68,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v1"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v5"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 INDEX_DASHBOARD_RECENT_LIMIT = 750
 BUY_POSITION_SEARCH_RATIOS = [step / 100 for step in range(20, 101, 5)]
@@ -77,6 +85,37 @@ SCAN_RESULT_CACHE_KEY_PREFIX = "fit:quant:sequence_scan:v1"
 SCAN_RESULT_CACHE_TTL_SECONDS = 3600
 SCAN_EVENT_PAGE_SIZE = 100
 SCAN_EVENT_PAGE_SIZE_MAX = 500
+SUPPORTED_TARGET_MARKETS = {"cn", "hk", "us"}
+INDEX_VIX_CODE_BY_NAME = {
+    "上证50": "50ETF_QVIX",
+    "沪深300": "300ETF_QVIX",
+    "中证500": "500ETF_QVIX",
+}
+INDEX_VIX_CODE_BY_INDEX_CODE = {
+    "000016": "50ETF_QVIX",
+    "sh000016": "50ETF_QVIX",
+    "000300": "300ETF_QVIX",
+    "sh000300": "300ETF_QVIX",
+    "sz399300": "300ETF_QVIX",
+    "399300": "300ETF_QVIX",
+    "000905": "500ETF_QVIX",
+    "sh000905": "500ETF_QVIX",
+    "sz399905": "500ETF_QVIX",
+    "399905": "500ETF_QVIX",
+}
+VIX_FILTER_KEYS = ["vix-open", "vix-high", "vix-low", "vix-close"]
+US_VIX_FILTER_KEYS = ["us-vix-open", "us-vix-high", "us-vix-low", "us-vix-close"]
+US_FEAR_GREED_FILTER_KEYS = ["us-fear-greed"]
+US_HEDGE_FILTER_KEYS = ["us-hedge-long", "us-hedge-short", "us-hedge-ratio"]
+US_AUXILIARY_FILTER_KEYS = US_VIX_FILTER_KEYS + US_FEAR_GREED_FILTER_KEYS + US_HEDGE_FILTER_KEYS
+US_HEDGE_PROXY_SCOPE_BY_INDEX_CODE = {
+    ".INX": "ES",
+    ".NDX": "NQ",
+}
+US_HEDGE_PROXY_SCOPE_BY_INDEX_NAME = {
+    "标普500指数": "ES",
+    "纳斯达克100指数": "NQ",
+}
 
 
 def _date_text(value: object) -> str:
@@ -358,8 +397,73 @@ class QuantService:
             "sell_price_basis": sell_price_basis,
         }
 
-    def _allowed_snapshot_filter_keys(self, strategy_type: str) -> list[str]:
-        return INDEX_STRATEGY_FILTER_KEYS if strategy_type == "index" else STOCK_STRATEGY_FILTER_KEYS
+    def _normalize_target_market(self, raw_value: object) -> str:
+        normalized = str(raw_value or "cn").strip().lower()
+        if normalized not in SUPPORTED_TARGET_MARKETS:
+            return "cn"
+        return normalized
+
+    def _index_supports_auxiliary_panels(self, market: str) -> bool:
+        return self._normalize_target_market(market) == "cn"
+
+    def _index_supports_us_auxiliary_panels(self, market: str) -> bool:
+        return self._normalize_target_market(market) == "us"
+
+    def _resolve_index_vix_code(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> str | None:
+        if self._normalize_target_market(target_market) != "cn":
+            return None
+        normalized_code = str(target_code or "").strip().lower()
+        if normalized_code in INDEX_VIX_CODE_BY_INDEX_CODE:
+            return INDEX_VIX_CODE_BY_INDEX_CODE[normalized_code]
+        normalized_name = str(target_name or "").strip()
+        return INDEX_VIX_CODE_BY_NAME.get(normalized_name)
+
+    def _index_supports_vix(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        return self._resolve_index_vix_code(target_code, target_name, target_market) is not None
+
+    def _resolve_us_hedge_proxy_scope(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> str | None:
+        if self._normalize_target_market(target_market) != "us":
+            return None
+        normalized_code = str(target_code or "").strip().upper()
+        if normalized_code in US_HEDGE_PROXY_SCOPE_BY_INDEX_CODE:
+            return US_HEDGE_PROXY_SCOPE_BY_INDEX_CODE[normalized_code]
+        normalized_name = str(target_name or "").strip()
+        return US_HEDGE_PROXY_SCOPE_BY_INDEX_NAME.get(normalized_name)
+
+    def _allowed_snapshot_filter_keys(
+        self,
+        strategy_type: str,
+        target_market: str = "cn",
+        target_code: object = "",
+        target_name: object = "",
+    ) -> list[str]:
+        if strategy_type == "index":
+            if self._index_supports_auxiliary_panels(target_market):
+                if self._index_supports_vix(target_code, target_name, target_market):
+                    return CN_INDEX_STRATEGY_FILTER_KEYS
+                return [key for key in CN_INDEX_STRATEGY_FILTER_KEYS if key not in VIX_FILTER_KEYS]
+            if self._index_supports_us_auxiliary_panels(target_market):
+                keys = list(STOCK_STRATEGY_FILTER_KEYS) + US_VIX_FILTER_KEYS + US_FEAR_GREED_FILTER_KEYS
+                if self._resolve_us_hedge_proxy_scope(target_code, target_name, target_market):
+                    keys += US_HEDGE_FILTER_KEYS
+                return keys
+            return STOCK_STRATEGY_FILTER_KEYS
+        return STOCK_STRATEGY_FILTER_KEYS
 
     def _normalize_price_rows(self, candles: list[dict]) -> list[dict]:
         return [
@@ -378,11 +482,19 @@ class QuantService:
             and item.get("low") is not None
         ]
 
-    def _resolve_index_option(self, index_code: str) -> dict | None:
-        for item in self.stock_service.list_index_options():
-            if str(item.get("code", "")).strip() == index_code:
+    def _resolve_index_option(self, index_code: str, market: str = "cn") -> dict | None:
+        target_code = str(index_code or "").strip().lower()
+        normalized_market = self._normalize_target_market(market)
+        for item in self.stock_service.list_index_options(market=normalized_market):
+            if str(item.get("code", "")).strip().lower() == target_code:
                 return item
         return None
+
+    def _resolve_index_auxiliary_source_name(self, symbol_name: str) -> str:
+        normalized = str(symbol_name or "").strip()
+        if normalized in SHARED_INDEX_AUXILIARY_NAMES:
+            return SHANGHAI_INDEX_NAME
+        return normalized
 
     def _ensure_index_dashboard_table_ready(self) -> None:
         bind = self.db.get_bind()
@@ -392,18 +504,149 @@ class QuantService:
         if not inspect(bind).has_table(table_name):
             raise RuntimeError(f"precomputed table `{table_name}` is not ready")
 
-    def _resolve_recent_index_start_date(self, index_code: str) -> date | None:
+    def _resolve_recent_index_start_date(self, index_code: str, market: str = "cn") -> date | None:
+        config = self.stock_service._get_index_market_config(self._normalize_target_market(market))
         sql = text(
             f"SELECT MIN(recent.trade_date) AS trade_date "
             f"FROM ("
-            f"  SELECT `{settings.index_daily_date_column}` AS trade_date "
-            f"  FROM `{settings.index_daily_table_name}` "
-            f"  WHERE `{settings.index_daily_code_column}` = :index_code "
-            f"  ORDER BY `{settings.index_daily_date_column}` DESC "
+            f"  SELECT `{config['daily_date_column']}` AS trade_date "
+            f"  FROM `{config['daily_table']}` "
+            f"  WHERE `{config['daily_code_column']}` = :index_code "
+            f"  ORDER BY `{config['daily_date_column']}` DESC "
             f"  LIMIT {INDEX_DASHBOARD_RECENT_LIMIT}"
             f") recent"
         )
         return self.db.execute(sql, {"index_code": index_code}).scalar()
+
+    def _load_us_auxiliary_rows(
+        self,
+        target_code: str,
+        target_name: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, list[dict]]:
+        hedge_scope = self._resolve_us_hedge_proxy_scope(target_code, target_name, "us")
+        return {
+            "us_vix_rows": self.stock_service.list_index_us_vix_daily_data(start_date=start_date, end_date=end_date),
+            "us_fear_greed_rows": self.stock_service.list_index_us_fear_greed_daily_data(
+                start_date=start_date,
+                end_date=end_date,
+            ),
+            "us_hedge_proxy_rows": self.stock_service.list_index_us_hedge_proxy_data(
+                hedge_scope,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if hedge_scope
+            else [],
+        }
+
+    def _align_sparse_rows_to_trade_dates(
+        self,
+        trade_dates: list[str],
+        rows: list[dict],
+        date_key: str,
+    ) -> dict[str, dict]:
+        sorted_trade_dates = sorted(date_text for date_text in trade_dates if date_text)
+        if not sorted_trade_dates or not rows:
+            return {}
+
+        sorted_rows = sorted(
+            (row for row in rows if row.get(date_key) is not None),
+            key=lambda item: _date_text(item.get(date_key)),
+        )
+        aligned: dict[str, dict] = {}
+        trade_index = 0
+        for row in sorted_rows:
+            row_date = _date_text(row.get(date_key))
+            while trade_index < len(sorted_trade_dates) and sorted_trade_dates[trade_index] < row_date:
+                trade_index += 1
+            if trade_index < len(sorted_trade_dates):
+                aligned[sorted_trade_dates[trade_index]] = row
+        return aligned
+
+    def _build_us_index_snapshots(
+        self,
+        target_code: str,
+        target_name: str,
+        params: dict,
+        candles: list[dict],
+    ) -> list[dict]:
+        sorted_candles = _sort_candles(candles)
+        if not sorted_candles:
+            return []
+
+        base_snapshots = self._build_stock_snapshots(params, candles)
+        first_trade_date = sorted_candles[0].get("trade_date")
+        last_trade_date = sorted_candles[-1].get("trade_date")
+        auxiliary_rows = self._load_us_auxiliary_rows(
+            target_code,
+            target_name,
+            start_date=first_trade_date if isinstance(first_trade_date, date) else None,
+            end_date=last_trade_date if isinstance(last_trade_date, date) else None,
+        )
+        us_vix_by_date = {
+            _date_text(item["trade_date"]): {
+                "us-vix-open": _to_float(item.get("open_value")),
+                "us-vix-high": _to_float(item.get("high_value")),
+                "us-vix-low": _to_float(item.get("low_value")),
+                "us-vix-close": _to_float(item.get("close_value")),
+            }
+            for item in auxiliary_rows["us_vix_rows"]
+            if item.get("trade_date") is not None
+        }
+        fear_greed_by_date = {
+            _date_text(item["trade_date"]): _to_float(item.get("fear_greed_value"))
+            for item in auxiliary_rows["us_fear_greed_rows"]
+            if item.get("trade_date") is not None
+        }
+        hedge_rows_by_trade_date = self._align_sparse_rows_to_trade_dates(
+            [_date_text(item.get("trade_date")) for item in sorted_candles if item.get("trade_date") is not None],
+            auxiliary_rows["us_hedge_proxy_rows"],
+            "release_date",
+        )
+        hedge_by_date = {
+            trade_date: {
+                "us-hedge-long": _to_float(item.get("long_value")),
+                "us-hedge-short": _to_float(item.get("short_value")),
+                "us-hedge-ratio": _to_float(item.get("ratio_value")),
+            }
+            for trade_date, item in hedge_rows_by_trade_date.items()
+        }
+
+        snapshots: list[dict] = []
+        for snapshot in base_snapshots:
+            trade_date = _date_text(snapshot.get("trade_date"))
+            values = dict(snapshot.get("values") or {})
+            values.update(
+                {
+                    "us-vix-open": us_vix_by_date.get(trade_date, {}).get("us-vix-open"),
+                    "us-vix-high": us_vix_by_date.get(trade_date, {}).get("us-vix-high"),
+                    "us-vix-low": us_vix_by_date.get(trade_date, {}).get("us-vix-low"),
+                    "us-vix-close": us_vix_by_date.get(trade_date, {}).get("us-vix-close"),
+                    "us-fear-greed": fear_greed_by_date.get(trade_date),
+                    "us-hedge-long": hedge_by_date.get(trade_date, {}).get("us-hedge-long"),
+                    "us-hedge-short": hedge_by_date.get(trade_date, {}).get("us-hedge-short"),
+                    "us-hedge-ratio": hedge_by_date.get(trade_date, {}).get("us-hedge-ratio"),
+                }
+            )
+            snapshots.append({**snapshot, "values": values})
+        return snapshots
+
+    def _build_index_snapshots_for_market(
+        self,
+        target_market: str,
+        target_code: str,
+        symbol_name: str,
+        params: dict,
+        candles: list[dict],
+    ) -> list[dict]:
+        normalized_market = self._normalize_target_market(target_market)
+        if self._index_supports_auxiliary_panels(normalized_market):
+            return self._build_index_snapshots(target_code, symbol_name, params, candles)
+        if self._index_supports_us_auxiliary_panels(normalized_market):
+            return self._build_us_index_snapshots(target_code, symbol_name, params, candles)
+        return self._build_stock_snapshots(params, candles)
 
     def _load_index_dashboard_rows(
         self,
@@ -439,20 +682,29 @@ class QuantService:
         mode: str = "recent",
         start_date: date | None = None,
         end_date: date | None = None,
+        market: str = "cn",
     ) -> dict:
         normalized_mode = mode.strip().lower()
         if normalized_mode not in {"recent", "full"}:
             raise ValueError("unsupported mode")
+        normalized_market = self._normalize_target_market(market)
 
-        option = self._resolve_index_option(index_code)
+        normalized_index_code = str(index_code or "").strip()
+        if normalized_market == "cn" and normalized_index_code.lower() == BEIJING50_INDEX_NAME.lower():
+            normalized_index_code = "BJ899050"
+        if normalized_market == "cn" and normalized_index_code.lower() == "bj899050":
+            normalized_index_code = "BJ899050"
+
+        option = self._resolve_index_option(normalized_index_code, normalized_market)
         if option is None:
             raise ValueError("index not found")
+        auxiliary_source_name = self._resolve_index_auxiliary_source_name(option["name"])
 
         using_explicit_window = start_date is not None or end_date is not None
         response_mode = "window" if using_explicit_window else normalized_mode
 
         cache_key = (
-            f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:{index_code}:{response_mode}:"
+            f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:{normalized_market}:{normalized_index_code}:{response_mode}:"
             f"{start_date.isoformat() if start_date else 'none'}:"
             f"{end_date.isoformat() if end_date else 'none'}"
         )
@@ -467,26 +719,100 @@ class QuantService:
 
         resolved_start_date = start_date
         if resolved_start_date is None and normalized_mode == "recent":
-            resolved_start_date = self._resolve_recent_index_start_date(index_code)
+            resolved_start_date = self._resolve_recent_index_start_date(normalized_index_code, normalized_market)
 
         candles = self.stock_service.list_index_daily_kline(
-            index_code=index_code,
+            index_code=normalized_index_code,
+            market=normalized_market,
             start_date=resolved_start_date,
             end_date=end_date,
         )
 
+        if not self._index_supports_auxiliary_panels(normalized_market):
+            auxiliary_rows = (
+                self._load_us_auxiliary_rows(
+                    option["code"],
+                    option["name"],
+                    start_date=resolved_start_date,
+                    end_date=end_date,
+                )
+                if self._index_supports_us_auxiliary_panels(normalized_market)
+                else {"us_vix_rows": [], "us_fear_greed_rows": [], "us_hedge_proxy_rows": []}
+            )
+            result = {
+                "index": {"code": option["code"], "name": option["name"]},
+                "market": normalized_market,
+                "supports_auxiliary_panels": False,
+                "range_mode": response_mode,
+                "candles": candles,
+                "emotion_points": [],
+                "basis_points": [],
+                "breadth_points": [],
+                "vix_points": [],
+                "us_vix_points": [
+                    {
+                        "trade_date": row["trade_date"],
+                        "open_value": _to_float(row.get("open_value")) or 0.0,
+                        "high_value": _to_float(row.get("high_value")) or 0.0,
+                        "low_value": _to_float(row.get("low_value")) or 0.0,
+                        "close_value": _to_float(row.get("close_value")) or 0.0,
+                    }
+                    for row in auxiliary_rows["us_vix_rows"]
+                ],
+                "us_fear_greed_points": [
+                    {
+                        "trade_date": row["trade_date"],
+                        "fear_greed_value": _to_float(row.get("fear_greed_value")) or 0.0,
+                        "sentiment_label": str(row.get("sentiment_label") or "").strip(),
+                    }
+                    for row in auxiliary_rows["us_fear_greed_rows"]
+                ],
+                "us_hedge_proxy_points": [
+                    {
+                        "report_date": row.get("report_date"),
+                        "release_date": row["release_date"],
+                        "contract_scope": str(row.get("contract_scope") or "").strip().upper(),
+                        "long_value": _to_float(row.get("long_value")),
+                        "short_value": _to_float(row.get("short_value")),
+                        "ratio_value": _to_float(row.get("ratio_value")),
+                    }
+                    for row in auxiliary_rows["us_hedge_proxy_rows"]
+                ],
+            }
+            redis_client.set(
+                cache_key,
+                json.dumps(result, ensure_ascii=False, default=str),
+                ex=INDEX_DASHBOARD_CACHE_TTL_SECONDS,
+            )
+            return result
+
         try:
             self._ensure_index_dashboard_table_ready()
-            rows = self._load_index_dashboard_rows(
-                index_code=index_code,
-                start_date=resolved_start_date,
-                end_date=end_date,
-            )
+            rows = self._load_precomputed_index_indicator_rows(auxiliary_source_name)
         except SQLAlchemyError as exc:
             raise RuntimeError("failed to load precomputed quant index dashboard data") from exc
 
+        if resolved_start_date is not None:
+            rows = [row for row in rows if row.get("trade_date") is not None and row["trade_date"] >= resolved_start_date]
+        if end_date is not None:
+            rows = [row for row in rows if row.get("trade_date") is not None and row["trade_date"] <= end_date]
+
+        if not candles:
+            rows = []
+
+        vix_rows: list[dict] = []
+        qvix_code = self._resolve_index_vix_code(option["code"], option["name"], normalized_market)
+        if qvix_code:
+            vix_rows = self.stock_service.list_index_qvix_daily_data(
+                qvix_code,
+                start_date=resolved_start_date,
+                end_date=end_date,
+            )
+
         result = {
             "index": {"code": option["code"], "name": option["name"]},
+            "market": normalized_market,
+            "supports_auxiliary_panels": True,
             "range_mode": response_mode,
             "candles": candles,
             "emotion_points": [
@@ -513,6 +839,19 @@ class QuantService:
                 }
                 for row in rows
             ],
+            "vix_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "open_price": _to_float(row.get("open_price")) or 0.0,
+                    "high_price": _to_float(row.get("high_price")) or 0.0,
+                    "low_price": _to_float(row.get("low_price")) or 0.0,
+                    "close_price": _to_float(row.get("close_price")) or 0.0,
+                }
+                for row in vix_rows
+            ],
+            "us_vix_points": [],
+            "us_fear_greed_points": [],
+            "us_hedge_proxy_points": [],
         }
         redis_client.set(
             cache_key,
@@ -611,6 +950,7 @@ class QuantService:
         return result
 
     def _build_emotion_value_by_date(self, symbol_name: str) -> dict[str, float]:
+        source_name = self._resolve_index_auxiliary_source_name(symbol_name)
         rows = self.stock_service.list_excel_index_emotions()
         grouped: dict[str, list[float]] = defaultdict(list)
         for row in rows:
@@ -619,10 +959,10 @@ class QuantService:
             emotion_value = _to_float(row.get("emotion_value"))
             if emotion_value is None:
                 continue
-            if symbol_name == "上证指数":
+            if source_name == SHANGHAI_INDEX_NAME:
                 if index_name not in CORE_INDEX_NAMES:
                     continue
-            elif index_name != symbol_name:
+            elif index_name != source_name:
                 continue
             grouped[trade_date].append(emotion_value)
         return {trade_date: sum(values) / len(values) for trade_date, values in grouped.items() if values}
@@ -632,6 +972,7 @@ class QuantService:
             self._ensure_index_dashboard_table_ready()
         except RuntimeError:
             return []
+        source_name = self._resolve_index_auxiliary_source_name(symbol_name)
 
         sql = text(
             f"SELECT "
@@ -639,17 +980,20 @@ class QuantService:
             f"`{settings.quant_index_dashboard_emotion_column}` AS emotion_value, "
             f"`{settings.quant_index_dashboard_main_basis_column}` AS main_basis, "
             f"`{settings.quant_index_dashboard_month_basis_column}` AS month_basis, "
+            f"`{settings.quant_index_dashboard_breadth_up_count_column}` AS up_count, "
+            f"`{settings.quant_index_dashboard_breadth_total_count_column}` AS total_count, "
             f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct "
             f"FROM `{settings.quant_index_dashboard_table_name}` "
             f"WHERE `{settings.quant_index_dashboard_name_column}` = :index_name "
             f"ORDER BY `{settings.quant_index_dashboard_date_column}` ASC"
         )
         try:
-            return [dict(row) for row in self.db.execute(sql, {"index_name": symbol_name}).mappings().all()]
+            return [dict(row) for row in self.db.execute(sql, {"index_name": source_name}).mappings().all()]
         except SQLAlchemyError:
             return []
 
     def _build_basis_value_by_date(self, symbol_name: str) -> tuple[dict[str, float], dict[str, float]]:
+        source_name = self._resolve_index_auxiliary_source_name(symbol_name)
         rows = self.stock_service.list_index_futures_basis()
         grouped_main: dict[str, list[float]] = defaultdict(list)
         grouped_month: dict[str, list[float]] = defaultdict(list)
@@ -658,10 +1002,10 @@ class QuantService:
             trade_date = _date_text(row.get("trade_date"))
             main_basis = _to_float(row.get("main_basis"))
             month_basis = _to_float(row.get("month_basis"))
-            if symbol_name == "上证指数":
+            if source_name == SHANGHAI_INDEX_NAME:
                 if index_name not in CORE_INDEX_NAMES:
                     continue
-            elif index_name != symbol_name:
+            elif index_name != source_name:
                 continue
             if main_basis is not None:
                 grouped_main[trade_date].append(main_basis)
@@ -679,7 +1023,7 @@ class QuantService:
             for item in self.list_index_breadth()
         }
 
-    def _build_index_snapshots(self, symbol_name: str, params: dict, candles: list[dict]) -> list[dict]:
+    def _build_index_snapshots(self, target_code: str, symbol_name: str, params: dict, candles: list[dict]) -> list[dict]:
         sorted_candles = _sort_candles(candles)
         if not sorted_candles:
             return []
@@ -743,8 +1087,30 @@ class QuantService:
             basis_main_map, basis_month_map = self._build_basis_value_by_date(symbol_name)
             breadth_map = self._build_breadth_value_by_date()
 
+        vix_by_date: dict[str, dict[str, float | None]] = {}
+        qvix_code = self._resolve_index_vix_code(target_code, symbol_name, "cn")
+        if qvix_code:
+            first_trade_date = sorted_candles[0].get("trade_date")
+            last_trade_date = sorted_candles[-1].get("trade_date")
+            qvix_rows = self.stock_service.list_index_qvix_daily_data(
+                qvix_code,
+                start_date=first_trade_date if isinstance(first_trade_date, date) else None,
+                end_date=last_trade_date if isinstance(last_trade_date, date) else None,
+            )
+            vix_by_date = {
+                _date_text(item["trade_date"]): {
+                    "vix-open": _to_float(item.get("open_price")),
+                    "vix-high": _to_float(item.get("high_price")),
+                    "vix-low": _to_float(item.get("low_price")),
+                    "vix-close": _to_float(item.get("close_price")),
+                }
+                for item in qvix_rows
+                if item.get("trade_date") is not None
+            }
+
         snapshots: list[dict] = []
         for index, trade_date in enumerate(times):
+            vix_values = vix_by_date.get(trade_date, {})
             snapshots.append(
                 {
                     "trade_date": trade_date,
@@ -756,6 +1122,10 @@ class QuantService:
                         "basis-main": basis_main_map.get(trade_date, 0.0),
                         "basis-month": basis_month_map.get(trade_date, 0.0),
                         "breadth-up-pct": breadth_map.get(trade_date, 0.0),
+                        "vix-open": vix_values.get("vix-open"),
+                        "vix-high": vix_values.get("vix-high"),
+                        "vix-low": vix_values.get("vix-low"),
+                        "vix-close": vix_values.get("vix-close"),
                         "wr": wr_values[index],
                         "macd-dif": macd_dif[index],
                         "macd-dea": macd_dea[index],
@@ -929,7 +1299,10 @@ class QuantService:
     def _build_sequence_snapshots(self, strategy: QuantStrategyConfig) -> list[dict]:
         strategy_type = str(strategy.strategy_type or "").strip().lower()
         if strategy_type == "index":
-            target_candles = self.stock_service.list_index_daily_kline(strategy.target_code)
+            target_candles = self.stock_service.list_index_daily_kline(
+                strategy.target_code,
+                market=self._normalize_target_market(getattr(strategy, "target_market", "cn")),
+            )
         elif strategy_type == "stock":
             target_candles = self.stock_service.list_daily_kline(strategy.target_code)
         elif strategy_type == "etf":
@@ -1120,18 +1493,18 @@ class QuantService:
 
     def _resolve_scan_lot_rule(self, strategy_type: str, board: str | None) -> dict | None:
         if strategy_type == "etf":
-            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "ETF 100浠借捣锛?00浠介€掑"}
+            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "ETF 100份起，100份递增"}
         normalized_board = str(board or "").strip()
         if not normalized_board:
             return None
-        if "绉戝垱鏉?" in normalized_board:
-            return {"min_qty": 200, "step": 1, "mode": "after_minimum", "label": "绉戝垱鏉?00鑲¤捣锛?00鑲′互涓婃瘡娆?鑲?"}
-        if "鍖椾氦鎵?" in normalized_board or "鍖楄瘉" in normalized_board:
-            return {"min_qty": 100, "step": 1, "mode": "after_minimum", "label": "鍖椾氦鎵?00鑲¤捣锛?00鑲′互涓婃瘡娆?鑲?"}
-        if "涓绘澘" in normalized_board:
-            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "涓绘澘 100鑲¤捣锛?00鑲￠€掑"}
-        if "鍒涗笟鏉?" in normalized_board:
-            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "鍒涗笟鏉?00鑲¤捣锛?00鑲￠€掑"}
+        if "科创板" in normalized_board:
+            return {"min_qty": 200, "step": 1, "mode": "after_minimum", "label": "科创板 200股起，200股以上每次 1 股"}
+        if "北交所" in normalized_board or "北证" in normalized_board:
+            return {"min_qty": 100, "step": 1, "mode": "after_minimum", "label": "北交所 100股起，100股以上每次 1 股"}
+        if "主板" in normalized_board:
+            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "主板 100股起，100股递增"}
+        if "创业板" in normalized_board:
+            return {"min_qty": 100, "step": 100, "mode": "multiple", "label": "创业板 100股起，100股递增"}
         return None
 
     def _round_up_lot_quantity(self, raw_quantity: float, lot_rule: dict) -> int | None:
@@ -1285,7 +1658,7 @@ class QuantService:
 
                 if buy_index >= len(target_candles):
                     tradable = False
-                    disabled_reason = "涔板叆鏃ユ湡涓嶈冻"
+                    disabled_reason = "买入日期不足"
                 else:
                     buy_candle = target_candles[buy_index]
                     buy_date = buy_candle["trade_date"]
@@ -1293,7 +1666,7 @@ class QuantService:
 
                 if tradable and sell_index >= len(target_candles):
                     tradable = False
-                    disabled_reason = "鍗栧嚭鏃ユ湡涓嶈冻"
+                    disabled_reason = "卖出日期不足"
                 elif tradable:
                     sell_candle = target_candles[sell_index]
                     sell_date = sell_candle["trade_date"]
@@ -1304,22 +1677,22 @@ class QuantService:
                     sell_rank = (sell_index, 0 if sell_basis == "open" else 1)
                     if sell_rank <= buy_rank:
                         tradable = False
-                        disabled_reason = "鍗栧嚭鎵ц鏃剁偣蹇呴』鏅氫簬涔板叆"
+                        disabled_reason = "卖出执行时点必须晚于买入"
 
                 if tradable and ((buy_price or 0) <= 0 or (sell_price or 0) <= 0):
                     tradable = False
-                    disabled_reason = "涔板崠浠锋牸涓嶅彲鐢?"
+                    disabled_reason = "买卖价格不可用"
 
                 if tradable and lot_rule is None:
                     tradable = False
-                    disabled_reason = "鏃犳硶鏍规嵁 board 鍒ゆ柇鏈€灏忎氦鏄撳崟浣?"
+                    disabled_reason = "无法根据 board 判断最小交易单位"
 
                 if tradable and buy_price and lot_rule is not None:
                     raw_quantity = float(trade_config["buy_amount_per_event"]) / buy_price
                     planned_quantity = self._round_up_lot_quantity(raw_quantity, lot_rule)
                     if planned_quantity is None:
                         tradable = False
-                        disabled_reason = "鏃犳硶璁＄畻鍚堟硶涔板叆鏁伴噺"
+                        disabled_reason = "无法计算合法买入数量"
                     else:
                         planned_buy_amount = _round_metric(planned_quantity * buy_price)
 
@@ -1797,6 +2170,44 @@ class QuantService:
         boll_filter = getattr(strategy, f"{color}_boll_filter", None)
         return self._legacy_filters_to_rule_groups(filters, boll_filter, allowed_keys)
 
+    def _payload_contains_vix_rules(self, payload: dict) -> bool:
+        for color in ("blue", "red"):
+            raw_groups = payload.get(f"{color}_filter_groups")
+            if isinstance(raw_groups, list):
+                for raw_group in raw_groups:
+                    if not isinstance(raw_group, dict):
+                        continue
+                    raw_conditions = raw_group.get("conditions")
+                    if not isinstance(raw_conditions, list):
+                        continue
+                    for raw_condition in raw_conditions:
+                        if not isinstance(raw_condition, dict):
+                            continue
+                        if str(raw_condition.get("type", "")).strip() != "numeric":
+                            continue
+                        if str(raw_condition.get("field", "")).strip() in VIX_FILTER_KEYS:
+                            return True
+            raw_filters = payload.get(f"{color}_filters")
+            if isinstance(raw_filters, dict):
+                for key in raw_filters.keys():
+                    if str(key).strip() in VIX_FILTER_KEYS:
+                        return True
+        return False
+
+    def _validate_strategy_payload(self, payload: dict) -> None:
+        strategy_engine = self._normalize_strategy_engine(payload.get("strategy_engine", "snapshot"))
+        strategy_type = str(payload.get("strategy_type", "")).strip()
+        target_market = self._normalize_target_market(payload.get("target_market", "cn"))
+        target_code = str(payload.get("target_code", "")).strip()
+        target_name = str(payload.get("target_name", "")).strip()
+
+        if strategy_engine != "snapshot" or strategy_type != "index":
+            return
+        if not self._payload_contains_vix_rules(payload):
+            return
+        if not self._index_supports_vix(target_code, target_name, target_market):
+            raise ValueError("当前指数不支持 VIX 条件，请先移除 VIX 规则。")
+
     def _matches_rule_condition(self, snapshot: dict, condition: dict, allowed_keys: list[str]) -> bool:
         condition_type = str(condition.get("type", "")).strip()
         operator = str(condition.get("operator", "")).strip()
@@ -1842,11 +2253,63 @@ class QuantService:
             return False
         return any(self._matches_rule_group(snapshot, group, allowed_keys) for group in groups)
 
+    def _payload_contains_numeric_rules(self, payload: dict, target_fields: list[str]) -> bool:
+        field_set = {str(item).strip() for item in target_fields}
+        if not field_set:
+            return False
+        for color in ("blue", "red"):
+            raw_groups = payload.get(f"{color}_filter_groups")
+            if isinstance(raw_groups, list):
+                for raw_group in raw_groups:
+                    if not isinstance(raw_group, dict):
+                        continue
+                    raw_conditions = raw_group.get("conditions")
+                    if not isinstance(raw_conditions, list):
+                        continue
+                    for raw_condition in raw_conditions:
+                        if not isinstance(raw_condition, dict):
+                            continue
+                        if str(raw_condition.get("type", "")).strip() != "numeric":
+                            continue
+                        if str(raw_condition.get("field", "")).strip() in field_set:
+                            return True
+            raw_filters = payload.get(f"{color}_filters")
+            if isinstance(raw_filters, dict):
+                for key in raw_filters.keys():
+                    if str(key).strip() in field_set:
+                        return True
+        return False
+
+    def _validate_strategy_payload(self, payload: dict) -> None:
+        strategy_engine = self._normalize_strategy_engine(payload.get("strategy_engine", "snapshot"))
+        strategy_type = str(payload.get("strategy_type", "")).strip()
+        target_market = self._normalize_target_market(payload.get("target_market", "cn"))
+        target_code = str(payload.get("target_code", "")).strip()
+        target_name = str(payload.get("target_name", "")).strip()
+
+        if strategy_engine != "snapshot" or strategy_type != "index":
+            return
+        if self._payload_contains_numeric_rules(payload, VIX_FILTER_KEYS) and not self._index_supports_vix(
+            target_code, target_name, target_market
+        ):
+            raise ValueError("当前指数不支持 VIX 条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(payload, US_VIX_FILTER_KEYS + US_FEAR_GREED_FILTER_KEYS) and target_market != "us":
+            raise ValueError("当前市场不支持美股辅助指标条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(payload, US_HEDGE_FILTER_KEYS) and not self._resolve_us_hedge_proxy_scope(
+            target_code, target_name, target_market
+        ):
+            raise ValueError("当前指数不支持对冲基金代理条件，请先移除相关规则。")
+
     def _build_signal_map(self, strategy: QuantStrategyConfig, snapshots: list[dict]) -> dict[str, str]:
         if self._normalize_strategy_engine(strategy.strategy_engine) == "sequence":
             return self._build_sequence_signal_map(strategy, snapshots)
 
-        allowed_keys = self._allowed_snapshot_filter_keys(strategy.strategy_type)
+        allowed_keys = self._allowed_snapshot_filter_keys(
+            strategy.strategy_type,
+            self._normalize_target_market(getattr(strategy, "target_market", "cn")),
+            getattr(strategy, "target_code", ""),
+            getattr(strategy, "target_name", ""),
+        )
         blue_groups = self._get_rule_groups(strategy, "blue", allowed_keys)
         red_groups = self._get_rule_groups(strategy, "red", allowed_keys)
 
@@ -1864,7 +2327,12 @@ class QuantService:
         return signal_map
 
     def _serialize_strategy(self, item: QuantStrategyConfig) -> dict:
-        allowed_keys = self._allowed_snapshot_filter_keys(item.strategy_type)
+        allowed_keys = self._allowed_snapshot_filter_keys(
+            item.strategy_type,
+            self._normalize_target_market(getattr(item, "target_market", "cn")),
+            getattr(item, "target_code", ""),
+            getattr(item, "target_name", ""),
+        )
         return {
             "id": item.id,
             "name": item.name,
@@ -1872,6 +2340,7 @@ class QuantService:
             "strategy_engine": self._normalize_strategy_engine(item.strategy_engine),
             "sequence_mode": self._normalize_sequence_mode(item.sequence_mode),
             "strategy_type": item.strategy_type,
+            "target_market": self._normalize_target_market(getattr(item, "target_market", "cn")),
             "target_code": item.target_code,
             "target_name": item.target_name,
             "indicator_params": item.indicator_params or {},
@@ -1924,6 +2393,7 @@ class QuantService:
         return self._serialize_strategy(item)
 
     def create_strategy(self, payload: dict, owner_user_id: int) -> dict:
+        self._validate_strategy_payload(payload)
         item = QuantStrategyConfig(
             owner_user_id=owner_user_id,
             name=str(payload.get("name", "")).strip(),
@@ -1931,6 +2401,7 @@ class QuantService:
             strategy_engine=self._normalize_strategy_engine(payload.get("strategy_engine", "snapshot")),
             sequence_mode=self._normalize_sequence_mode(payload.get("sequence_mode", "single_target")),
             strategy_type=str(payload.get("strategy_type", "")).strip(),
+            target_market=self._normalize_target_market(payload.get("target_market", "cn")),
             target_code=str(payload.get("target_code", "")).strip(),
             target_name=str(payload.get("target_name", "")).strip(),
             indicator_params=payload.get("indicator_params") or {},
@@ -1960,12 +2431,14 @@ class QuantService:
 
     def update_strategy(self, strategy_id: int, payload: dict, owner_user_id: int) -> dict:
         item = self._get_owned_strategy(strategy_id, owner_user_id)
+        self._validate_strategy_payload(payload)
 
         item.name = str(payload.get("name", item.name)).strip()
         item.notes = str(payload.get("notes", item.notes or "")).strip()
         item.strategy_engine = self._normalize_strategy_engine(payload.get("strategy_engine", item.strategy_engine))
         item.sequence_mode = self._normalize_sequence_mode(payload.get("sequence_mode", item.sequence_mode))
         item.strategy_type = str(payload.get("strategy_type", item.strategy_type)).strip()
+        item.target_market = self._normalize_target_market(payload.get("target_market", item.target_market))
         item.target_code = str(payload.get("target_code", item.target_code)).strip()
         item.target_name = str(payload.get("target_name", item.target_name)).strip()
         item.indicator_params = payload.get("indicator_params") or item.indicator_params or {}
@@ -2023,6 +2496,7 @@ class QuantService:
             strategy_engine=self._normalize_strategy_engine(source.strategy_engine),
             sequence_mode=self._normalize_sequence_mode(source.sequence_mode),
             strategy_type=source.strategy_type,
+            target_market=self._normalize_target_market(getattr(source, "target_market", "cn")),
             target_code=source.target_code,
             target_name=source.target_name,
             indicator_params=source.indicator_params or {},
@@ -2113,16 +2587,16 @@ class QuantService:
                     ]
                 latest_trade_date = "-"
                 signal = None
-                note = "褰撴棩鏃犳搷浣?"
+                note = "当日无操作"
                 if candidate_events:
                     latest_trade_date = max(str(event["signal_date"]) for event in candidate_events)
                     today_events = [event for event in candidate_events if str(event["signal_date"]) == latest_trade_date]
                     if today_events:
                         signal = "blue"
-                        sample_targets = "銆?join(
+                        sample_targets = "、".join(
                             sorted({str(event["target_name"]) for event in today_events if event.get("target_name")})[:3]
                         )
-                        note = f"褰撴棩鏂板懡涓?{len(today_events)} 鏉′簨浠?{f'锛氬寘鍚?{sample_targets}' if sample_targets else ''}"
+                        note = f"当日新命中 {len(today_events)} 条事件{f'：包含 {sample_targets}' if sample_targets else ''}"
                 results.append(
                     {
                         "strategy_id": item.id,
@@ -2130,7 +2604,7 @@ class QuantService:
                         "target_name": item.target_name,
                         "latest_trade_date": latest_trade_date,
                         "signal": signal,
-                        "signal_text": "钃?" if signal else "鏃犳搷浣?",
+                        "signal_text": "蓝色" if signal else "无操作",
                         "note": note,
                     }
                 )
@@ -2140,8 +2614,17 @@ class QuantService:
                 snapshots = self._build_sequence_snapshots(item)
             else:
                 if item.strategy_type == "index":
-                    signal_candles = self.stock_service.list_index_daily_kline(item.target_code)
-                    snapshots = self._build_index_snapshots(item.target_name, item.indicator_params or {}, signal_candles)
+                    signal_candles = self.stock_service.list_index_daily_kline(
+                        item.target_code,
+                        market=self._normalize_target_market(getattr(item, "target_market", "cn")),
+                    )
+                    snapshots = self._build_index_snapshots_for_market(
+                        self._normalize_target_market(getattr(item, "target_market", "cn")),
+                        item.target_code,
+                        item.target_name,
+                        item.indicator_params or {},
+                        signal_candles,
+                    )
                 else:
                     signal_candles = self.stock_service.list_hfq_daily_kline(item.target_code)
                     snapshots = self._build_stock_snapshots(item.indicator_params or {}, signal_candles)
@@ -2287,8 +2770,17 @@ class QuantService:
                 snapshots = self._build_sequence_snapshots(item)
             else:
                 if item.strategy_type == "index":
-                    signal_candles = self.stock_service.list_index_daily_kline(item.target_code)
-                    snapshots = self._build_index_snapshots(item.target_name, item.indicator_params or {}, signal_candles)
+                    signal_candles = self.stock_service.list_index_daily_kline(
+                        item.target_code,
+                        market=self._normalize_target_market(getattr(item, "target_market", "cn")),
+                    )
+                    snapshots = self._build_index_snapshots_for_market(
+                        self._normalize_target_market(getattr(item, "target_market", "cn")),
+                        item.target_code,
+                        item.target_name,
+                        item.indicator_params or {},
+                        signal_candles,
+                    )
                 else:
                     signal_candles = self.stock_service.list_hfq_daily_kline(item.target_code)
                     snapshots = self._build_stock_snapshots(item.indicator_params or {}, signal_candles)
@@ -2364,6 +2856,29 @@ class QuantService:
     def _load_etf_price_rows(self, etf_code: str) -> list[dict]:
         return self._normalize_price_rows(self.stock_service.list_etf_daily_kline(etf_code))
 
+    def _load_index_backtest_price_rows(
+        self,
+        index_code: str,
+        index_name: str,
+        target_market: str = "cn",
+        signal_candles: list[dict] | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        normalized_market = self._normalize_target_market(target_market)
+        candles = (
+            signal_candles
+            if signal_candles is not None
+            else self.stock_service.list_index_daily_kline(index_code, market=normalized_market)
+        )
+        if normalized_market != "cn":
+            return candles, self._normalize_price_rows(candles)
+        if str(index_name or "").strip() == BEIJING50_INDEX_NAME:
+            return candles, self._normalize_price_rows(candles)
+
+        etf_code = INDEX_TO_ETF_CODE.get(index_name)
+        if not etf_code:
+            raise ValueError("unsupported index target")
+        return candles, self._load_etf_price_rows(etf_code)
+
     def _resolve_action(self, color: str | None, strategy: QuantStrategyConfig) -> str | None:
         if color is None:
             return None
@@ -2387,10 +2902,11 @@ class QuantService:
         if strategy_engine == "sequence":
             snapshots = self._build_sequence_snapshots(strategy)
             if strategy_type == "index":
-                etf_code = INDEX_TO_ETF_CODE.get(strategy.target_name)
-                if not etf_code:
-                    raise ValueError("unsupported index target")
-                price_rows = self._load_etf_price_rows(etf_code)
+                _signal_candles, price_rows = self._load_index_backtest_price_rows(
+                    strategy.target_code,
+                    strategy.target_name,
+                    self._normalize_target_market(getattr(strategy, "target_market", "cn")),
+                )
             elif strategy_type == "stock":
                 price_rows = self._normalize_price_rows(self.stock_service.list_daily_kline(strategy.target_code))
             elif strategy_type == "etf":
@@ -2399,12 +2915,18 @@ class QuantService:
                 raise ValueError("unsupported sequence target")
         else:
             if strategy_type == "index":
-                signal_candles = self.stock_service.list_index_daily_kline(strategy.target_code)
-                snapshots = self._build_index_snapshots(strategy.target_name, strategy.indicator_params or {}, signal_candles)
-                etf_code = INDEX_TO_ETF_CODE.get(strategy.target_name)
-                if not etf_code:
-                    raise ValueError("unsupported index target")
-                price_rows = self._load_etf_price_rows(etf_code)
+                signal_candles, price_rows = self._load_index_backtest_price_rows(
+                    strategy.target_code,
+                    strategy.target_name,
+                    self._normalize_target_market(getattr(strategy, "target_market", "cn")),
+                )
+                snapshots = self._build_index_snapshots_for_market(
+                    self._normalize_target_market(getattr(strategy, "target_market", "cn")),
+                    strategy.target_code,
+                    strategy.target_name,
+                    strategy.indicator_params or {},
+                    signal_candles,
+                )
             else:
                 signal_candles = self.stock_service.list_hfq_daily_kline(strategy.target_code)
                 snapshots = self._build_stock_snapshots(strategy.indicator_params or {}, signal_candles)

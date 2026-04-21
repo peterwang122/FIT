@@ -15,7 +15,7 @@ import {
   type Time,
   type WhitespaceData,
 } from 'lightweight-charts'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { QuantHighlightBand, QuantHistogramPoint, QuantIndicatorParams, QuantLinePoint } from '../types/quant'
 import type { KlineCandle } from '../types/stock'
@@ -23,6 +23,7 @@ import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 import { buildStockQuantFilterDataset } from '../utils/quantIndicators'
 
 type PanelKey = 'main' | 'turnover' | 'macd' | 'kdj' | 'wr' | 'rsi'
+type SubPanelKey = Exclude<PanelKey, 'main'>
 type MainOverlayMode = 'ma' | 'boll'
 type AnySeries = ISeriesApi<SeriesType, Time>
 type LineSeriesApi = ISeriesApi<'Line', Time>
@@ -30,6 +31,16 @@ type HistogramSeriesApi = ISeriesApi<'Histogram', Time>
 type CandleSeriesApi = ISeriesApi<'Candlestick', Time>
 type SummaryRow = { label: string; value: string; placeholder?: boolean }
 type SummaryCard = { key: string; title: string; hint?: string; rows: SummaryRow[] }
+type SubPanelOption = { key: SubPanelKey; label: string }
+
+const SUB_PANEL_OPTIONS: SubPanelOption[] = [
+  { key: 'macd', label: 'MACD' },
+  { key: 'kdj', label: 'KDJ' },
+  { key: 'wr', label: 'WR' },
+  { key: 'turnover', label: '换手率' },
+  { key: 'rsi', label: 'RSI' },
+]
+const ALL_PANEL_KEYS: PanelKey[] = ['main', 'turnover', 'macd', 'kdj', 'wr', 'rsi']
 
 const props = withDefaults(
   defineProps<{
@@ -63,6 +74,7 @@ const rsiContainerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 const overlayMode = ref<MainOverlayMode>('ma')
 const hoveredTradeDate = ref<string | null>(null)
+const visibleSubPanels = ref<SubPanelKey[]>(SUB_PANEL_OPTIONS.map((item) => item.key))
 
 const charts: Partial<Record<PanelKey, IChartApi>> = {}
 const primarySeriesMap = new Map<PanelKey, AnySeries>()
@@ -82,6 +94,51 @@ let isSyncingRange = false
 let isSyncingCrosshair = false
 let shouldResetVisibleRange = true
 let unsubs: Array<() => void> = []
+
+const visibleSubPanelSet = computed(() => new Set(visibleSubPanels.value))
+const visiblePanelOptions = computed(() => SUB_PANEL_OPTIONS)
+
+function isSubPanelVisible(panelKey: SubPanelKey) {
+  return visibleSubPanelSet.value.has(panelKey)
+}
+
+function getActivePanelKeys(): PanelKey[] {
+  return ['main', ...visiblePanelOptions.value.filter((item) => isSubPanelVisible(item.key)).map((item) => item.key)]
+}
+
+function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
+  if (panelKey === 'main') return mainContainerRef.value
+  if (panelKey === 'macd') return macdContainerRef.value
+  if (panelKey === 'kdj') return kdjContainerRef.value
+  if (panelKey === 'wr') return wrContainerRef.value
+  if (panelKey === 'turnover') return turnoverContainerRef.value
+  if (panelKey === 'rsi') return rsiContainerRef.value
+  return null
+}
+
+async function rebuildChartsPreservingRange() {
+  const visibleRange = charts.main?.timeScale().getVisibleLogicalRange() ?? null
+  const shouldResetAfterRender = shouldResetVisibleRange && !visibleRange
+  shouldResetVisibleRange = shouldResetAfterRender
+  disposeCharts()
+  await nextTick()
+  renderCharts()
+  if (visibleRange) {
+    shouldResetVisibleRange = false
+    charts.main?.timeScale().setVisibleLogicalRange(visibleRange)
+  }
+}
+
+function toggleSubPanel(panelKey: SubPanelKey) {
+  const current = new Set(visibleSubPanels.value)
+  if (current.has(panelKey)) {
+    current.delete(panelKey)
+  } else {
+    current.add(panelKey)
+  }
+  visibleSubPanels.value = SUB_PANEL_OPTIONS.filter((item) => current.has(item.key)).map((item) => item.key)
+  void rebuildChartsPreservingRange()
+}
 
 function formatDateText(value: Date): string {
   const year = value.getFullYear()
@@ -418,7 +475,7 @@ function syncVisibleRange(sourceKey: PanelKey, range: LogicalRange | null) {
   if (!range || isSyncingRange) return
   isSyncingRange = true
   try {
-    ;(['main', 'turnover', 'macd', 'kdj', 'wr', 'rsi'] as PanelKey[]).forEach((panelKey) => {
+    getActivePanelKeys().forEach((panelKey) => {
       if (panelKey !== sourceKey) charts[panelKey]?.timeScale().setVisibleLogicalRange(range)
     })
   } finally {
@@ -432,7 +489,7 @@ function syncCrosshair(sourceKey: PanelKey, param: MouseEventParams<Time>) {
   isSyncingCrosshair = true
   try {
     const time = param.time ? String(param.time) : null
-    ;(['main', 'turnover', 'macd', 'kdj', 'wr', 'rsi'] as PanelKey[]).forEach((panelKey) => {
+    getActivePanelKeys().forEach((panelKey) => {
       if (panelKey === sourceKey) return
       const chart = charts[panelKey]
       const series = primarySeriesMap.get(panelKey)
@@ -519,7 +576,7 @@ function syncHighlightBindings() {
 }
 
 function updateAllSeries() {
-  if (!mainCandleSeries || !macdDifSeries || !macdDeaSeries || !macdHistogramSeries || !wrSeries || !turnoverSeries || !rsiSeries || !kdjSeriesRefs.length) return
+  if (!mainCandleSeries) return
   const payload = indicatorPayload.value
   mainCandleSeries.setData(mainCandles.value)
   if (overlayMode.value === 'boll') {
@@ -531,39 +588,70 @@ function updateAllSeries() {
     mainMaSeries.forEach((series, index) => series.setData(toLineData(payload.ma[index]?.data ?? [])))
     bollSeriesRefs.forEach((series) => series.setData([]))
   }
-  macdDifSeries.setData(toLineData(payload.macd.dif.data))
-  macdDeaSeries.setData(toLineData(payload.macd.dea.data))
-  macdHistogramSeries.setData(toHistogramData(payload.macd.histogram))
-  kdjSeriesRefs[0]?.setData(toLineData(payload.kdj.k.data))
-  kdjSeriesRefs[1]?.setData(toLineData(payload.kdj.d.data))
-  kdjSeriesRefs[2]?.setData(toLineData(payload.kdj.j.data))
-  wrSeries.setData(toLineData(payload.wr.data))
-  rsiSeries.setData(toLineData(payload.rsi.data))
-  turnoverSeries.setData(
-    sortedCandles.value.map((item) => ({
-      time: item.trade_date as Time,
-      value: item.turnover_rate,
-    })),
-  )
 
   panelValueMaps.set('main', new Map(sortedCandles.value.map((item) => [item.trade_date, item.close])))
-  panelValueMaps.set('macd', buildValueMap(payload.macd.dif.data))
-  panelValueMaps.set('kdj', buildValueMap(payload.kdj.k.data))
-  panelValueMaps.set('wr', buildValueMap(payload.wr.data))
-  panelValueMaps.set('rsi', buildValueMap(payload.rsi.data))
-  panelValueMaps.set('turnover', new Map(sortedCandles.value.map((item) => [item.trade_date, item.turnover_rate])))
+
+  if (isSubPanelVisible('macd')) {
+    if (!macdDifSeries || !macdDeaSeries || !macdHistogramSeries) return
+    macdDifSeries.setData(toLineData(payload.macd.dif.data))
+    macdDeaSeries.setData(toLineData(payload.macd.dea.data))
+    macdHistogramSeries.setData(toHistogramData(payload.macd.histogram))
+    panelValueMaps.set('macd', buildValueMap(payload.macd.dif.data))
+  } else {
+    panelValueMaps.delete('macd')
+  }
+
+  if (isSubPanelVisible('kdj')) {
+    if (!kdjSeriesRefs.length) return
+    kdjSeriesRefs[0]?.setData(toLineData(payload.kdj.k.data))
+    kdjSeriesRefs[1]?.setData(toLineData(payload.kdj.d.data))
+    kdjSeriesRefs[2]?.setData(toLineData(payload.kdj.j.data))
+    panelValueMaps.set('kdj', buildValueMap(payload.kdj.k.data))
+  } else {
+    panelValueMaps.delete('kdj')
+  }
+
+  if (isSubPanelVisible('wr')) {
+    if (!wrSeries) return
+    wrSeries.setData(toLineData(payload.wr.data))
+    panelValueMaps.set('wr', buildValueMap(payload.wr.data))
+  } else {
+    panelValueMaps.delete('wr')
+  }
+
+  if (isSubPanelVisible('turnover')) {
+    if (!turnoverSeries) return
+    turnoverSeries.setData(
+      sortedCandles.value.map((item) => ({
+        time: item.trade_date as Time,
+        value: item.turnover_rate,
+      })),
+    )
+    panelValueMaps.set('turnover', new Map(sortedCandles.value.map((item) => [item.trade_date, item.turnover_rate])))
+  } else {
+    panelValueMaps.delete('turnover')
+  }
+
+  if (isSubPanelVisible('rsi')) {
+    if (!rsiSeries) return
+    rsiSeries.setData(toLineData(payload.rsi.data))
+    panelValueMaps.set('rsi', buildValueMap(payload.rsi.data))
+  } else {
+    panelValueMaps.delete('rsi')
+  }
 }
 
 function renderCharts() {
-  if (!mainContainerRef.value || !macdContainerRef.value || !kdjContainerRef.value || !wrContainerRef.value || !turnoverContainerRef.value || !rsiContainerRef.value) return
+  const activePanelKeys = getActivePanelKeys()
+  if (activePanelKeys.some((panelKey) => !getPanelContainer(panelKey))) return
   try {
     renderError.value = ''
-    charts.main = createBaseChart(mainContainerRef.value, false)
-    charts.turnover = createBaseChart(turnoverContainerRef.value, true)
-    charts.macd = createBaseChart(macdContainerRef.value, false)
-    charts.kdj = createBaseChart(kdjContainerRef.value, false)
-    charts.wr = createBaseChart(wrContainerRef.value, false)
-    charts.rsi = createBaseChart(rsiContainerRef.value, false)
+    charts.main = createBaseChart(mainContainerRef.value!, false)
+    if (isSubPanelVisible('turnover')) charts.turnover = createBaseChart(turnoverContainerRef.value!, true)
+    if (isSubPanelVisible('macd')) charts.macd = createBaseChart(macdContainerRef.value!, false)
+    if (isSubPanelVisible('kdj')) charts.kdj = createBaseChart(kdjContainerRef.value!, false)
+    if (isSubPanelVisible('wr')) charts.wr = createBaseChart(wrContainerRef.value!, false)
+    if (isSubPanelVisible('rsi')) charts.rsi = createBaseChart(rsiContainerRef.value!, false)
 
     mainCandleSeries = addCandles(charts.main)
     mainMaSeries = indicatorPayload.value.ma.map((item) => addLineSeries(charts.main!, item.color, 2))
@@ -572,26 +660,28 @@ function renderCharts() {
       addLineSeries(charts.main, indicatorPayload.value.boll.middle.color, 1),
       addLineSeries(charts.main, indicatorPayload.value.boll.lower.color, 1),
     ]
-    macdDifSeries = addLineSeries(charts.macd, indicatorPayload.value.macd.dif.color, 2)
-    macdDeaSeries = addLineSeries(charts.macd, indicatorPayload.value.macd.dea.color, 2)
-    macdHistogramSeries = addHistogramSeries(charts.macd)
-    kdjSeriesRefs = [
-      addLineSeries(charts.kdj, indicatorPayload.value.kdj.k.color, 2),
-      addLineSeries(charts.kdj, indicatorPayload.value.kdj.d.color, 2),
-      addLineSeries(charts.kdj, indicatorPayload.value.kdj.j.color, 2),
-    ]
-    wrSeries = addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2)
-    turnoverSeries = addLineSeries(charts.turnover, '#ec4899', 2)
-    rsiSeries = addLineSeries(charts.rsi, indicatorPayload.value.rsi.color, 2)
+    macdDifSeries = charts.macd ? addLineSeries(charts.macd, indicatorPayload.value.macd.dif.color, 2) : null
+    macdDeaSeries = charts.macd ? addLineSeries(charts.macd, indicatorPayload.value.macd.dea.color, 2) : null
+    macdHistogramSeries = charts.macd ? addHistogramSeries(charts.macd) : null
+    kdjSeriesRefs = charts.kdj
+      ? [
+          addLineSeries(charts.kdj, indicatorPayload.value.kdj.k.color, 2),
+          addLineSeries(charts.kdj, indicatorPayload.value.kdj.d.color, 2),
+          addLineSeries(charts.kdj, indicatorPayload.value.kdj.j.color, 2),
+        ]
+      : []
+    wrSeries = charts.wr ? addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2) : null
+    turnoverSeries = charts.turnover ? addLineSeries(charts.turnover, '#ec4899', 2) : null
+    rsiSeries = charts.rsi ? addLineSeries(charts.rsi, indicatorPayload.value.rsi.color, 2) : null
 
     primarySeriesMap.set('main', mainCandleSeries)
-    primarySeriesMap.set('turnover', turnoverSeries)
-    primarySeriesMap.set('macd', macdDifSeries)
-    primarySeriesMap.set('kdj', kdjSeriesRefs[0])
-    primarySeriesMap.set('wr', wrSeries)
-    primarySeriesMap.set('rsi', rsiSeries)
+    if (turnoverSeries) primarySeriesMap.set('turnover', turnoverSeries)
+    if (macdDifSeries) primarySeriesMap.set('macd', macdDifSeries)
+    if (kdjSeriesRefs[0]) primarySeriesMap.set('kdj', kdjSeriesRefs[0])
+    if (wrSeries) primarySeriesMap.set('wr', wrSeries)
+    if (rsiSeries) primarySeriesMap.set('rsi', rsiSeries)
 
-    ;(['main', 'turnover', 'macd', 'kdj', 'wr', 'rsi'] as PanelKey[]).forEach((panelKey) => {
+    activePanelKeys.forEach((panelKey) => {
       const chart = charts[panelKey]
       if (chart) attachSync(panelKey, chart)
     })
@@ -614,6 +704,30 @@ function renderCharts() {
     renderError.value = `量化图表渲染失败：${String(error)}`
     console.error(error)
   }
+}
+
+function disposeCharts() {
+  unsubs.forEach((dispose) => dispose())
+  unsubs = []
+  cleanupHighlightBindings()
+
+  ALL_PANEL_KEYS.forEach((panelKey) => {
+    charts[panelKey]?.remove()
+    delete charts[panelKey]
+  })
+
+  primarySeriesMap.clear()
+  panelValueMaps.clear()
+  mainCandleSeries = null
+  mainMaSeries = []
+  bollSeriesRefs = []
+  macdDifSeries = null
+  macdDeaSeries = null
+  macdHistogramSeries = null
+  kdjSeriesRefs = []
+  wrSeries = null
+  turnoverSeries = null
+  rsiSeries = null
 }
 
 watch(mainCandles, () => {
@@ -654,25 +768,7 @@ watch(
 onMounted(renderCharts)
 
 onBeforeUnmount(() => {
-  unsubs.forEach((dispose) => dispose())
-  unsubs = []
-  cleanupHighlightBindings()
-  ;(['main', 'turnover', 'macd', 'kdj', 'wr', 'rsi'] as PanelKey[]).forEach((panelKey) => {
-    charts[panelKey]?.remove()
-    delete charts[panelKey]
-  })
-  primarySeriesMap.clear()
-  panelValueMaps.clear()
-  mainCandleSeries = null
-  mainMaSeries = []
-  bollSeriesRefs = []
-  macdDifSeries = null
-  macdDeaSeries = null
-  macdHistogramSeries = null
-  kdjSeriesRefs = []
-  wrSeries = null
-  turnoverSeries = null
-  rsiSeries = null
+  disposeCharts()
   hoveredTradeDate.value = null
   shouldResetVisibleRange = true
 })
@@ -757,7 +853,21 @@ onBeforeUnmount(() => {
       <div ref="mainContainerRef" class="quant-panel-chart quant-panel-chart-main"></div>
     </div>
 
-    <div class="quant-panel quant-panel-macd-block">
+    <div class="quant-subpanel-switches">
+      <span class="quant-subpanel-switches-label">副图指标</span>
+      <button
+        v-for="option in visiblePanelOptions"
+        :key="option.key"
+        type="button"
+        class="quant-switch"
+        :class="{ active: isSubPanelVisible(option.key) }"
+        @click="toggleSubPanel(option.key)"
+      >
+        {{ option.label }}
+      </button>
+    </div>
+
+    <div v-if="isSubPanelVisible('macd')" class="quant-panel quant-panel-macd-block">
       <div class="quant-panel-head">
         <h3>MACD</h3>
         <div class="quant-legend">
@@ -767,7 +877,7 @@ onBeforeUnmount(() => {
       <div ref="macdContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
 
-    <div class="quant-panel quant-panel-kdj-block">
+    <div v-if="isSubPanelVisible('kdj')" class="quant-panel quant-panel-kdj-block">
       <div class="quant-panel-head">
         <h3>KDJ</h3>
         <div class="quant-legend">
@@ -777,7 +887,7 @@ onBeforeUnmount(() => {
       <div ref="kdjContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
 
-    <div class="quant-panel quant-panel-wr-block">
+    <div v-if="isSubPanelVisible('wr')" class="quant-panel quant-panel-wr-block">
       <div class="quant-panel-head">
         <h3>WR</h3>
         <div class="quant-legend">
@@ -787,7 +897,7 @@ onBeforeUnmount(() => {
       <div ref="wrContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
 
-    <div class="quant-panel quant-panel-turnover-block">
+    <div v-if="isSubPanelVisible('turnover')" class="quant-panel quant-panel-turnover-block">
       <div class="quant-panel-head">
         <h3>换手率</h3>
         <div class="quant-legend">
@@ -797,7 +907,7 @@ onBeforeUnmount(() => {
       <div ref="turnoverContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
 
-    <div class="quant-panel quant-panel-rsi-block">
+    <div v-if="isSubPanelVisible('rsi')" class="quant-panel quant-panel-rsi-block">
       <div class="quant-panel-head">
         <h3>RSI</h3>
         <div class="quant-legend">
@@ -884,12 +994,24 @@ onBeforeUnmount(() => {
 }
 
 .quant-chart-switches,
+.quant-subpanel-switches,
 .quant-detail-list,
 .quant-legend {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.quant-subpanel-switches {
+  order: 2;
+  padding: 2px 0;
+}
+
+.quant-subpanel-switches-label {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .quant-detail-grid {
@@ -954,7 +1076,7 @@ onBeforeUnmount(() => {
 }
 
 .quant-panel-turnover-block {
-  order: 2;
+  order: 6;
 }
 
 .quant-panel-macd-block {
@@ -970,7 +1092,7 @@ onBeforeUnmount(() => {
 }
 
 .quant-panel-rsi-block {
-  order: 6;
+  order: 7;
 }
 
 .quant-panel-head {

@@ -1,6 +1,7 @@
 import { http } from './client'
 import type {
   DbStatus,
+  ForexCollectResult,
   IndexDashboardResponse,
   FuturesBasisPoint,
   IndexBreadthPoint,
@@ -26,6 +27,7 @@ import type {
   QuantStrategyConfig,
   QuantStrategyPayload,
   QuantStrategyType,
+  QuantTargetMarket,
   QuantTargetOption,
 } from '../types/quant'
 
@@ -71,19 +73,27 @@ export async function fetchEtfKline(etfCode: string) {
   return data.data
 }
 
-export async function fetchQuantTargets(targetType: 'index' | 'stock' | 'etf', keyword = '', limit = 50) {
+export async function fetchQuantTargets(
+  targetType: 'index' | 'stock' | 'etf',
+  keyword = '',
+  limit = 50,
+  market: QuantTargetMarket = 'cn',
+) {
   const { data } = await http.get<ApiResponse<QuantTargetOption[]>>('/stocks/quant/targets', {
     params: {
       target_type: targetType,
       keyword,
       limit,
+      market,
     },
   })
   return data.data
 }
 
-export async function fetchIndexOptions() {
-  const { data } = await http.get<ApiResponse<MarketOption[]>>('/stocks/indexes/options')
+export async function fetchIndexOptions(market: QuantTargetMarket = 'cn') {
+  const { data } = await http.get<ApiResponse<MarketOption[]>>('/stocks/indexes/options', {
+    params: { market },
+  })
   return data.data
 }
 
@@ -112,6 +122,7 @@ export async function fetchIndexDashboard(
     mode?: 'recent' | 'full'
     startDate?: string
     endDate?: string
+    market?: QuantTargetMarket
   } = {},
 ) {
   const { data } = await http.get<ApiResponse<IndexDashboardResponse>>('/stocks/quant/index-dashboard', {
@@ -120,6 +131,7 @@ export async function fetchIndexDashboard(
       mode: options.mode ?? 'recent',
       start_date: options.startDate,
       end_date: options.endDate,
+      market: options.market ?? 'cn',
     },
   })
   return data.data
@@ -132,20 +144,27 @@ export async function fetchCffexNetPositions(tradeDate?: string) {
   return data.data
 }
 
-export async function fetchCffexNetPositionSeries(startDate?: string) {
+export async function fetchCffexNetPositionSeries(startDate?: string, endDate?: string) {
   const { data } = await http.get<ApiResponse<NetPositionSeries>>('/stocks/cffex/net-position-series', {
     params: {
       start_date: startDate,
+      end_date: endDate,
     },
   })
   return data.data
 }
 
-export async function fetchIndexKline(indexCode: string, startDate?: string, endDate?: string) {
+export async function fetchIndexKline(
+  indexCode: string,
+  startDate?: string,
+  endDate?: string,
+  market: QuantTargetMarket = 'cn',
+) {
   const { data } = await http.get<ApiResponse<KlineCandle[]>>(`/stocks/indexes/${indexCode}/kline`, {
     params: {
       start_date: startDate,
       end_date: endDate,
+      market,
     },
   })
   return data.data
@@ -163,6 +182,11 @@ export async function fetchForexKline(symbolCode: string, startDate?: string, en
       end_date: endDate,
     },
   })
+  return data.data
+}
+
+export async function collectForexSymbol(symbolCode: string) {
+  const { data } = await http.post<ApiResponse<ForexCollectResult>>(`/stocks/forex/${symbolCode}/collect`)
   return data.data
 }
 

@@ -7,7 +7,14 @@ import { fetchQuantStrategies, fetchSymbols } from '../api/stocks'
 import { useAuthStore } from '../stores/auth'
 import type { QuantStrategyConfig } from '../types/quant'
 import type { StockSymbol } from '../types/stock'
-import type { ScheduledTask, ScheduledTaskRun, ScheduledTaskType, TaskMarketScope, TaskPayload } from '../types/tasks'
+import type {
+  CollectionCollectorKey,
+  ScheduledTask,
+  ScheduledTaskRun,
+  ScheduledTaskType,
+  TaskMarketScope,
+  TaskPayload,
+} from '../types/tasks'
 
 type TaskDraft = {
   name: string
@@ -15,6 +22,10 @@ type TaskDraft = {
   market_scope: TaskMarketScope
   schedule_time: string
   enabled: boolean
+  collector_key: CollectionCollectorKey
+  target_type: 'stock' | 'index' | null
+  target_code: string
+  target_name: string
   stock_code: string
   strategy_ids: number[]
 }
@@ -25,7 +36,225 @@ type SourceStrategyInfo = {
   username: string
 }
 
-let collectionSearchTimer: number | null = null
+type CollectionTargetOption = {
+  value: CollectionCollectorKey
+  label: string
+  group: string
+  marketScope: TaskMarketScope
+  targetType: 'stock' | 'index' | null
+  requiresTargetSelection: boolean
+  description: string
+  fixedTargetCode?: string
+  fixedTargetName?: string
+}
+
+const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
+  {
+    value: 'stock_hfq_single',
+    label: 'A股股票单只 HFQ 采集',
+    group: '股票专项',
+    marketScope: 'cn_stock',
+    targetType: 'stock',
+    requiresTargetSelection: true,
+    description: '通过股票搜索选择单只 A 股，继续走现有后复权采集链路。',
+  },
+  {
+    value: 'stock_daily',
+    label: '股票日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行文档定义的股票日更整批采集，无需选择具体标的。',
+  },
+  {
+    value: 'index_cn_daily',
+    label: 'A股指数日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行 A 股指数日更整批采集，无需选择具体指数。',
+  },
+  {
+    value: 'index_bj50_daily',
+    label: '北证50日更',
+    group: '独立日更',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '单独执行北证50日更采集，避免与 A 股指数主链任务互相影响。',
+  },
+  {
+    value: 'cffex_daily',
+    label: '中金所会员持仓日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行中金所会员持仓日更整批采集。',
+  },
+  {
+    value: 'forex_daily',
+    label: '汇率日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行汇率日更整批采集。',
+  },
+  {
+    value: 'usd_index_daily',
+    label: '美元指数日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美元指数日更整批采集。',
+  },
+  {
+    value: 'futures_daily',
+    label: '中金所期货日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行中金所期货日更整批采集。',
+  },
+  {
+    value: 'etf_daily',
+    label: 'ETF 日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行 ETF 日更整批采集。',
+  },
+  {
+    value: 'option_daily',
+    label: '中金所期权日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行中金所期权日更整批采集。',
+  },
+  {
+    value: 'quant_index_daily',
+    label: '量化指数看板日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行量化指数看板日更整批采集。',
+  },
+  {
+    value: 'index_hk_daily',
+    label: '港股指数日更',
+    group: '独立日更',
+    marketScope: 'hk_index',
+    targetType: 'index',
+    requiresTargetSelection: false,
+    description: '执行港股指数全市场日更采集，按港股交易日自动调度。',
+    fixedTargetCode: 'ALL_HK_INDEX',
+    fixedTargetName: '港股指数全市场',
+  },
+  {
+    value: 'index_us_daily',
+    label: '美股指数日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: 'index',
+    requiresTargetSelection: false,
+    description: '执行美股指数全市场日更采集，按美股交易日自动调度。',
+    fixedTargetCode: 'ALL_US_INDEX',
+    fixedTargetName: '美股指数全市场',
+  },
+  {
+    value: 'hk_index_futures_daily',
+    label: '港股股指期货日更',
+    group: '独立日更',
+    marketScope: 'hk_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行港股股指期货日更整批采集，按港股交易日自动调度。',
+  },
+  {
+    value: 'us_index_futures_daily',
+    label: '美股股指期货日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美股股指期货日更整批采集，按美股交易日自动调度。',
+  },
+  {
+    value: 'index_qvix_daily',
+    label: 'QVIX 日更',
+    group: '独立日更',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行 QVIX 日更整批采集，按 A 股交易日自动调度。',
+  },
+  {
+    value: 'index_news_sentiment_daily',
+    label: '新闻情绪日更',
+    group: '独立日更',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行新闻情绪日更整批采集，按 A 股交易日自动调度。',
+  },
+  {
+    value: 'index_us_vix_daily',
+    label: '美股 VIX 日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美股 VIX 日更整批采集，按美股交易日自动调度。',
+  },
+  {
+    value: 'index_us_fear_greed_daily',
+    label: '美股恐贪指数日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美股恐贪指数日更整批采集，按美股交易日自动调度。',
+  },
+  {
+    value: 'index_us_hedge_proxy_daily',
+    label: '美股对冲基金代理日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美股对冲基金代理日更整批采集，按美股交易日自动调度。',
+  },
+]
+
+const COLLECTION_GROUPS = Array.from(new Set(COLLECTION_TARGET_OPTIONS.map((item) => item.group))).map((group) => ({
+  group,
+  options: COLLECTION_TARGET_OPTIONS.filter((item) => item.group === group),
+}))
+
+function createDefaultDraft(taskType: ScheduledTaskType): TaskDraft {
+  return {
+    name: '',
+    task_type: taskType,
+    market_scope: 'cn_stock',
+    schedule_time: '09:00',
+    enabled: true,
+    collector_key: 'stock_hfq_single',
+    target_type: 'stock',
+    target_code: '',
+    target_name: '',
+    stock_code: '',
+    strategy_ids: [],
+  }
+}
 
 function extractErrorMessage(error: unknown, fallback: string) {
   if (typeof error === 'object' && error !== null) {
@@ -40,29 +269,41 @@ function extractErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+function getCollectionOption(key: CollectionCollectorKey | null | undefined) {
+  return COLLECTION_TARGET_OPTIONS.find((item) => item.value === key) ?? COLLECTION_TARGET_OPTIONS[0]
+}
+
+function inferCollectorKey(task: ScheduledTask): CollectionCollectorKey {
+  if (task.collector_key) return task.collector_key
+  if (task.market_scope === 'hk_index') return 'index_hk_daily'
+  if (task.market_scope === 'us_index') return 'index_us_daily'
+  return 'stock_hfq_single'
+}
+
 function cloneTaskToDraft(task: ScheduledTask): TaskDraft {
+  const collectorKey = task.task_type === 'collection' ? inferCollectorKey(task) : 'stock_hfq_single'
   return {
     name: task.name,
     task_type: task.task_type,
     market_scope: task.market_scope,
     schedule_time: task.schedule_time,
     enabled: task.enabled,
+    collector_key: collectorKey,
+    target_type: task.target_type,
+    target_code: task.target_code ?? task.stock_code ?? '',
+    target_name: task.target_name ?? task.stock_name ?? '',
     stock_code: task.stock_code ?? '',
     strategy_ids: [...task.strategy_ids],
   }
 }
 
-function createDefaultDraft(taskType: ScheduledTaskType): TaskDraft {
-  return {
-    name: '',
-    task_type: taskType,
-    market_scope: 'cn_stock',
-    schedule_time: '09:00',
-    enabled: true,
-    stock_code: '',
-    strategy_ids: [],
-  }
+function formatMarketScope(scope: TaskMarketScope) {
+  if (scope === 'hk_index') return '港股交易日'
+  if (scope === 'us_index') return '美股交易日'
+  return 'A股交易日'
 }
+
+let collectionSearchTimer: number | null = null
 
 const authStore = useAuthStore()
 const route = useRoute()
@@ -92,6 +333,15 @@ const currentTask = computed(() => tasks.value.find((item) => item.id === select
 const canCreateCollection = computed(() => authStore.isRoot)
 const canCreateNotification = computed(() => authStore.isAuthenticated && !authStore.isGuest)
 const targetEmail = computed(() => authStore.user?.email ?? null)
+const currentCollectionTargetOption = computed(() => getCollectionOption(draft.collector_key))
+const currentCollectionLabel = computed(() => currentCollectionTargetOption.value.label)
+const isSingleStockCollection = computed(
+  () => draft.task_type === 'collection' && currentCollectionTargetOption.value.requiresTargetSelection,
+)
+const selectedCollectionTargetLabel = computed(() => {
+  if (!draft.target_code.trim()) return ''
+  return draft.target_name.trim() || selectedCollectionName.value.trim() || '未匹配到名称'
+})
 
 const formTitle = computed(() => {
   if (isCreating.value) {
@@ -103,7 +353,7 @@ const formTitle = computed(() => {
 const canSave = computed(() => {
   if (!draft.name.trim() || !draft.schedule_time.trim()) return false
   if (draft.task_type === 'collection') {
-    return canCreateCollection.value && Boolean(draft.stock_code.trim())
+    return canCreateCollection.value && (!currentCollectionTargetOption.value.requiresTargetSelection || Boolean(draft.target_code.trim()))
   }
   return canCreateNotification.value && Boolean(targetEmail.value) && draft.strategy_ids.length > 0
 })
@@ -120,13 +370,35 @@ function clearSourceStrategy() {
   sourceStrategy.value = null
 }
 
+function clearCollectionTarget() {
+  draft.target_code = ''
+  draft.target_name = ''
+  draft.stock_code = ''
+  resetCollectionPicker()
+}
+
+function applyCollectionOptionDefaults(collectorKey: CollectionCollectorKey) {
+  const option = getCollectionOption(collectorKey)
+  draft.collector_key = option.value
+  draft.market_scope = option.marketScope
+  draft.target_type = option.targetType
+  if (option.requiresTargetSelection) {
+    clearCollectionTarget()
+    return
+  }
+  draft.target_code = option.fixedTargetCode ?? ''
+  draft.target_name = option.fixedTargetName ?? ''
+  draft.stock_code = ''
+  resetCollectionPicker()
+}
+
 function applyDraftTask(taskType: ScheduledTaskType) {
   if (taskType === 'collection') {
     draft.strategy_ids = []
+    applyCollectionOptionDefaults(draft.collector_key)
     return
   }
-  draft.stock_code = ''
-  resetCollectionPicker()
+  clearCollectionTarget()
   clearSourceStrategy()
 }
 
@@ -137,27 +409,36 @@ function toPayload(): TaskPayload {
     market_scope: draft.market_scope,
     schedule_time: draft.schedule_time,
     enabled: draft.enabled,
-    stock_code: draft.task_type === 'collection' ? draft.stock_code.trim() || null : null,
+    collector_key: draft.task_type === 'collection' ? draft.collector_key : null,
+    target_type: draft.task_type === 'collection' ? draft.target_type : null,
+    target_code: draft.task_type === 'collection' ? draft.target_code.trim() || null : null,
+    target_name: draft.task_type === 'collection' ? draft.target_name.trim() || null : null,
+    stock_code:
+      draft.task_type === 'collection' && currentCollectionTargetOption.value.requiresTargetSelection
+        ? draft.stock_code.trim() || null
+        : null,
     strategy_ids: draft.task_type === 'notification' ? draft.strategy_ids : [],
   }
 }
 
 async function syncCollectionPickerFromCode(stockCode: string, stockName?: string | null) {
   const normalizedCode = stockCode.trim()
+  draft.target_type = 'stock'
+  draft.target_code = normalizedCode
   draft.stock_code = normalizedCode
+  draft.target_name = stockName?.trim() || ''
   collectionKeyword.value = normalizedCode
-  selectedCollectionName.value = stockName?.trim() || ''
-  if (!normalizedCode || selectedCollectionName.value) {
-    return
-  }
+  selectedCollectionName.value = draft.target_name
+  if (!normalizedCode || draft.target_name) return
   try {
     const items = await fetchSymbols(20, normalizedCode)
     const exactMatch = items.find((item) => item.ts_code === normalizedCode)
     if (exactMatch) {
+      draft.target_name = exactMatch.stock_name
       selectedCollectionName.value = exactMatch.stock_name
     }
   } catch {
-    // Keep the stock code visible even if the name lookup fails.
+    // keep code visible if lookup fails
   }
 }
 
@@ -170,6 +451,7 @@ function resetForCreate(taskType: ScheduledTaskType, nextSourceStrategy: SourceS
   sourceStrategy.value = nextSourceStrategy
   message.value = ''
   error.value = ''
+  applyDraftTask(draft.task_type)
 }
 
 async function loadRuns(taskId: number) {
@@ -191,8 +473,8 @@ async function selectTask(taskId: number) {
   clearSourceStrategy()
   Object.assign(draft, cloneTaskToDraft(target))
   applyDraftTask(draft.task_type)
-  if (draft.task_type === 'collection') {
-    await syncCollectionPickerFromCode(draft.stock_code, target.stock_name)
+  if (draft.task_type === 'collection' && currentCollectionTargetOption.value.requiresTargetSelection) {
+    await syncCollectionPickerFromCode(draft.target_code || draft.stock_code, target.target_name || target.stock_name)
   }
   message.value = ''
   error.value = ''
@@ -219,6 +501,7 @@ async function loadTasks(preferredTaskId?: number | null, preserveCreateState = 
         Object.assign(draft, createDefaultDraft(canCreateCollection.value ? 'collection' : 'notification'))
         resetCollectionPicker()
         clearSourceStrategy()
+        applyDraftTask(draft.task_type)
       }
     }
   } catch (loadError) {
@@ -269,14 +552,20 @@ function scheduleCollectionSearch(keyword: string) {
 function handleCollectionInput(event: Event) {
   const value = (event.target as HTMLInputElement).value
   collectionKeyword.value = value
+  draft.target_type = 'stock'
+  draft.target_code = value.trim()
   draft.stock_code = value.trim()
+  draft.target_name = ''
   selectedCollectionName.value = ''
   showCollectionSuggestions.value = Boolean(value.trim())
   scheduleCollectionSearch(value)
 }
 
 function pickCollectionSymbol(symbol: StockSymbol) {
+  draft.target_type = 'stock'
+  draft.target_code = symbol.ts_code
   draft.stock_code = symbol.ts_code
+  draft.target_name = symbol.stock_name
   collectionKeyword.value = symbol.ts_code
   selectedCollectionName.value = symbol.stock_name
   collectionSuggestions.value = []
@@ -308,6 +597,8 @@ async function applyRoutePrefill() {
     name: sourceStrategyName,
     username: sourceUsername,
   })
+  draft.collector_key = 'stock_hfq_single'
+  applyCollectionOptionDefaults(draft.collector_key)
   await syncCollectionPickerFromCode(stockCode, stockName)
 
   const nextQuery = { ...route.query }
@@ -404,6 +695,14 @@ watch(
 )
 
 watch(
+  () => draft.collector_key,
+  (collectorKey, previousKey) => {
+    if (draft.task_type !== 'collection' || collectorKey === previousKey) return
+    applyCollectionOptionDefaults(collectorKey)
+  },
+)
+
+watch(
   () => [
     route.query.task_type,
     route.query.stock_code,
@@ -444,7 +743,7 @@ onUnmounted(() => {
       <div class="progress-section-head">
         <div class="progress-section-copy">
           <h3>我的任务</h3>
-          <p class="muted">任务按当前登录用户隔离；仅 root 可以创建采集任务。</p>
+          <p class="muted">任务按当前登录用户隔离；root 可创建采集任务，普通用户可创建通知任务。</p>
         </div>
         <div class="compact-toolbar">
           <button v-if="canCreateCollection" class="btn" @click="resetForCreate('collection')">新建采集任务</button>
@@ -468,9 +767,10 @@ onUnmounted(() => {
           @click="selectTask(item.id)"
         >
           <strong>{{ item.name }}</strong>
-          <span>{{ item.task_type === 'collection' ? '采集任务' : '通知任务' }} / {{ item.schedule_time }}</span>
+          <span>{{ item.task_type === 'collection' ? (item.collection_label || '采集任务') : '通知任务' }} / {{ item.schedule_time }}</span>
           <span v-if="item.task_type === 'collection'">
-            {{ item.stock_code }}<template v-if="item.stock_name"> / {{ item.stock_name }}</template>
+            {{ formatMarketScope(item.market_scope) }}
+            <template v-if="item.target_code && item.target_name"> / {{ item.target_code }} / {{ item.target_name }}</template>
           </span>
           <span v-else>{{ item.strategy_names.length }} 条策略 / {{ item.target_email || '未设置邮箱' }}</span>
           <span>{{ item.enabled ? '启用中' : '已停用' }} / {{ item.last_run_status || '尚未执行' }}</span>
@@ -488,10 +788,10 @@ onUnmounted(() => {
             <h3>{{ formTitle }}</h3>
             <p class="muted">
               <template v-if="draft.task_type === 'collection'">
-                每天到点会自动触发一次后复权采集，一条任务只负责一只股票。
+                采集任务会在对应市场的自动调度时间运行；手动“立即执行”会直接触发，不受休市日跳过规则影响。
               </template>
               <template v-else>
-                每天到点会给当前账户邮箱发送一封策略汇总邮件，即使没有红蓝信号也会写“无操作”。
+                通知任务会按当前账户邮箱发送策略汇总邮件，即使当天没有信号也会写明“无操作”。
               </template>
             </p>
           </div>
@@ -503,7 +803,11 @@ onUnmounted(() => {
         <div class="quant-strategy-form">
           <label class="quant-field">
             <span class="quant-field-label">任务名称</span>
-            <input v-model="draft.name" class="input" placeholder="例如：每日 600519 后复权采集" />
+            <input
+              v-model="draft.name"
+              class="input"
+              :placeholder="draft.task_type === 'collection' ? '例如：美股 VIX 日更' : '例如：每日策略通知'"
+            />
           </label>
           <label class="quant-field">
             <span class="quant-field-label">任务类型</span>
@@ -532,47 +836,68 @@ onUnmounted(() => {
           </div>
 
           <label class="quant-field">
-            <span class="quant-field-label">采集股票</span>
-            <div class="search-wrap">
-              <input
-                :value="collectionKeyword"
-                class="input"
-                placeholder="输入股票代码或名称后选择"
-                @focus="showCollectionSuggestions = Boolean(collectionKeyword.trim())"
-                @input="handleCollectionInput"
-                @blur="handleCollectionBlur"
-              />
-              <ul v-if="showCollectionSuggestions" class="suggest-list task-suggest-list">
-                <li v-if="collectionSuggestionLoading">
-                  <span>搜索中...</span>
-                </li>
-                <li v-else-if="!collectionSuggestions.length">
-                  <span>没有匹配结果</span>
-                </li>
-                <template v-else>
-                  <li
-                    v-for="item in collectionSuggestions"
-                    :key="item.ts_code"
-                    @mousedown.prevent="pickCollectionSymbol(item)"
-                  >
-                    <span>{{ item.ts_code }}</span>
-                    <strong>{{ item.stock_name }}</strong>
-                  </li>
-                </template>
-              </ul>
-            </div>
+            <span class="quant-field-label">采集对象</span>
+            <select v-model="draft.collector_key" class="input">
+              <optgroup v-for="group in COLLECTION_GROUPS" :key="group.group" :label="group.group">
+                <option v-for="option in group.options" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </optgroup>
+            </select>
           </label>
 
-          <div v-if="draft.stock_code" class="task-stock-pill">
-            <strong>{{ draft.stock_code }}</strong>
-            <span>{{ selectedCollectionName || '未匹配到股票名称' }}</span>
-          </div>
+          <p class="muted task-collection-hint">{{ currentCollectionTargetOption.description }}</p>
+          <p class="muted">自动调度口径：{{ formatMarketScope(currentCollectionTargetOption.marketScope) }}</p>
+
+          <template v-if="isSingleStockCollection">
+            <label class="quant-field">
+              <span class="quant-field-label">A股股票</span>
+              <div class="search-wrap">
+                <input
+                  :value="collectionKeyword"
+                  class="input"
+                  placeholder="输入股票代码或名称后选择"
+                  @focus="showCollectionSuggestions = Boolean(collectionKeyword.trim())"
+                  @input="handleCollectionInput"
+                  @blur="handleCollectionBlur"
+                />
+                <ul v-if="showCollectionSuggestions" class="suggest-list task-suggest-list">
+                  <li v-if="collectionSuggestionLoading">
+                    <span>搜索中...</span>
+                  </li>
+                  <li v-else-if="!collectionSuggestions.length">
+                    <span>没有匹配结果</span>
+                  </li>
+                  <template v-else>
+                    <li
+                      v-for="item in collectionSuggestions"
+                      :key="item.ts_code"
+                      @mousedown.prevent="pickCollectionSymbol(item)"
+                    >
+                      <span>{{ item.ts_code }}</span>
+                      <strong>{{ item.stock_name }}</strong>
+                    </li>
+                  </template>
+                </ul>
+              </div>
+            </label>
+            <div v-if="draft.target_code" class="task-stock-pill">
+              <strong>{{ draft.target_code }}</strong>
+              <span>{{ selectedCollectionTargetLabel }}</span>
+            </div>
+          </template>
+          <template v-else>
+            <div class="task-stock-pill">
+              <strong>{{ currentCollectionLabel }}</strong>
+              <span>{{ currentCollectionTargetOption.fixedTargetName || '无需选择具体标的，按接口定义执行整批采集。' }}</span>
+            </div>
+          </template>
         </div>
 
         <div v-else class="task-form-section">
           <div class="task-email-banner" :class="{ warn: !targetEmail }">
             <strong>当前通知邮箱：</strong>
-            <span>{{ targetEmail || '未设置，请先到个人中心补充邮箱' }}</span>
+            <span>{{ targetEmail || '未设置，请先到个人中心补充邮箱。' }}</span>
           </div>
 
           <div class="task-strategy-picker">

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -11,6 +11,7 @@ import type {
   QuantIndicatorParams,
   QuantRuleGroupDraft,
   QuantStrategyConfig,
+  QuantTargetMarket,
 } from '../types/quant'
 import type {
   FuturesBasisPoint,
@@ -19,10 +20,20 @@ import type {
   IndexDashboardEmotionPoint,
   IndexDashboardResponse,
   IndexEmotionPoint,
+  IndexUsFearGreedPoint,
+  IndexUsHedgeProxyPoint,
+  IndexUsVixPoint,
+  IndexVixPoint,
   KlineCandle,
   MarketOption,
 } from '../types/stock'
-import { INDEX_QUANT_FILTER_FIELD_KEYS, buildIndexQuantFilterDataset } from '../utils/quantIndicators'
+import {
+  INDEX_QUANT_FILTER_FIELD_KEYS,
+  STOCK_QUANT_FILTER_FIELD_KEYS,
+  US_INDEX_QUANT_FILTER_FIELD_KEYS,
+  buildIndexQuantFilterDataset,
+  buildStockQuantFilterDataset,
+} from '../utils/quantIndicators'
 import {
   createEmptyRuleConditionDraft,
   createEmptyRuleGroupDraft,
@@ -43,6 +54,7 @@ type QuantFormState = {
   kdjKSmoothing: string
   kdjDSmoothing: string
   wrPeriod: string
+  rsiPeriod: string
   bollPeriod: string
   bollMultiplier: string
 }
@@ -50,19 +62,50 @@ type QuantFormState = {
 type QuantFormErrors = Partial<Record<keyof QuantFormState, string>>
 type QuantFilterColor = 'blue' | 'red'
 type IndexDashboardChunkState = {
+  market: QuantTargetMarket
+  supportsAuxiliaryPanels: boolean
   candles: KlineCandle[]
   emotionPoints: IndexDashboardEmotionPoint[]
   basisPoints: IndexDashboardBasisPoint[]
   breadthPoints: IndexBreadthPoint[]
+  vixPoints: IndexVixPoint[]
+  usVixPoints: IndexUsVixPoint[]
+  usFearGreedPoints: IndexUsFearGreedPoint[]
+  usHedgeProxyPoints: IndexUsHedgeProxyPoint[]
   earliestLoadedDate: string | null
   hasMoreHistory: boolean
   pendingWindowKey: string | null
 }
 
 const DEFAULT_INDEX_NAME = '上证指数'
+const BEIJING50_INDEX_NAME = '北证50'
 const CORE_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
+const SHARED_AUXILIARY_INDEX_NAMES = [DEFAULT_INDEX_NAME, BEIJING50_INDEX_NAME] as const
+const VIX_SUPPORTED_INDEX_NAMES = ['上证50', '沪深300', '中证500'] as const
+const VIX_SUPPORTED_INDEX_CODES = [
+  '000016',
+  'sh000016',
+  '000300',
+  'sh000300',
+  '399300',
+  'sz399300',
+  '000905',
+  'sh000905',
+  '399905',
+  'sz399905',
+] as const
+const DEFAULT_INDEX_BY_MARKET: Record<QuantTargetMarket, { code?: string; name: string }> = {
+  cn: { name: DEFAULT_INDEX_NAME },
+  hk: { code: 'HSI', name: '恒生指数' },
+  us: { code: '.INX', name: '标普500指数' },
+}
 const FILTER_COLORS: QuantFilterColor[] = ['blue', 'red']
 const INDEX_DASHBOARD_CHUNK_MONTHS = 12
+const MARKET_OPTIONS: Array<{ value: QuantTargetMarket; label: string }> = [
+  { value: 'cn', label: 'A股' },
+  { value: 'hk', label: '港股' },
+  { value: 'us', label: '美股' },
+]
 const DEFAULT_PARAMS: QuantIndicatorParams = {
   ma: { periods: [5, 10, 20, 60] },
   macd: { fast: 12, slow: 26, signal: 9 },
@@ -105,20 +148,72 @@ function mergeByTradeDate<T extends { trade_date: string }>(existing: T[], incom
   return [...byDate.values()].sort((left, right) => left.trade_date.localeCompare(right.trade_date))
 }
 
+function mergeByKey<T>(existing: T[], incoming: T[], keySelector: (item: T) => string) {
+  const byKey = new Map<string, T>()
+  for (const item of [...existing, ...incoming]) {
+    const key = keySelector(item)
+    if (key) {
+      byKey.set(key, item)
+    }
+  }
+  return [...byKey.values()].sort((left, right) => keySelector(left).localeCompare(keySelector(right)))
+}
+
+function indexSupportsVix(name: string, code: string) {
+  const normalizedName = String(name || '').trim()
+  const normalizedCode = String(code || '').trim().toLowerCase()
+  return (
+    VIX_SUPPORTED_INDEX_NAMES.includes(normalizedName as (typeof VIX_SUPPORTED_INDEX_NAMES)[number]) ||
+    VIX_SUPPORTED_INDEX_CODES.includes(normalizedCode as (typeof VIX_SUPPORTED_INDEX_CODES)[number])
+  )
+}
+
+function resolveUsHedgeProxyScope(name: string, code: string) {
+  const normalizedCode = String(code || '').trim().toUpperCase()
+  if (normalizedCode === '.INX') return 'ES'
+  if (normalizedCode === '.NDX') return 'NQ'
+  const normalizedName = String(name || '').trim()
+  if (normalizedName === '标普500指数') return 'ES'
+  if (normalizedName === '纳斯达克100指数') return 'NQ'
+  return ''
+}
+
 function buildDashboardChunkState(
-  payload: Pick<IndexDashboardResponse, 'candles' | 'emotion_points' | 'basis_points' | 'breadth_points'>,
+  payload: Pick<
+    IndexDashboardResponse,
+    | 'market'
+    | 'supports_auxiliary_panels'
+    | 'candles'
+    | 'emotion_points'
+    | 'basis_points'
+    | 'breadth_points'
+    | 'vix_points'
+    | 'us_vix_points'
+    | 'us_fear_greed_points'
+    | 'us_hedge_proxy_points'
+  >,
   hasMoreHistory = true,
   pendingWindowKey: string | null = null,
 ): IndexDashboardChunkState {
   return {
+    market: payload.market,
+    supportsAuxiliaryPanels: payload.supports_auxiliary_panels,
     candles: payload.candles,
     emotionPoints: payload.emotion_points,
     basisPoints: payload.basis_points,
     breadthPoints: payload.breadth_points,
+    vixPoints: payload.vix_points,
+    usVixPoints: payload.us_vix_points,
+    usFearGreedPoints: payload.us_fear_greed_points,
+    usHedgeProxyPoints: payload.us_hedge_proxy_points,
     earliestLoadedDate: payload.candles[0]?.trade_date ?? null,
     hasMoreHistory: payload.candles.length > 0 ? hasMoreHistory : false,
     pendingWindowKey,
   }
+}
+
+function buildDashboardStateKey(market: QuantTargetMarket, code: string) {
+  return `${market}:${code}`
 }
 
 function cloneFilterGroups(groups: QuantFilterGroupSet): QuantFilterGroupSet {
@@ -163,7 +258,7 @@ function normalizeIndicatorParams(raw: Partial<QuantIndicatorParams> | null | un
 }
 
 const PARAM_GROUPS: Array<{
-  key: 'ma' | 'macd' | 'kdj' | 'wr' | 'boll'
+  key: 'ma' | 'macd' | 'kdj' | 'wr' | 'rsi' | 'boll'
   title: string
   hint: string
   fields: Array<{ key: keyof QuantFormState; label: string; mode: 'numeric' | 'decimal'; full?: boolean }>
@@ -206,6 +301,12 @@ const PARAM_GROUPS: Array<{
     fields: [{ key: 'wrPeriod', label: '周期', mode: 'numeric', full: true }],
   },
   {
+    key: 'rsi',
+    title: 'RSI',
+    hint: 'Relative Strength',
+    fields: [{ key: 'rsiPeriod', label: '周期', mode: 'numeric', full: true }],
+  },
+  {
     key: 'boll',
     title: 'BOLL',
     hint: 'SMA + STD',
@@ -240,6 +341,7 @@ function buildFormState(params: QuantIndicatorParams): QuantFormState {
     kdjKSmoothing: String(params.kdj.kSmoothing),
     kdjDSmoothing: String(params.kdj.dSmoothing),
     wrPeriod: String(params.wr.period),
+    rsiPeriod: String(params.rsi.period),
     bollPeriod: String(params.boll.period),
     bollMultiplier: String(params.boll.multiplier),
   }
@@ -269,9 +371,15 @@ const indexCandles = ref<KlineCandle[]>([])
 const emotionPoints = ref<IndexEmotionPoint[]>([])
 const futuresBasisPoints = ref<FuturesBasisPoint[]>([])
 const breadthPoints = ref<IndexBreadthPoint[]>([])
+const vixPoints = ref<IndexVixPoint[]>([])
+const usVixPoints = ref<IndexUsVixPoint[]>([])
+const usFearGreedPoints = ref<IndexUsFearGreedPoint[]>([])
+const usHedgeProxyPoints = ref<IndexUsHedgeProxyPoint[]>([])
 const loading = ref(false)
 const loadingMoreHistory = ref(false)
 const hasMoreHistory = ref(false)
+const targetMarket = ref<QuantTargetMarket>('cn')
+const supportsAuxiliaryPanels = ref(true)
 const booting = ref(true)
 const error = ref('')
 const emotionLoading = ref(false)
@@ -287,7 +395,7 @@ const saveError = ref('')
 const showParamsModal = ref(false)
 const loadedStrategyId = ref<number | null>(null)
 let activeDashboardToken = 0
-const dashboardStatesByCode = ref<Record<string, IndexDashboardChunkState>>({})
+const dashboardStatesByKey = ref<Record<string, IndexDashboardChunkState>>({})
 const strategyLoadMessage = ref('')
 const route = useRoute()
 
@@ -300,19 +408,62 @@ const blueRuleDrafts = ref<QuantRuleGroupDraft[]>([])
 const redRuleDrafts = ref<QuantRuleGroupDraft[]>([])
 
 const selectedIndexName = computed(() => indexOptions.value.find((item) => item.code === indexCode.value)?.name ?? '')
-const quantFilterDataset = computed(() =>
-  buildIndexQuantFilterDataset(
-    indexCandles.value,
-    appliedParams.value,
-    selectedIndexName.value,
-    emotionPoints.value,
-    futuresBasisPoints.value,
-    breadthPoints.value,
-  ),
-)
+const isCnMarket = computed(() => targetMarket.value === 'cn')
+const isUsMarket = computed(() => targetMarket.value === 'us')
+const supportsVixPanel = computed(() => isCnMarket.value && indexSupportsVix(selectedIndexName.value, indexCode.value))
+const usHedgeProxyScope = computed(() => resolveUsHedgeProxyScope(selectedIndexName.value, indexCode.value))
+const supportsUsVixPanel = computed(() => isUsMarket.value)
+const supportsUsFearGreedPanel = computed(() => isUsMarket.value)
+const supportsUsHedgeProxyPanel = computed(() => isUsMarket.value && Boolean(usHedgeProxyScope.value))
+const quantFilterDataset = computed(() => {
+  if (isCnMarket.value && supportsAuxiliaryPanels.value) {
+    return buildIndexQuantFilterDataset(
+      indexCandles.value,
+      appliedParams.value,
+      selectedIndexName.value,
+      emotionPoints.value,
+      futuresBasisPoints.value,
+      breadthPoints.value,
+      vixPoints.value,
+      supportsVixPanel.value,
+    )
+  }
+  if (isUsMarket.value) {
+    return buildIndexQuantFilterDataset(
+      indexCandles.value,
+      appliedParams.value,
+      selectedIndexName.value,
+      [],
+      [],
+      [],
+      [],
+      false,
+      {
+        includeCnAuxiliary: false,
+        includeCnVix: false,
+        includeUsVix: true,
+        includeUsFearGreed: true,
+        includeUsHedge: supportsUsHedgeProxyPanel.value,
+        usVixPoints: usVixPoints.value,
+        usFearGreedPoints: usFearGreedPoints.value,
+        usHedgeProxyPoints: usHedgeProxyPoints.value,
+      },
+    )
+  }
+  return buildStockQuantFilterDataset(indexCandles.value, appliedParams.value)
+})
+const allowedNumericFieldKeys = computed(() => numericFieldOptions.value.map((item) => item.value))
 const numericFieldOptions = computed(() =>
   quantFilterDataset.value.fields
-    .filter((field) => INDEX_QUANT_FILTER_FIELD_KEYS.includes(field.key))
+    .filter((field) =>
+      (
+        isCnMarket.value
+          ? INDEX_QUANT_FILTER_FIELD_KEYS
+          : isUsMarket.value
+            ? US_INDEX_QUANT_FILTER_FIELD_KEYS
+            : STOCK_QUANT_FILTER_FIELD_KEYS
+      ).includes(field.key),
+    )
     .map((field) => ({ value: field.key, label: field.label })),
 )
 
@@ -329,6 +480,7 @@ const validation = computed(() => {
   const kdjKSmoothing = parsePositiveInteger('KDJ K 平滑', formState.kdjKSmoothing)
   const kdjDSmoothing = parsePositiveInteger('KDJ D 平滑', formState.kdjDSmoothing)
   const wrPeriod = parsePositiveInteger('WR 周期', formState.wrPeriod)
+  const rsiPeriod = parsePositiveInteger('RSI 周期', formState.rsiPeriod)
   const bollPeriod = parsePositiveInteger('BOLL 周期', formState.bollPeriod)
   const bollMultiplier = parsePositiveNumber('BOLL 倍数', formState.bollMultiplier)
   ;[
@@ -343,6 +495,7 @@ const validation = computed(() => {
     ['kdjKSmoothing', kdjKSmoothing.error],
     ['kdjDSmoothing', kdjDSmoothing.error],
     ['wrPeriod', wrPeriod.error],
+    ['rsiPeriod', rsiPeriod.error],
     ['bollPeriod', bollPeriod.error],
     ['bollMultiplier', bollMultiplier.error],
   ].forEach(([key, message]) => {
@@ -364,14 +517,58 @@ const validation = computed(() => {
         dSmoothing: kdjDSmoothing.value as number,
       },
       wr: { period: wrPeriod.value as number },
-      rsi: { period: appliedParams.value.rsi.period },
+      rsi: { period: rsiPeriod.value as number },
       boll: { period: bollPeriod.value as number, multiplier: bollMultiplier.value as number },
     } satisfies QuantIndicatorParams,
   }
 })
 
-const blueRuleValidation = computed(() => normalizeRuleGroups(blueRuleDrafts.value, INDEX_QUANT_FILTER_FIELD_KEYS))
-const redRuleValidation = computed(() => normalizeRuleGroups(redRuleDrafts.value, INDEX_QUANT_FILTER_FIELD_KEYS))
+const blueRuleValidation = computed(() => normalizeRuleGroups(blueRuleDrafts.value, allowedNumericFieldKeys.value))
+const redRuleValidation = computed(() => normalizeRuleGroups(redRuleDrafts.value, allowedNumericFieldKeys.value))
+
+function hasNumericFieldRules(groups: QuantFilterGroupSet, targetFields: string[]) {
+  const fieldSet = new Set(targetFields)
+  return groups.some((group) =>
+    group.conditions.some((condition) => condition.type === 'numeric' && fieldSet.has(condition.field)),
+  )
+}
+
+const unsupportedAuxiliaryRuleMessage = computed(() => {
+  const blueGroups = appliedBlueFilterGroups.value
+  const redGroups = appliedRedFilterGroups.value
+
+  if (hasNumericFieldRules(blueGroups, ['vix-open', 'vix-high', 'vix-low', 'vix-close']) || hasNumericFieldRules(redGroups, ['vix-open', 'vix-high', 'vix-low', 'vix-close'])) {
+    if (!isCnMarket.value) {
+      return '当前市场不支持 A股 VIX 条件，请先移除相关规则后再保存。'
+    }
+    if (!supportsVixPanel.value) {
+      return '当前指数不支持 VIX 条件，请先移除相关规则后再保存。'
+    }
+  }
+
+  if (
+    hasNumericFieldRules(blueGroups, ['us-vix-open', 'us-vix-high', 'us-vix-low', 'us-vix-close', 'us-fear-greed']) ||
+    hasNumericFieldRules(redGroups, ['us-vix-open', 'us-vix-high', 'us-vix-low', 'us-vix-close', 'us-fear-greed'])
+  ) {
+    if (!isUsMarket.value) {
+      return '当前市场不支持美股辅助指标条件，请先移除相关规则后再保存。'
+    }
+  }
+
+  if (
+    hasNumericFieldRules(blueGroups, ['us-hedge-long', 'us-hedge-short', 'us-hedge-ratio']) ||
+    hasNumericFieldRules(redGroups, ['us-hedge-long', 'us-hedge-short', 'us-hedge-ratio'])
+  ) {
+    if (!isUsMarket.value) {
+      return '当前市场不支持对冲基金代理条件，请先移除相关规则后再保存。'
+    }
+    if (!supportsUsHedgeProxyPanel.value) {
+      return '当前指数不支持对冲基金代理条件，请先移除相关规则后再保存。'
+    }
+  }
+
+  return ''
+})
 
 const canApplyParams = computed(() => Boolean(validation.value.params) && !loading.value && Boolean(indexCode.value))
 const canApplyFilters = computed(() => {
@@ -455,30 +652,44 @@ async function handleChartIndexSelect(nextCode: string) {
 }
 
 function applyDashboardState(targetCode: string, targetName: string, state: IndexDashboardChunkState | null) {
-  const basisIndexNames = targetName === DEFAULT_INDEX_NAME ? [...CORE_INDEX_NAMES] : [targetName]
+  const nextSupportsVix = targetMarket.value === 'cn' && indexSupportsVix(targetName, targetCode)
+  const nextUsHedgeScope = targetMarket.value === 'us' ? resolveUsHedgeProxyScope(targetName, targetCode) : ''
+  const basisIndexNames =
+    state?.supportsAuxiliaryPanels &&
+    SHARED_AUXILIARY_INDEX_NAMES.includes(targetName as (typeof SHARED_AUXILIARY_INDEX_NAMES)[number])
+      ? [...CORE_INDEX_NAMES]
+      : [targetName]
   indexCandles.value = state?.candles ?? []
-  emotionPoints.value =
-    state?.emotionPoints.flatMap((item) =>
-      basisIndexNames.map((indexName) => ({
-        emotion_date: item.trade_date,
-        index_name: indexName,
-        emotion_value: item.value,
-      })),
-    ) ?? []
-  futuresBasisPoints.value =
-    state?.basisPoints.flatMap((item) =>
-      basisIndexNames.map((indexName) => ({
-        trade_date: item.trade_date,
-        index_name: indexName,
-        main_basis: item.main_basis,
-        month_basis: item.month_basis,
-      })),
-    ) ?? []
-  breadthPoints.value = state?.breadthPoints ?? []
+  supportsAuxiliaryPanels.value = state?.supportsAuxiliaryPanels ?? isCnMarket.value
+  emotionPoints.value = supportsAuxiliaryPanels.value
+    ? state?.emotionPoints.flatMap((item) =>
+        basisIndexNames.map((indexName) => ({
+          emotion_date: item.trade_date,
+          index_name: indexName,
+          emotion_value: item.value,
+        })),
+      ) ?? []
+    : []
+  futuresBasisPoints.value = supportsAuxiliaryPanels.value
+    ? state?.basisPoints.flatMap((item) =>
+        basisIndexNames.map((indexName) => ({
+          trade_date: item.trade_date,
+          index_name: indexName,
+          main_basis: item.main_basis,
+          month_basis: item.month_basis,
+        })),
+      ) ?? []
+    : []
+  breadthPoints.value = supportsAuxiliaryPanels.value ? state?.breadthPoints ?? [] : []
+  vixPoints.value = nextSupportsVix ? state?.vixPoints ?? [] : []
+  usVixPoints.value = targetMarket.value === 'us' ? state?.usVixPoints ?? [] : []
+  usFearGreedPoints.value = targetMarket.value === 'us' ? state?.usFearGreedPoints ?? [] : []
+  usHedgeProxyPoints.value =
+    targetMarket.value === 'us' && nextUsHedgeScope ? state?.usHedgeProxyPoints ?? [] : []
   hasMoreHistory.value = state?.hasMoreHistory ?? false
   loadingMoreHistory.value = Boolean(state?.pendingWindowKey)
   if (state) {
-    dashboardStatesByCode.value[targetCode] = state
+    dashboardStatesByKey.value[buildDashboardStateKey(state.market, targetCode)] = state
   }
 }
 
@@ -493,10 +704,20 @@ function mergeDashboardState(
     mergedCandles[0].trade_date < (currentState.earliestLoadedDate ?? '')
 
   return {
+    market: payload.market,
+    supportsAuxiliaryPanels: payload.supports_auxiliary_panels,
     candles: mergedCandles,
     emotionPoints: mergeByTradeDate(currentState.emotionPoints, payload.emotion_points),
     basisPoints: mergeByTradeDate(currentState.basisPoints, payload.basis_points),
     breadthPoints: mergeByTradeDate(currentState.breadthPoints, payload.breadth_points),
+    vixPoints: mergeByTradeDate(currentState.vixPoints, payload.vix_points),
+    usVixPoints: mergeByTradeDate(currentState.usVixPoints, payload.us_vix_points),
+    usFearGreedPoints: mergeByTradeDate(currentState.usFearGreedPoints, payload.us_fear_greed_points),
+    usHedgeProxyPoints: mergeByKey(
+      currentState.usHedgeProxyPoints,
+      payload.us_hedge_proxy_points,
+      (item) => String(item.release_date || ''),
+    ),
     earliestLoadedDate: mergedCandles[0]?.trade_date ?? null,
     hasMoreHistory: hasOlderHistory,
     pendingWindowKey: null,
@@ -506,7 +727,8 @@ function mergeDashboardState(
 async function loadDashboardForIndex(targetCode: string) {
   if (!targetCode) return false
   const token = ++activeDashboardToken
-  const cached = dashboardStatesByCode.value[targetCode]
+  const stateKey = buildDashboardStateKey(targetMarket.value, targetCode)
+  const cached = dashboardStatesByKey.value[stateKey]
   if (cached) {
     applyDashboardState(targetCode, selectedIndexName.value, cached)
     return true
@@ -526,9 +748,13 @@ async function loadDashboardForIndex(targetCode: string) {
     const payload = await fetchIndexDashboard(targetCode, {
       startDate: monthsAgo(INDEX_DASHBOARD_CHUNK_MONTHS),
       mode: 'recent',
+      market: targetMarket.value,
     })
     if (token !== activeDashboardToken || targetCode !== indexCode.value) return false
     applyDashboardState(targetCode, payload.index.name, buildDashboardChunkState(payload, payload.candles.length > 0))
+    if (!payload.candles.length) {
+      error.value = `${payload.index.name}暂无指数行情数据`
+    }
     return true
   } catch (loadError) {
     if (token !== activeDashboardToken || targetCode !== indexCode.value) return false
@@ -544,7 +770,7 @@ async function loadDashboardForIndex(targetCode: string) {
 async function loadMoreDashboardHistory() {
   const targetCode = indexCode.value
   if (!targetCode) return
-  const currentState = dashboardStatesByCode.value[targetCode]
+  const currentState = dashboardStatesByKey.value[buildDashboardStateKey(targetMarket.value, targetCode)]
   if (!currentState?.earliestLoadedDate || !currentState.hasMoreHistory || currentState.pendingWindowKey) {
     return
   }
@@ -563,6 +789,7 @@ async function loadMoreDashboardHistory() {
       startDate,
       endDate,
       mode: 'recent',
+      market: targetMarket.value,
     })
     if (token !== activeDashboardToken || targetCode !== indexCode.value) return
     applyDashboardState(targetCode, payload.index.name, mergeDashboardState(currentState, payload))
@@ -617,6 +844,7 @@ function buildStrategyPayload() {
     strategy_engine: 'snapshot' as const,
     sequence_mode: 'single_target' as const,
     strategy_type: 'index' as const,
+    target_market: targetMarket.value,
     target_code: indexCode.value,
     target_name: selectedIndexName.value,
     indicator_params: appliedParams.value,
@@ -651,6 +879,10 @@ function buildStrategyPayload() {
 async function saveStrategy(asNew = false) {
   saveError.value = ''
   saveMessage.value = ''
+  if (unsupportedAuxiliaryRuleMessage.value) {
+    saveError.value = unsupportedAuxiliaryRuleMessage.value
+    return
+  }
   if (!saveName.value.trim()) {
     saveError.value = '请先填写策略名称'
     return
@@ -679,12 +911,16 @@ async function saveCurrentStrategy() {
   }
   saveError.value = ''
   saveMessage.value = ''
+  if (unsupportedAuxiliaryRuleMessage.value) {
+    saveError.value = unsupportedAuxiliaryRuleMessage.value
+    return
+  }
   if (!saveName.value.trim()) {
-    saveError.value = '璇峰厛濉啓绛栫暐鍚嶇О'
+    saveError.value = '请先填写策略名称'
     return
   }
   if (!indexCode.value || !selectedIndexName.value) {
-    saveError.value = '褰撳墠娌℃湁鍙繚瀛樼殑鎸囨暟鏍囩殑'
+    saveError.value = '当前没有可保存的指数标的'
     return
   }
   saveLoading.value = true
@@ -727,6 +963,48 @@ function applyStrategyConfig(strategy: QuantStrategyConfig) {
   showParamsModal.value = false
 }
 
+async function loadIndexOptionsForMarket(
+  market: QuantTargetMarket,
+  preferredCode?: string | null,
+  fallbackToDefault = true,
+) {
+  const options = await fetchIndexOptions(market)
+  indexOptions.value = options
+  const normalizedPreferredCode = String(preferredCode || '').trim()
+  if (normalizedPreferredCode && options.some((item) => item.code === normalizedPreferredCode)) {
+    indexCode.value = normalizedPreferredCode
+    return
+  }
+  if (!fallbackToDefault) {
+    indexCode.value = ''
+    return
+  }
+  const preferred = DEFAULT_INDEX_BY_MARKET[market]
+  const defaultOption = options.find((item) => preferred.code ? item.code === preferred.code : item.name === preferred.name)
+    ?? options.find((item) => item.name === preferred.name)
+    ?? options[0]
+  indexCode.value = defaultOption?.code ?? ''
+}
+
+async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?: string | null) {
+  targetMarket.value = nextMarket
+  await loadIndexOptionsForMarket(nextMarket, preferredCode)
+  if (!indexCode.value) {
+    indexCandles.value = []
+    emotionPoints.value = []
+    futuresBasisPoints.value = []
+    breadthPoints.value = []
+    vixPoints.value = []
+    usVixPoints.value = []
+    usFearGreedPoints.value = []
+    usHedgeProxyPoints.value = []
+    supportsAuxiliaryPanels.value = nextMarket === 'cn'
+    error.value = '当前市场暂无可用指数'
+    return
+  }
+  await loadDashboardForIndex(indexCode.value)
+}
+
 async function hydrateStrategyFromRoute() {
   const strategyId = getStrategyIdFromRoute()
   if (!strategyId) return
@@ -738,11 +1016,15 @@ async function hydrateStrategyFromRoute() {
   try {
     const strategy = await fetchQuantStrategy(strategyId)
     if (strategy.strategy_engine !== 'snapshot' || strategy.strategy_type !== 'index') {
-      error.value = '当前策略不是指数策略，无法加载到指数分析页'
+      error.value = '当前策略不是指数策略，无法加载到指数分析页面'
       return
     }
+
+    const strategyMarket = (strategy.target_market ?? 'cn') as QuantTargetMarket
+    targetMarket.value = strategyMarket
+    await loadIndexOptionsForMarket(strategyMarket, strategy.target_code, false)
     if (!indexOptions.value.some((item) => item.code === strategy.target_code)) {
-      error.value = '该策略对应的指数标的当前不可用'
+      error.value = '当前市场暂无可用指数'
       return
     }
 
@@ -764,11 +1046,9 @@ async function initializePage() {
   booting.value = true
   error.value = ''
   try {
-    const options = await fetchIndexOptions()
-    indexOptions.value = options
-    indexCode.value = (options.find((item) => item.name === DEFAULT_INDEX_NAME) ?? options[0])?.code ?? ''
+    await loadIndexOptionsForMarket(targetMarket.value)
     if (!indexCode.value) {
-      error.value = '暂无可用的指数选项'
+      error.value = '当前市场暂无可用指数'
       return
     }
     await loadDashboardForIndex(indexCode.value)
@@ -804,7 +1084,7 @@ watch(
         <div class="quant-page-head">
           <div>
             <h3>指数参数</h3>
-            <p class="muted">主图支持均线 / BOLL 切换，副图同步展示情绪、期现差与上涨家数百分比。</p>
+            <p class="muted">主图支持均线 / BOLL 切换，副图会联动更新对应指标和筛选结果。</p>
           </div>
           <button type="button" class="btn" @click="closeParamsModal">关闭</button>
         </div>
@@ -830,6 +1110,28 @@ watch(
         <p v-if="Object.keys(validation.errors).length" class="quant-form-hint error">参数存在未通过校验的项目，修正后才能应用。</p>
         <p v-else class="quant-form-hint muted">参数会同时影响图表展示和右侧筛选逻辑。</p>
       </section>
+      <section class="card quant-market-switch-card">
+        <div class="progress-section-head">
+          <div class="progress-section-copy">
+            <h3>市场切换</h3>
+            <p class="muted">
+              {{ targetMarket === 'cn' ? 'A股指数保留完整量化辅助指标。' : '港股 / 美股指数只展示基于自身 K 线的量化指标。' }}
+            </p>
+          </div>
+          <div class="quant-subnav">
+            <button
+              v-for="item in MARKET_OPTIONS"
+              :key="item.value"
+              type="button"
+              class="quant-subnav-link"
+              :class="{ active: targetMarket === item.value }"
+              @click="switchTargetMarket(item.value)"
+            >
+              {{ item.label }}
+            </button>
+          </div>
+        </div>
+      </section>
 
       <section class="card quant-chart-card">
         <QuantIndexChart
@@ -843,6 +1145,14 @@ watch(
           :breadth-points="breadthPoints"
           :breadth-loading="breadthLoading"
           :breadth-error-message="breadthError"
+          :vix-points="vixPoints"
+          :supports-vix-panel="supportsVixPanel"
+          :us-vix-points="usVixPoints"
+          :us-fear-greed-points="usFearGreedPoints"
+          :us-hedge-proxy-points="usHedgeProxyPoints"
+          :supports-us-vix-panel="supportsUsVixPanel"
+          :supports-us-fear-greed-panel="supportsUsFearGreedPanel"
+          :supports-us-hedge-proxy-panel="supportsUsHedgeProxyPanel"
           :highlight-bands="highlightBands"
           :has-more-history="hasMoreHistory"
           :loading-more-history="loadingMoreHistory"
@@ -850,6 +1160,7 @@ watch(
           :symbol-name="selectedIndexName"
           :symbol-code="indexCode"
           :params="appliedParams"
+          :supports-auxiliary-panels="supportsAuxiliaryPanels"
           :loading="loading || booting"
           :default-visible-days="90"
           @select-index="handleChartIndexSelect"
@@ -872,7 +1183,7 @@ watch(
             <span class="quant-filter-count quant-filter-count-purple">紫 {{ highlightSummary.purple }}</span>
           </div>
         </div>
-        <p class="quant-filter-hint muted">规则组内全部满足，满足任一规则组即命中该颜色；同日蓝红同时命中会显示为紫色。</p>
+        <p class="quant-filter-hint muted">规则组内全部满足，命中任一规则组即触发对应颜色；同日蓝红同时命中会显示为紫色。</p>
 
         <div class="quant-filter-sections">
           <QuantRuleGroupBuilder
@@ -895,17 +1206,18 @@ watch(
             <span class="quant-field-label">保存当前指数策略</span>
             <input v-model="saveName" class="input" placeholder="输入策略名称" />
           </label>
-          <p v-if="saveError" class="error">{{ saveError }}</p>
+          <p v-if="unsupportedAuxiliaryRuleMessage" class="error">{{ unsupportedAuxiliaryRuleMessage }}</p>
+          <p v-else-if="saveError" class="error">{{ saveError }}</p>
           <p v-else-if="saveMessage" class="muted">{{ saveMessage }}</p>
         </section>
 
         <div class="quant-filter-footer">
           <button class="btn primary" :disabled="!canApplyFilters" @click="applyFilters">确定</button>
           <button class="btn" @click="clearFilters">清空筛选</button>
-          <button class="btn" :disabled="saveLoading || !indexCode" @click="saveCurrentStrategy">
+          <button class="btn" :disabled="saveLoading || !indexCode || Boolean(unsupportedAuxiliaryRuleMessage)" @click="saveCurrentStrategy">
             {{ saveLoading ? '保存中...' : loadedStrategyId ? '更新当前策略' : '保存筛选' }}
           </button>
-          <button class="btn" :disabled="saveLoading || !indexCode" @click="saveAsNewStrategy">
+          <button class="btn" :disabled="saveLoading || !indexCode || Boolean(unsupportedAuxiliaryRuleMessage)" @click="saveAsNewStrategy">
             {{ saveLoading ? '保存中...' : '另存为新策略' }}
           </button>
         </div>
@@ -913,3 +1225,4 @@ watch(
     </aside>
   </div>
 </template>
+

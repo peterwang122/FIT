@@ -1,5 +1,6 @@
 from datetime import date, datetime
 
+import httpx
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -37,7 +38,7 @@ from app.schemas.stock import (
 from app.services.quant_service import QuantService
 from app.services.stock_service import StockService
 from app.services.task_idempotency_service import TaskIdempotencyService
-from app.tasks.collector import collect_stock_data, collect_stock_hfq_data
+from app.tasks.collector import collect_stock_data, collect_stock_hfq_data, run_forex_collection_request
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
@@ -132,6 +133,7 @@ def get_index_dashboard(
     mode: str = Query(default="recent"),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
+    market: str = Query(default="cn", min_length=2, max_length=8),
     db: Session = Depends(get_db),
 ):
     service = QuantService(db)
@@ -141,6 +143,7 @@ def get_index_dashboard(
             mode=mode,
             start_date=start_date,
             end_date=end_date,
+            market=market,
         )
     except ValueError as exc:
         detail = str(exc)
@@ -156,12 +159,13 @@ def get_quant_targets(
     target_type: str = Query(..., min_length=1, max_length=32),
     keyword: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
+    market: str = Query(default="cn", min_length=2, max_length=8),
     db: Session = Depends(get_db),
 ):
     service = StockService(db)
     normalized_target_type = target_type.strip().lower()
     if normalized_target_type == "index":
-        items = service.list_index_options()
+        items = service.list_index_options(market=market)
         if keyword:
             key = keyword.strip().lower()
             items = [
@@ -211,7 +215,10 @@ def create_quant_strategy(
     current_user: User = Depends(get_current_user),
 ):
     service = QuantService(db)
-    item = service.create_strategy(payload.model_dump(), current_user.id)
+    try:
+        item = service.create_strategy(payload.model_dump(), current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ApiResponse(data=QuantStrategyConfigResponse.model_validate(item))
 
 
@@ -226,7 +233,9 @@ def update_quant_strategy(
     try:
         item = service.update_strategy(strategy_id, payload.model_dump(), current_user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        detail = str(exc)
+        status_code = 404 if detail == "strategy not found" else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return ApiResponse(data=QuantStrategyConfigResponse.model_validate(item))
 
 
@@ -357,17 +366,21 @@ def get_cffex_net_positions(
 @router.get("/cffex/net-position-series", response_model=ApiResponse[NetPositionSeriesResponse])
 def get_cffex_net_position_series(
     start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     service = StockService(db)
-    items = service.get_cffex_net_position_series(start_date=start_date)
+    items = service.get_cffex_net_position_series(start_date=start_date, end_date=end_date)
     return ApiResponse(data=NetPositionSeriesResponse.model_validate(items))
 
 
 @router.get("/indexes/options", response_model=ApiResponse[list[MarketOptionResponse]])
-def get_index_options(db: Session = Depends(get_db)):
+def get_index_options(
+    market: str = Query(default="cn", min_length=2, max_length=8),
+    db: Session = Depends(get_db),
+):
     service = StockService(db)
-    items = service.list_index_options()
+    items = service.list_index_options(market=market)
     return ApiResponse(data=[MarketOptionResponse.model_validate(item) for item in items])
 
 
@@ -376,10 +389,11 @@ def get_index_kline(
     index_code: str,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
+    market: str = Query(default="cn", min_length=2, max_length=8),
     db: Session = Depends(get_db),
 ):
     service = StockService(db)
-    rows = service.list_index_daily_kline(index_code=index_code, start_date=start_date, end_date=end_date)
+    rows = service.list_index_daily_kline(index_code=index_code, market=market, start_date=start_date, end_date=end_date)
     return ApiResponse(data=[StockCandle.model_validate(row) for row in rows])
 
 
@@ -412,6 +426,27 @@ def get_forex_kline(
     service = StockService(db)
     rows = service.list_forex_daily_kline(symbol_code=symbol_code, start_date=start_date, end_date=end_date)
     return ApiResponse(data=[StockCandle.model_validate(row) for row in rows])
+
+
+@router.post("/forex/{symbol_code}/collect", response_model=ApiResponse[dict])
+def collect_forex_symbol(symbol_code: str, db: Session = Depends(get_db)):
+    service = StockService(db)
+    try:
+        result = run_forex_collection_request(symbol_code=symbol_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if result.get("status") != "ok":
+        return ApiResponse(data=result)
+
+    normalized_code = str(result.get("symbol_code") or symbol_code).strip().upper()
+    service.clear_forex_cache(normalized_code)
+    upstream_response = result.get("upstream_response")
+    if isinstance(upstream_response, dict):
+        return ApiResponse(data={**upstream_response, "requested_at": result.get("requested_at")})
+    return ApiResponse(data=result)
 
 
 @router.get("/{ts_code}/hfq-kline", response_model=ApiResponse[list[StockCandle]])

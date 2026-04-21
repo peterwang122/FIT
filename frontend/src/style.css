@@ -939,6 +939,24 @@ button.quant-scan-event-item {
   justify-content: flex-end;
 }
 
+.forex-toolbar {
+  width: 100%;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+}
+
+.forex-toolbar .forex-select {
+  width: 150px;
+  min-width: 0;
+  flex: 0 1 150px;
+}
+
+.forex-collect-btn {
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 72px;
+}
+
 .panel-date {
   padding: 8px 12px;
   border-radius: 999px;
@@ -2409,10 +2427,10 @@ button.quant-scan-event-item {
 
 .progress-hero {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  min-height: 120px;
+  min-height: 132px;
 }
 
 .progress-kicker {
@@ -2426,7 +2444,7 @@ button.quant-scan-event-item {
 
 .progress-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
   gap: 20px;
 }
 
@@ -2438,6 +2456,15 @@ button.quant-scan-event-item {
 }
 
 .progress-card-wide {
+  min-width: 0;
+}
+
+.progress-todo-card {
+  align-self: start;
+}
+
+.progress-published-card,
+.progress-draft-card {
   min-width: 0;
 }
 
@@ -2465,7 +2492,8 @@ button.quant-scan-event-item {
   font-size: 22px;
 }
 
-.progress-section-copy .muted {
+.progress-section-copy .muted,
+.progress-meta-panel .muted {
   margin: 0;
 }
 
@@ -2476,6 +2504,14 @@ button.quant-scan-event-item {
   gap: 10px;
   color: #334155;
   line-height: 1.7;
+}
+
+.progress-inline-actions,
+.progress-todo-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .timeline {
@@ -2564,6 +2600,166 @@ button.quant-scan-event-item {
 .progress-day-actions {
   display: flex;
   justify-content: flex-start;
+}
+
+.progress-meta-panel {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.progress-meta-panel .muted {
+  margin: 0;
+  text-align: right;
+}
+
+.progress-generation-block {
+  display: grid;
+  gap: 10px;
+}
+
+.progress-meta-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.progress-meta-item {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(20, 33, 61, 0.08);
+  background: rgba(248, 250, 252, 0.76);
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.progress-changelog {
+  gap: 18px;
+}
+
+.progress-repo-list {
+  display: grid;
+  gap: 14px;
+}
+
+.progress-repo-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(20, 33, 61, 0.08);
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.progress-repo-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.progress-repo-head h5 {
+  margin: 0;
+  color: #14213d;
+  font-size: 16px;
+}
+
+.progress-repo-head .muted {
+  margin: 4px 0 0;
+}
+
+.progress-update-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.progress-update-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(20, 33, 61, 0.06);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.progress-update-title {
+  color: #14213d;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.progress-update-description {
+  margin: 0;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-line;
+}
+
+.progress-draft-card {
+  display: grid;
+  gap: 16px;
+}
+
+.progress-draft-list,
+.progress-draft-section-list {
+  display: grid;
+  gap: 16px;
+}
+
+.progress-draft-day {
+  gap: 16px;
+}
+
+.progress-draft-day-head,
+.progress-draft-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.progress-draft-day-grid {
+  flex: 1 1 520px;
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.progress-draft-section {
+  gap: 14px;
+}
+
+.progress-draft-section-title {
+  flex: 1 1 320px;
+}
+
+.progress-empty-state {
+  display: grid;
+  gap: 6px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px dashed rgba(20, 33, 61, 0.16);
+  background: rgba(248, 250, 252, 0.68);
+}
+
+.progress-empty-state strong {
+  color: #14213d;
+  font-size: 15px;
+}
+
+.progress-empty-state span {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 @media (max-width: 1320px) {
@@ -2738,6 +2934,14 @@ button.quant-scan-event-item {
   .timeline-item {
     grid-template-columns: 1fr;
     gap: 8px;
+  }
+
+  .progress-meta-panel {
+    justify-items: start;
+  }
+
+  .progress-draft-day-grid {
+    grid-template-columns: 1fr;
   }
 
   .quant-toolbar-group,

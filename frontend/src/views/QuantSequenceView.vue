@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -184,7 +184,7 @@ function pickTarget(option: QuantTargetOption) {
 
 async function loadSingleTargetKline() {
   if (!selectedCode.value) {
-    error.value = '请先选择目标'
+    error.value = '璇峰厛閫夋嫨鐩爣'
     return false
   }
   loading.value = true
@@ -358,7 +358,7 @@ const scanRangeWarning = computed(() => {
   const end = new Date(`${scanEndDate.value}T00:00:00`)
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return ''
   return Math.floor((end.getTime() - start.getTime()) / 86400000) > 365
-    ? '当前扫描跨度超过 12 个月，可能会明显更慢，但系统仍会继续执行。'
+    ? '当前扫描跨度超过 12 个月，可能会明显变慢，但系统仍会继续执行。'
     : ''
 })
 const canSave = computed(() => {
@@ -439,6 +439,7 @@ function buildPayload(name: string): QuantStrategyPayload {
     return {
       ...common,
       sequence_mode: 'market_scan',
+      target_market: 'cn',
       target_code: targetType.value === 'stock' ? 'ALL_STOCK' : 'ALL_ETF',
       target_name: targetType.value === 'stock' ? '全市场股票' : '全市场 ETF',
       sell_sequence_groups: [],
@@ -451,6 +452,7 @@ function buildPayload(name: string): QuantStrategyPayload {
   return {
     ...common,
     sequence_mode: 'single_target',
+    target_market: 'cn',
     target_code: selectedCode.value,
     target_name: selectedName.value,
     sell_sequence_groups: sellValidation.value.groups,
@@ -698,7 +700,7 @@ onBeforeUnmount(() => {
 
         <div class="quant-sequence-controls">
           <label class="quant-field">
-            <span class="quant-field-label">目标类型</span>
+            <span class='quant-field-label'>目标类型</span>
             <select v-model="targetType" class="input">
               <option
                 v-for="option in sequenceMode === 'market_scan' ? scanTargetTypeOptions : singleTargetTypeOptions"
@@ -712,19 +714,19 @@ onBeforeUnmount(() => {
 
           <div v-if="sequenceMode === 'single_target'" class="search-wrap quant-sequence-target-search">
             <label class="quant-field">
-              <span class="quant-field-label">目标搜索</span>
+              <span class='quant-field-label'>目标搜索</span>
               <input
                 v-model="targetKeyword"
                 class="input"
-                placeholder="输入代码或名称"
+                placeholder='输入代码或名称'
                 @focus="handleSearchFocus"
                 @input="handleSearchInput"
               />
             </label>
 
             <ul v-if="showSuggestions" class="suggest-list">
-              <li v-if="suggestionLoading"><span>搜索中...</span></li>
-              <li v-else-if="!targetOptions.length"><span>没有匹配结果</span></li>
+              <li v-if='suggestionLoading'><span>搜索中...</span></li>
+              <li v-else-if='!targetOptions.length'><span>没有匹配结果</span></li>
               <template v-else>
                 <li v-for="option in targetOptions" :key="option.code" @mousedown.prevent="pickTarget(option)">
                   <span>{{ option.code }}</span>
@@ -735,27 +737,8 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else class="quant-sequence-scan-hint">
-            <div class="label">扫描范围</div>
-            <div class="value small">{{ targetType === 'stock' ? '全市场股票' : '全市场 ETF' }}</div>
-          </div>
-
-          <div class="btn-group">
-            <button
-              v-if="sequenceMode === 'single_target'"
-              class="btn primary"
-              :disabled="loading || !selectedCode"
-              @click="loadSingleTargetKline"
-            >
-              加载目标 K 线
-            </button>
-            <button
-              v-else
-              class="btn primary"
-              :disabled="scanLoading || !buyValidation.groups.length || !scanStartDate || !scanEndDate"
-              @click="executeMarketScan"
-            >
-              {{ scanLoading ? '扫描中...' : '执行扫描' }}
-            </button>
+            <div class='label'>扫描范围</div>
+            <div class='value small'>{{ targetType === 'stock' ? '全市场个股' : '全市场 ETF' }}</div>
           </div>
         </div>
 
@@ -763,28 +746,28 @@ onBeforeUnmount(() => {
 
         <div class="summary quant-sequence-summary">
           <div>
-            <div class="label">{{ sequenceMode === 'market_scan' ? '扫描范围' : '当前目标' }}</div>
+            <div class='label'>{{ sequenceMode === 'market_scan' ? '扫描范围' : '当前目标' }}</div>
             <div class="value small">
               {{
                 sequenceMode === 'market_scan'
                   ? targetType === 'stock'
-                    ? '全市场股票'
+                    ? '全市场个股'
                     : '全市场 ETF'
                   : `${selectedName || '-'}（${selectedCode || '-'}）`
               }}
             </div>
           </div>
           <div>
-            <div class="label">{{ sequenceMode === 'market_scan' ? '命中事件' : '命中区间' }}</div>
+            <div class='label'>{{ sequenceMode === 'market_scan' ? '命中事件' : '命中区间' }}</div>
             <div class="value">{{ highlightSummary.matched }}</div>
           </div>
           <div>
-            <div class="label">{{ sequenceMode === 'market_scan' ? '可回测事件' : '可预览目标数' }}</div>
+            <div class='label'>{{ sequenceMode === 'market_scan' ? '可回测事件' : '可预览目标数' }}</div>
             <div class="value">{{ highlightSummary.tradable }}</div>
           </div>
           <div>
-            <div class="label">{{ sequenceMode === 'market_scan' ? '命中标的数' : '当前模式' }}</div>
-            <div class="value small">{{ sequenceMode === 'market_scan' ? highlightSummary.targets : '单标的预览' }}</div>
+            <div class='label'>{{ sequenceMode === 'market_scan' ? '命中标的数' : '当前模式' }}</div>
+            <div class='value small'>{{ sequenceMode === 'market_scan' ? highlightSummary.targets : '单标的预览' }}</div>
           </div>
         </div>
       </section>
@@ -803,20 +786,20 @@ onBeforeUnmount(() => {
         />
         <div v-else class="quant-stock-empty">
           <h3>扫描结果预览</h3>
-          <p class="muted">点击下方事件后，这里会显示该标的在当前扫描结果中的全部命中日期。</p>
+          <p class='muted'>点击下方事件后，这里会显示该标的在当前扫描结果中的全部命中日期。</p>
         </div>
       </section>
 
       <section v-else-if="!chartRequested && !loading && sequenceMode === 'single_target'" class="card quant-stock-empty">
         <h3>条件策略预览</h3>
-        <p class="muted">先选定目标，再加载 K 线，就能看到信号区间。</p>
+        <p class='muted'>先选定目标，再加载 K 线，就能看到信号区间。</p>
       </section>
 
       <section v-if="sequenceMode === 'market_scan'" class="card progress-card">
         <div class="progress-section-head">
           <div class="progress-section-copy">
             <h3>命中事件</h3>
-            <p class="muted">点击事件后，下方图表会切到对应标的，并把该标的的全部命中日期标出来。</p>
+            <p class='muted'>点击事件后，下方图表会切到对应标的，并把该标的的全部命中日期标出来。</p>
           </div>
         </div>
 
@@ -831,7 +814,7 @@ onBeforeUnmount(() => {
           >
             <div class="quant-scan-event-main">
               <strong>{{ event.target_name }}（{{ event.target_code }}）</strong>
-              <span>{{ event.signal_date }} 命中</span>
+              <span>{{ event.signal_date }} 鍛戒腑</span>
             </div>
             <div class="quant-scan-event-meta">
               <span>买入：{{ event.buy_date ?? '-' }}</span>
@@ -841,12 +824,12 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <p v-else class="muted">当前还没有扫描到命中事件。</p>
+        <p v-else class='muted'>当前还没有扫描到命中事件。</p>
 
         <div v-if="scanTotalEventCount > scanPageSize" class="progress-hero-actions">
-          <button class="btn" :disabled="scanLoading || scanPage <= 1" @click="loadScanEventsPage(scanPage - 1)">上一页</button>
-          <span class="muted">第 {{ scanPage }} / {{ scanTotalPages }} 页，共 {{ scanTotalEventCount }} 条事件</span>
-          <button class="btn" :disabled="scanLoading || scanPage >= scanTotalPages" @click="loadScanEventsPage(scanPage + 1)">下一页</button>
+          <button class='btn' :disabled='scanLoading || scanPage <= 1' @click='loadScanEventsPage(scanPage - 1)'>上一页</button>
+          <span class='muted'>第 {{ scanPage }} / {{ scanTotalPages }} 页，共 {{ scanTotalEventCount }} 条事件</span>
+          <button class='btn' :disabled='scanLoading || scanPage >= scanTotalPages' @click='loadScanEventsPage(scanPage + 1)'>下一页</button>
         </div>
       </section>
     </div>
@@ -922,6 +905,22 @@ onBeforeUnmount(() => {
         </section>
 
         <div class="quant-filter-footer">
+          <button
+            v-if="sequenceMode === 'single_target'"
+            class="btn"
+            :disabled="loading || !selectedCode"
+            @click="loadSingleTargetKline"
+          >
+            {{ loading ? '加载中...' : '加载目标 K 线' }}
+          </button>
+          <button
+            v-else
+            class="btn"
+            :disabled="scanLoading || !buyValidation.groups.length || !scanStartDate || !scanEndDate"
+            @click="executeMarketScan"
+          >
+            {{ scanLoading ? '执行扫描中...' : '执行扫描' }}
+          </button>
           <button class="btn primary" :disabled="!canSave" @click="saveStrategy(false)">
             {{ saveLoading ? '保存中...' : loadedStrategyId ? '更新当前策略' : '保存策略' }}
           </button>
@@ -933,3 +932,4 @@ onBeforeUnmount(() => {
     </aside>
   </div>
 </template>
+

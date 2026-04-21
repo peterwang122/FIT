@@ -2,7 +2,7 @@
 import { useRouter } from 'vue-router'
 
 const props = defineProps<{
-  active: 'overview' | 'stocks' | 'progress' | 'quant' | 'account' | 'tasks'
+  active: 'overview' | 'stocks' | 'markets' | 'progress' | 'quant' | 'account' | 'tasks'
 }>()
 
 const router = useRouter()
@@ -13,6 +13,10 @@ function goOverview() {
 
 function goStocks() {
   void router.push('/stocks')
+}
+
+function goMarkets() {
+  void router.push('/markets')
 }
 
 function goQuant() {
@@ -44,6 +48,9 @@ function goAccount() {
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'stocks' }" @click="goStocks">
         个股行情
+      </button>
+      <button type="button" class="sidebar-link" :class="{ active: active === 'markets' }" @click="goMarkets">
+        港/美股
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'quant' }" @click="goQuant">
         量化分析

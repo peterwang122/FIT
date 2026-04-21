@@ -15,7 +15,7 @@ import {
   type Time,
   type WhitespaceData,
 } from 'lightweight-charts'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type {
   QuantHighlightBand,
@@ -23,11 +23,34 @@ import type {
   QuantIndicatorParams,
   QuantLinePoint,
 } from '../types/quant'
-import type { FuturesBasisPoint, IndexBreadthPoint, IndexEmotionPoint, KlineCandle, MarketOption } from '../types/stock'
+import type {
+  FuturesBasisPoint,
+  IndexBreadthPoint,
+  IndexEmotionPoint,
+  IndexUsFearGreedPoint,
+  IndexUsHedgeProxyPoint,
+  IndexUsVixPoint,
+  IndexVixPoint,
+  KlineCandle,
+  MarketOption,
+} from '../types/stock'
 import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 import { buildQuantFilterDataset } from '../utils/quantIndicators'
 
-type PanelKey = 'main' | 'macd' | 'kdj' | 'wr' | 'emotion' | 'basis' | 'breadth'
+type PanelKey =
+  | 'main'
+  | 'macd'
+  | 'kdj'
+  | 'wr'
+  | 'rsi'
+  | 'emotion'
+  | 'basis'
+  | 'breadth'
+  | 'vix'
+  | 'usVix'
+  | 'usFearGreed'
+  | 'usHedge'
+type SubPanelKey = Exclude<PanelKey, 'main'>
 type MainOverlayMode = 'ma' | 'boll'
 type AnySeries = ISeriesApi<SeriesType, Time>
 type LineSeriesApi = ISeriesApi<'Line', Time>
@@ -39,7 +62,23 @@ type PrimitiveBinding = {
 }
 type SummaryRow = { label: string; value: string; placeholder?: boolean }
 type SummaryCard = { key: string; title: string; hint?: string; rows: SummaryRow[] }
+type SubPanelOption = { key: SubPanelKey; label: string; available: boolean }
 const HISTORY_REQUEST_THRESHOLD = 15
+const ALL_PANEL_KEYS: PanelKey[] = [
+  'main',
+  'macd',
+  'kdj',
+  'wr',
+  'rsi',
+  'emotion',
+  'basis',
+  'breadth',
+  'vix',
+  'usVix',
+  'usFearGreed',
+  'usHedge',
+]
+const ALL_SUB_PANEL_KEYS: SubPanelKey[] = ALL_PANEL_KEYS.filter((item): item is SubPanelKey => item !== 'main')
 
 const props = withDefaults(
   defineProps<{
@@ -53,11 +92,20 @@ const props = withDefaults(
     breadthPoints?: IndexBreadthPoint[]
     breadthLoading?: boolean
     breadthErrorMessage?: string
+    vixPoints?: IndexVixPoint[]
+    supportsVixPanel?: boolean
+    usVixPoints?: IndexUsVixPoint[]
+    usFearGreedPoints?: IndexUsFearGreedPoint[]
+    usHedgeProxyPoints?: IndexUsHedgeProxyPoint[]
+    supportsUsVixPanel?: boolean
+    supportsUsFearGreedPanel?: boolean
+    supportsUsHedgeProxyPanel?: boolean
     highlightBands?: QuantHighlightBand[]
     marketOptions?: MarketOption[]
     symbolName: string
     symbolCode: string
     params: QuantIndicatorParams
+    supportsAuxiliaryPanels?: boolean
     loading?: boolean
     defaultVisibleDays?: number
     zoomStep?: number
@@ -74,7 +122,16 @@ const props = withDefaults(
     breadthPoints: () => [],
     breadthLoading: false,
     breadthErrorMessage: '',
+    vixPoints: () => [],
+    supportsVixPanel: false,
+    usVixPoints: () => [],
+    usFearGreedPoints: () => [],
+    usHedgeProxyPoints: () => [],
+    supportsUsVixPanel: false,
+    supportsUsFearGreedPanel: false,
+    supportsUsHedgeProxyPanel: false,
     highlightBands: () => [],
+    supportsAuxiliaryPanels: true,
     loading: false,
     defaultVisibleDays: 90,
     zoomStep: 0.18,
@@ -93,12 +150,18 @@ const mainContainerRef = ref<HTMLDivElement | null>(null)
 const macdContainerRef = ref<HTMLDivElement | null>(null)
 const kdjContainerRef = ref<HTMLDivElement | null>(null)
 const wrContainerRef = ref<HTMLDivElement | null>(null)
+const rsiContainerRef = ref<HTMLDivElement | null>(null)
 const emotionContainerRef = ref<HTMLDivElement | null>(null)
 const basisContainerRef = ref<HTMLDivElement | null>(null)
 const breadthContainerRef = ref<HTMLDivElement | null>(null)
+const vixContainerRef = ref<HTMLDivElement | null>(null)
+const usVixContainerRef = ref<HTMLDivElement | null>(null)
+const usFearGreedContainerRef = ref<HTMLDivElement | null>(null)
+const usHedgeContainerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 const overlayMode = ref<MainOverlayMode>('ma')
 const hoveredTradeDate = ref<string | null>(null)
+const visibleSubPanels = ref<SubPanelKey[]>([...ALL_SUB_PANEL_KEYS])
 
 const charts: Partial<Record<PanelKey, IChartApi>> = {}
 const primarySeriesMap = new Map<PanelKey, AnySeries>()
@@ -111,17 +174,90 @@ let macdDeaSeries: LineSeriesApi | null = null
 let macdHistogramSeries: HistogramSeriesApi | null = null
 let kdjSeriesRefs: LineSeriesApi[] = []
 let wrSeries: LineSeriesApi | null = null
+let rsiSeries: LineSeriesApi | null = null
 let emotionSeries: LineSeriesApi | null = null
 let basisMainSeries: LineSeriesApi | null = null
 let basisMonthSeries: LineSeriesApi | null = null
 let breadthSeries: LineSeriesApi | null = null
 let breadthCountSeries: LineSeriesApi | null = null
+let vixSeries: LineSeriesApi | null = null
+let usVixSeries: LineSeriesApi | null = null
+let usFearGreedSeries: LineSeriesApi | null = null
+let usHedgeSeries: LineSeriesApi | null = null
 let highlightBindings: PrimitiveBinding[] = []
 let isSyncingRange = false
 let isSyncingCrosshair = false
 let shouldResetVisibleRange = true
 let unsubs: Array<() => void> = []
 let lastRequestedHistoryBoundary: string | null = null
+
+const visibleSubPanelSet = computed(() => new Set(visibleSubPanels.value))
+const visiblePanelOptions = computed<SubPanelOption[]>(() => [
+  { key: 'macd', label: 'MACD', available: true },
+  { key: 'kdj', label: 'KDJ', available: true },
+  { key: 'wr', label: 'WR', available: true },
+  { key: 'rsi', label: 'RSI', available: true },
+  { key: 'emotion', label: '情绪', available: props.supportsAuxiliaryPanels },
+  { key: 'basis', label: '期现差', available: props.supportsAuxiliaryPanels },
+  { key: 'breadth', label: '涨跌家数', available: props.supportsAuxiliaryPanels },
+  { key: 'vix', label: 'VIX', available: props.supportsVixPanel },
+  { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
+  { key: 'usFearGreed', label: '恐贪', available: props.supportsUsFearGreedPanel },
+  { key: 'usHedge', label: '对冲代理', available: props.supportsUsHedgeProxyPanel },
+])
+const availableSubPanelOptions = computed(() => visiblePanelOptions.value.filter((item) => item.available))
+
+function isSubPanelAvailable(panelKey: SubPanelKey) {
+  return availableSubPanelOptions.value.some((item) => item.key === panelKey)
+}
+
+function isSubPanelVisible(panelKey: SubPanelKey) {
+  return isSubPanelAvailable(panelKey) && visibleSubPanelSet.value.has(panelKey)
+}
+
+function getActivePanelKeys(): PanelKey[] {
+  return ['main', ...availableSubPanelOptions.value.filter((item) => isSubPanelVisible(item.key)).map((item) => item.key)]
+}
+
+function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
+  if (panelKey === 'main') return mainContainerRef.value
+  if (panelKey === 'macd') return macdContainerRef.value
+  if (panelKey === 'kdj') return kdjContainerRef.value
+  if (panelKey === 'wr') return wrContainerRef.value
+  if (panelKey === 'rsi') return rsiContainerRef.value
+  if (panelKey === 'emotion') return emotionContainerRef.value
+  if (panelKey === 'basis') return basisContainerRef.value
+  if (panelKey === 'breadth') return breadthContainerRef.value
+  if (panelKey === 'vix') return vixContainerRef.value
+  if (panelKey === 'usVix') return usVixContainerRef.value
+  if (panelKey === 'usFearGreed') return usFearGreedContainerRef.value
+  if (panelKey === 'usHedge') return usHedgeContainerRef.value
+  return null
+}
+
+async function rebuildChartsPreservingRange() {
+  const visibleRange = charts.main?.timeScale().getVisibleLogicalRange() ?? null
+  const shouldResetAfterRender = shouldResetVisibleRange && !visibleRange
+  shouldResetVisibleRange = shouldResetAfterRender
+  disposeCharts()
+  await nextTick()
+  renderCharts()
+  if (visibleRange) {
+    shouldResetVisibleRange = false
+    charts.main?.timeScale().setVisibleLogicalRange(visibleRange)
+  }
+}
+
+function toggleSubPanel(panelKey: SubPanelKey) {
+  const current = new Set(visibleSubPanels.value)
+  if (current.has(panelKey)) {
+    current.delete(panelKey)
+  } else {
+    current.add(panelKey)
+  }
+  visibleSubPanels.value = ALL_SUB_PANEL_KEYS.filter((item) => current.has(item))
+  void rebuildChartsPreservingRange()
+}
 
 function formatDateText(value: Date): string {
   const year = value.getFullYear()
@@ -132,6 +268,34 @@ function formatDateText(value: Date): string {
 
 function parseDateText(value: string): number {
   return new Date(`${value}T00:00:00`).getTime()
+}
+
+function alignSparseRowsToTradeDates<T>(
+  tradeDates: string[],
+  rows: T[],
+  dateSelector: (row: T) => string | null | undefined,
+) {
+  const sortedTradeDates = [...tradeDates].filter(Boolean).sort((left, right) => left.localeCompare(right))
+  if (!sortedTradeDates.length || !rows.length) {
+    return new Map<string, T>()
+  }
+
+  const sortedRows = [...rows]
+    .filter((row) => Boolean(dateSelector(row)))
+    .sort((left, right) => String(dateSelector(left)).localeCompare(String(dateSelector(right))))
+
+  const aligned = new Map<string, T>()
+  let tradeIndex = 0
+  for (const row of sortedRows) {
+    const rowDate = String(dateSelector(row))
+    while (tradeIndex < sortedTradeDates.length && sortedTradeDates[tradeIndex] < rowDate) {
+      tradeIndex += 1
+    }
+    if (tradeIndex < sortedTradeDates.length) {
+      aligned.set(sortedTradeDates[tradeIndex], row)
+    }
+  }
+  return aligned
 }
 
 const sortedCandles = computed(() =>
@@ -187,6 +351,18 @@ const quantDataset = computed(() =>
     props.emotionPoints,
     props.futuresBasisPoints,
     props.breadthPoints,
+    props.vixPoints,
+    props.supportsVixPanel,
+    {
+      includeCnAuxiliary: props.supportsAuxiliaryPanels,
+      includeCnVix: props.supportsVixPanel,
+      includeUsVix: props.supportsUsVixPanel,
+      includeUsFearGreed: props.supportsUsFearGreedPanel,
+      includeUsHedge: props.supportsUsHedgeProxyPanel,
+      usVixPoints: props.usVixPoints,
+      usFearGreedPoints: props.usFearGreedPoints,
+      usHedgeProxyPoints: props.usHedgeProxyPoints,
+    },
   ),
 )
 
@@ -217,6 +393,38 @@ const breadthCountSeriesData = computed(() => {
   }))
 })
 
+const vixSeriesData = computed(() =>
+  (quantDataset.value.vix?.data ?? []).map((item) => ({
+    time: item.time as Time,
+    rawDate: item.time,
+    value: item.value ?? null,
+  })),
+)
+
+const usVixSeriesData = computed(() =>
+  (quantDataset.value.usVix?.data ?? []).map((item) => ({
+    time: item.time as Time,
+    rawDate: item.time,
+    value: item.value ?? null,
+  })),
+)
+
+const usFearGreedSeriesData = computed(() =>
+  (quantDataset.value.usFearGreed?.data ?? []).map((item) => ({
+    time: item.time as Time,
+    rawDate: item.time,
+    value: item.value ?? null,
+  })),
+)
+
+const usHedgeSeriesData = computed(() =>
+  (quantDataset.value.usHedgeProxy?.data ?? []).map((item) => ({
+    time: item.time as Time,
+    rawDate: item.time,
+    value: item.value ?? null,
+  })),
+)
+
 const breadthPointByDate = computed(
   () =>
     new Map(
@@ -231,6 +439,70 @@ const breadthPointByDate = computed(
     ),
 )
 
+const vixPointByDate = computed(
+  () =>
+    new Map(
+      props.vixPoints.map((item) => [
+        item.trade_date,
+        {
+          open_price: Number(item.open_price) || 0,
+          high_price: Number(item.high_price) || 0,
+          low_price: Number(item.low_price) || 0,
+          close_price: Number(item.close_price) || 0,
+        },
+      ]),
+    ),
+)
+
+const usVixPointByDate = computed(
+  () =>
+    new Map(
+      props.usVixPoints.map((item) => [
+        item.trade_date,
+        {
+          open_value: Number(item.open_value) || 0,
+          high_value: Number(item.high_value) || 0,
+          low_value: Number(item.low_value) || 0,
+          close_value: Number(item.close_value) || 0,
+        },
+      ]),
+    ),
+)
+
+const usFearGreedPointByDate = computed(
+  () =>
+    new Map(
+      props.usFearGreedPoints.map((item) => [
+        item.trade_date,
+        {
+          fear_greed_value: Number(item.fear_greed_value) || 0,
+          sentiment_label: String(item.sentiment_label || '').trim(),
+        },
+      ]),
+    ),
+)
+
+const usHedgeProxyPointByDate = computed(() => {
+  const alignedRows = alignSparseRowsToTradeDates(
+    sortedCandles.value.map((item) => item.trade_date),
+    props.usHedgeProxyPoints,
+    (item) => item.release_date,
+  )
+  return new Map(
+    [...alignedRows.entries()].map(([tradeDate, item]) => [
+      tradeDate,
+      {
+        contract_scope: String(item.contract_scope || '').trim().toUpperCase(),
+        long_value: item.long_value,
+        short_value: item.short_value,
+        ratio_value: item.ratio_value,
+        report_date: item.report_date,
+        release_date: item.release_date,
+      },
+    ]),
+  )
+})
+
 const mainLegend = computed(() =>
   overlayMode.value === 'boll'
     ? [
@@ -244,7 +516,7 @@ const mainLegend = computed(() =>
 const macdLegend = computed(() => [
   { label: indicatorPayload.value.macd.dif.label, color: indicatorPayload.value.macd.dif.color },
   { label: indicatorPayload.value.macd.dea.label, color: indicatorPayload.value.macd.dea.color },
-  { label: 'MACD柱', color: '#94a3b8' },
+  { label: 'MACD柱值', color: '#94a3b8' },
 ])
 
 const kdjLegend = computed(() => [
@@ -254,6 +526,8 @@ const kdjLegend = computed(() => [
 ])
 
 const wrLegend = computed(() => [{ label: indicatorPayload.value.wr.label, color: indicatorPayload.value.wr.color }])
+const rsiLegend = computed(() => [{ label: indicatorPayload.value.rsi.label, color: indicatorPayload.value.rsi.color }])
+
 
 const emotionLegend = computed(() => [
   {
@@ -278,7 +552,36 @@ const breadthLegend = computed(() => [
   },
 ])
 
+const vixLegend = computed(() => [
+  {
+    label: quantDataset.value.vix?.label ?? 'VIX收',
+    color: quantDataset.value.vix?.color ?? '#7c3aed',
+  },
+])
+
+const usVixLegend = computed(() => [
+  {
+    label: quantDataset.value.usVix?.label ?? '美股VIX收',
+    color: quantDataset.value.usVix?.color ?? '#b45309',
+  },
+])
+
+const usFearGreedLegend = computed(() => [
+  {
+    label: quantDataset.value.usFearGreed?.label ?? '恐贪指数',
+    color: quantDataset.value.usFearGreed?.color ?? '#dc2626',
+  },
+])
+
+const usHedgeLegend = computed(() => [
+  {
+    label: quantDataset.value.usHedgeProxy?.label ?? '对冲代理多空比',
+    color: quantDataset.value.usHedgeProxy?.color ?? '#0f766e',
+  },
+])
+
 const activeTradeDate = computed(() => hoveredTradeDate.value ?? latestSnapshot.value?.trade_date ?? '')
+
 
 function handleIndexSelect(event: Event) {
   const target = event.target as HTMLSelectElement | null
@@ -302,14 +605,16 @@ function formatMetricWithSuffix(value: number | null | undefined, suffix: string
   return formatted === '-' ? '-' : `${formatted}${suffix}`
 }
 
+
 function formatRuleGroupList(prefix: string, groups: number[] | undefined) {
   if (!groups?.length) {
     return '-'
   }
   const visibleGroups = groups.slice(0, 3)
-  const base = `${prefix}规则组${visibleGroups.join('、')}`
+  const base = `${prefix}规则 ${visibleGroups.join(' / ')}`
   return groups.length > 3 ? `${base} +${groups.length - 3}` : base
 }
+
 
 function formatPairValue(left: number | null | undefined, right: number | null | undefined) {
   if (left === null || left === undefined || !Number.isFinite(left) || right === null || right === undefined || !Number.isFinite(right)) {
@@ -377,6 +682,7 @@ const indicatorValueMaps = computed(() => {
       d: buildValueMap(payload.kdj.d.data),
       j: buildValueMap(payload.kdj.j.data),
     },
+    rsi: buildValueMap(payload.rsi.data),
     wr: buildValueMap(payload.wr.data),
     emotion: buildValueMap(quantDataset.value.emotion?.data ?? []),
     basis: {
@@ -384,6 +690,10 @@ const indicatorValueMaps = computed(() => {
       month: buildValueMap(quantDataset.value.basis?.month.data ?? []),
     },
     breadth: buildValueMap(quantDataset.value.breadth?.data ?? []),
+    vix: buildValueMap(quantDataset.value.vix?.data ?? []),
+    usVix: buildValueMap(quantDataset.value.usVix?.data ?? []),
+    usFearGreed: buildValueMap(quantDataset.value.usFearGreed?.data ?? []),
+    usHedge: buildValueMap(quantDataset.value.usHedgeProxy?.data ?? []),
   }
 })
 
@@ -412,6 +722,7 @@ const activeIndicatorSnapshot = computed(() => {
       d: maps.kdj.d.get(tradeDate),
       j: maps.kdj.j.get(tradeDate),
     },
+    rsi: maps.rsi.get(tradeDate),
     wr: maps.wr.get(tradeDate),
     emotion: maps.emotion.get(tradeDate),
     basis: {
@@ -422,6 +733,29 @@ const activeIndicatorSnapshot = computed(() => {
       pct: maps.breadth.get(tradeDate),
       upCount: breadthPointByDate.value.get(tradeDate)?.up_count ?? 0,
       totalCount: breadthPointByDate.value.get(tradeDate)?.total_count ?? 0,
+    },
+    vix: {
+      open: vixPointByDate.value.get(tradeDate)?.open_price ?? null,
+      high: vixPointByDate.value.get(tradeDate)?.high_price ?? null,
+      low: vixPointByDate.value.get(tradeDate)?.low_price ?? null,
+      close: maps.vix.get(tradeDate) ?? null,
+    },
+    usVix: {
+      open: usVixPointByDate.value.get(tradeDate)?.open_value ?? null,
+      high: usVixPointByDate.value.get(tradeDate)?.high_value ?? null,
+      low: usVixPointByDate.value.get(tradeDate)?.low_value ?? null,
+      close: maps.usVix.get(tradeDate) ?? null,
+    },
+    usFearGreed: {
+      value: maps.usFearGreed.get(tradeDate) ?? null,
+      label: usFearGreedPointByDate.value.get(tradeDate)?.sentiment_label ?? '',
+    },
+    usHedge: {
+      long: usHedgeProxyPointByDate.value.get(tradeDate)?.long_value ?? null,
+      short: usHedgeProxyPointByDate.value.get(tradeDate)?.short_value ?? null,
+      ratio: maps.usHedge.get(tradeDate) ?? null,
+      scope: usHedgeProxyPointByDate.value.get(tradeDate)?.contract_scope ?? '',
+      releaseDate: usHedgeProxyPointByDate.value.get(tradeDate)?.release_date ?? null,
     },
   }
 })
@@ -482,26 +816,86 @@ const summaryCards = computed<SummaryCard[]>(() => {
       ],
     },
     {
-      key: 'kdj-wr',
-      title: 'KDJ / WR',
+      key: 'kdj-wr-rsi',
+      title: 'KDJ / WR / RSI',
       rows: [
         { label: 'K', value: formatMetric(indicator.kdj.k) },
         { label: 'D', value: formatMetric(indicator.kdj.d) },
         { label: 'J', value: formatMetric(indicator.kdj.j) },
         { label: 'WR', value: formatMetric(indicator.wr) },
+        { label: indicatorPayload.value.rsi.label, value: formatMetric(indicator.rsi) },
       ],
     },
-    {
-      key: 'extended',
-      title: '情绪 / 期现差 / 涨跌家数',
-      rows: [
-        { label: '情绪指标', value: formatMetric(indicator.emotion) },
-        { label: '主连期现差', value: formatMetric(indicator.basis.main) },
-        { label: '月连期现差', value: formatMetric(indicator.basis.month) },
-        { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
-        { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
-      ],
-    },
+    ...(props.supportsAuxiliaryPanels
+      ? [
+          {
+            key: 'extended',
+            title: '情绪 / 期现差 / 涨跌家数',
+            rows: [
+              { label: '情绪指标', value: formatMetric(indicator.emotion) },
+              { label: '主连期现差', value: formatMetric(indicator.basis.main) },
+              { label: '月连期现差', value: formatMetric(indicator.basis.month) },
+              { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
+              { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsVixPanel
+      ? [
+          {
+            key: 'vix',
+            title: 'VIX',
+            rows: [
+              { label: 'VIX开', value: formatMetric(indicator.vix.open) },
+              { label: 'VIX高', value: formatMetric(indicator.vix.high) },
+              { label: 'VIX低', value: formatMetric(indicator.vix.low) },
+              { label: 'VIX收', value: formatMetric(indicator.vix.close) },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsUsVixPanel
+      ? [
+          {
+            key: 'us-vix',
+            title: '美股 VIX',
+            rows: [
+              { label: 'VIX开', value: formatMetric(indicator.usVix.open) },
+              { label: 'VIX高', value: formatMetric(indicator.usVix.high) },
+              { label: 'VIX低', value: formatMetric(indicator.usVix.low) },
+              { label: 'VIX收', value: formatMetric(indicator.usVix.close) },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsUsFearGreedPanel
+      ? [
+          {
+            key: 'fear-greed',
+            title: '恐贪指数',
+            rows: [
+              { label: '指数值', value: formatMetric(indicator.usFearGreed.value) },
+              { label: '情绪标签', value: indicator.usFearGreed.label || '-' },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsUsHedgeProxyPanel
+      ? [
+          {
+            key: 'us-hedge',
+            title: '对冲基金代理',
+            hint: indicator.usHedge.scope || undefined,
+            rows: [
+              { label: '代理多头', value: formatMetric(indicator.usHedge.long) },
+              { label: '代理空头', value: formatMetric(indicator.usHedge.short) },
+              { label: '多空比', value: formatMetric(indicator.usHedge.ratio) },
+              { label: '发布日期', value: indicator.usHedge.releaseDate || '-' },
+            ],
+          },
+        ]
+      : []),
     {
       key: 'rule-hits',
       title: '命中规则',
@@ -611,7 +1005,7 @@ function syncVisibleRange(sourceKey: PanelKey, range: LogicalRange | null) {
 
   isSyncingRange = true
   try {
-    ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis', 'breadth'] as PanelKey[]).forEach((panelKey) => {
+    getActivePanelKeys().forEach((panelKey) => {
       if (panelKey !== sourceKey) {
         charts[panelKey]?.timeScale().setVisibleLogicalRange(range)
       }
@@ -630,7 +1024,7 @@ function syncCrosshair(sourceKey: PanelKey, param: MouseEventParams<Time>) {
   isSyncingCrosshair = true
   try {
     const time = param.time ? String(param.time) : null
-    ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis', 'breadth'] as PanelKey[]).forEach((panelKey) => {
+    getActivePanelKeys().forEach((panelKey) => {
       if (panelKey === sourceKey) {
         return
       }
@@ -756,21 +1150,7 @@ function syncHighlightBindings() {
 }
 
 function updateAllSeries() {
-  if (
-    !mainCandleSeries ||
-    !macdDifSeries ||
-    !macdDeaSeries ||
-    !macdHistogramSeries ||
-    !wrSeries ||
-    !emotionSeries ||
-    !basisMainSeries ||
-    !basisMonthSeries ||
-    !breadthSeries ||
-    !breadthCountSeries ||
-    !kdjSeriesRefs.length
-  ) {
-    return
-  }
+  if (!mainCandleSeries) return
 
   const payload = indicatorPayload.value
   mainCandleSeries.setData(mainCandles.value)
@@ -791,62 +1171,152 @@ function updateAllSeries() {
     bollSeriesRefs[2]?.setData([])
   }
 
-  macdDifSeries.setData(toLineData(payload.macd.dif.data))
-  macdDeaSeries.setData(toLineData(payload.macd.dea.data))
-  macdHistogramSeries.setData(toHistogramData(payload.macd.histogram))
-
-  kdjSeriesRefs[0]?.setData(toLineData(payload.kdj.k.data))
-  kdjSeriesRefs[1]?.setData(toLineData(payload.kdj.d.data))
-  kdjSeriesRefs[2]?.setData(toLineData(payload.kdj.j.data))
-  wrSeries.setData(toLineData(payload.wr.data))
-  emotionSeries.setData(toLineData(quantDataset.value.emotion?.data ?? []))
-  basisMainSeries.setData(toLineData(quantDataset.value.basis?.main.data ?? []))
-  basisMonthSeries.setData(toLineData(quantDataset.value.basis?.month.data ?? []))
-  breadthSeries.setData(toLineData(quantDataset.value.breadth?.data ?? []))
-  breadthCountSeries.setData(
-    breadthCountSeriesData.value.map((item) => ({
-      time: item.time,
-      value: item.value,
-    })),
-  )
-
   panelValueMaps.set('main', new Map(sortedCandles.value.map((item) => [item.trade_date, item.close])))
-  panelValueMaps.set('macd', buildValueMap(payload.macd.dif.data))
-  panelValueMaps.set('kdj', buildValueMap(payload.kdj.k.data))
-  panelValueMaps.set('wr', buildValueMap(payload.wr.data))
-  panelValueMaps.set('emotion', new Map(emotionSeriesData.value.map((item) => [item.rawDate, item.value])))
-  panelValueMaps.set('basis', buildValueMap(quantDataset.value.basis?.main.data ?? []))
-  panelValueMaps.set('breadth', new Map(breadthSeriesData.value.map((item) => [item.rawDate, item.value])))
+
+  if (isSubPanelVisible('macd')) {
+    if (!macdDifSeries || !macdDeaSeries || !macdHistogramSeries) return
+    macdDifSeries.setData(toLineData(payload.macd.dif.data))
+    macdDeaSeries.setData(toLineData(payload.macd.dea.data))
+    macdHistogramSeries.setData(toHistogramData(payload.macd.histogram))
+    panelValueMaps.set('macd', buildValueMap(payload.macd.dif.data))
+  } else {
+    panelValueMaps.delete('macd')
+  }
+
+  if (isSubPanelVisible('kdj')) {
+    if (!kdjSeriesRefs.length) return
+    kdjSeriesRefs[0]?.setData(toLineData(payload.kdj.k.data))
+    kdjSeriesRefs[1]?.setData(toLineData(payload.kdj.d.data))
+    kdjSeriesRefs[2]?.setData(toLineData(payload.kdj.j.data))
+    panelValueMaps.set('kdj', buildValueMap(payload.kdj.k.data))
+  } else {
+    panelValueMaps.delete('kdj')
+  }
+
+  if (isSubPanelVisible('wr')) {
+    if (!wrSeries) return
+    wrSeries.setData(toLineData(payload.wr.data))
+    panelValueMaps.set('wr', buildValueMap(payload.wr.data))
+  } else {
+    panelValueMaps.delete('wr')
+  }
+
+  if (isSubPanelVisible('rsi')) {
+    if (!rsiSeries) return
+    rsiSeries.setData(toLineData(payload.rsi.data))
+    panelValueMaps.set('rsi', buildValueMap(payload.rsi.data))
+  } else {
+    panelValueMaps.delete('rsi')
+  }
+
+  if (isSubPanelVisible('emotion')) {
+    if (!emotionSeries) return
+    emotionSeries.setData(toLineData(quantDataset.value.emotion?.data ?? []))
+    panelValueMaps.set('emotion', new Map(emotionSeriesData.value.map((item) => [item.rawDate, item.value])))
+  } else {
+    panelValueMaps.delete('emotion')
+  }
+
+  if (isSubPanelVisible('basis')) {
+    if (!basisMainSeries || !basisMonthSeries) return
+    basisMainSeries.setData(toLineData(quantDataset.value.basis?.main.data ?? []))
+    basisMonthSeries.setData(toLineData(quantDataset.value.basis?.month.data ?? []))
+    panelValueMaps.set('basis', buildValueMap(quantDataset.value.basis?.main.data ?? []))
+  } else {
+    panelValueMaps.delete('basis')
+  }
+
+  if (isSubPanelVisible('breadth')) {
+    if (!breadthSeries || !breadthCountSeries) return
+    breadthSeries.setData(toLineData(quantDataset.value.breadth?.data ?? []))
+    breadthCountSeries.setData(
+      breadthCountSeriesData.value.map((item) => ({
+        time: item.time,
+        value: item.value,
+      })),
+    )
+    panelValueMaps.set('breadth', new Map(breadthSeriesData.value.map((item) => [item.rawDate, item.value])))
+  } else {
+    panelValueMaps.delete('breadth')
+  }
+
+  if (isSubPanelVisible('vix')) {
+    if (!vixSeries) return
+    vixSeries.setData(toLineData(quantDataset.value.vix?.data ?? []))
+    panelValueMaps.set('vix', new Map(vixSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])))
+  } else {
+    panelValueMaps.delete('vix')
+  }
+
+  if (isSubPanelVisible('usVix')) {
+    if (!usVixSeries) return
+    usVixSeries.setData(toLineData(quantDataset.value.usVix?.data ?? []))
+    panelValueMaps.set('usVix', new Map(usVixSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])))
+  } else {
+    panelValueMaps.delete('usVix')
+  }
+
+  if (isSubPanelVisible('usFearGreed')) {
+    if (!usFearGreedSeries) return
+    usFearGreedSeries.setData(toLineData(quantDataset.value.usFearGreed?.data ?? []))
+    panelValueMaps.set(
+      'usFearGreed',
+      new Map(usFearGreedSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])),
+    )
+  } else {
+    panelValueMaps.delete('usFearGreed')
+  }
+
+  if (isSubPanelVisible('usHedge')) {
+    if (!usHedgeSeries) return
+    usHedgeSeries.setData(toLineData(quantDataset.value.usHedgeProxy?.data ?? []))
+    panelValueMaps.set(
+      'usHedge',
+      new Map(usHedgeSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])),
+    )
+  } else {
+    panelValueMaps.delete('usHedge')
+  }
 }
 
 function renderCharts() {
-  if (
-    !mainContainerRef.value ||
-    !macdContainerRef.value ||
-    !kdjContainerRef.value ||
-    !wrContainerRef.value ||
-    !emotionContainerRef.value ||
-    !basisContainerRef.value ||
-    !breadthContainerRef.value
-  ) {
-    return
-  }
+  const activePanelKeys = getActivePanelKeys()
+  if (activePanelKeys.some((panelKey) => !getPanelContainer(panelKey))) return
 
   try {
     renderError.value = ''
 
-    charts.main = createBaseChart(mainContainerRef.value, false)
-    charts.macd = createBaseChart(macdContainerRef.value, false)
-    charts.kdj = createBaseChart(kdjContainerRef.value, false)
-    charts.wr = createBaseChart(wrContainerRef.value, false)
-    charts.emotion = createBaseChart(emotionContainerRef.value, false)
-    charts.basis = createBaseChart(basisContainerRef.value, false)
-    charts.breadth = createBaseChart(breadthContainerRef.value, true)
-    charts.breadth.priceScale('left').applyOptions({
-      visible: true,
-      borderColor: '#e2e8f0',
-      autoScale: true,
-    })
+    charts.main = createBaseChart(mainContainerRef.value!, false)
+    if (isSubPanelVisible('macd')) charts.macd = createBaseChart(macdContainerRef.value!, false)
+    if (isSubPanelVisible('kdj')) charts.kdj = createBaseChart(kdjContainerRef.value!, false)
+    if (isSubPanelVisible('wr')) charts.wr = createBaseChart(wrContainerRef.value!, false)
+    if (isSubPanelVisible('rsi')) charts.rsi = createBaseChart(rsiContainerRef.value!, false)
+    if (isSubPanelVisible('emotion')) {
+      charts.emotion = createBaseChart(emotionContainerRef.value!, false)
+    }
+    if (isSubPanelVisible('basis')) {
+      charts.basis = createBaseChart(basisContainerRef.value!, false)
+    }
+    if (isSubPanelVisible('breadth')) {
+      charts.breadth = createBaseChart(breadthContainerRef.value!, true)
+      charts.breadth.priceScale('left').applyOptions({
+        visible: true,
+        borderColor: '#e2e8f0',
+        autoScale: true,
+      })
+    }
+    if (isSubPanelVisible('vix')) {
+      charts.vix = createBaseChart(vixContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('usVix')) {
+      charts.usVix = createBaseChart(usVixContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('usFearGreed')) {
+      charts.usFearGreed = createBaseChart(usFearGreedContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('usHedge')) {
+      charts.usHedge = createBaseChart(usHedgeContainerRef.value!, true)
+    }
 
     mainCandleSeries = addCandles(charts.main)
     mainMaSeries = indicatorPayload.value.ma.map((item) => addLineSeries(charts.main!, item.color, 2))
@@ -856,32 +1326,44 @@ function renderCharts() {
       addLineSeries(charts.main, indicatorPayload.value.boll.lower.color, 1),
     ]
 
-    macdDifSeries = addLineSeries(charts.macd, indicatorPayload.value.macd.dif.color, 2)
-    macdDeaSeries = addLineSeries(charts.macd, indicatorPayload.value.macd.dea.color, 2)
-    macdHistogramSeries = addHistogramSeries(charts.macd)
+    macdDifSeries = charts.macd ? addLineSeries(charts.macd, indicatorPayload.value.macd.dif.color, 2) : null
+    macdDeaSeries = charts.macd ? addLineSeries(charts.macd, indicatorPayload.value.macd.dea.color, 2) : null
+    macdHistogramSeries = charts.macd ? addHistogramSeries(charts.macd) : null
 
-    kdjSeriesRefs = [
-      addLineSeries(charts.kdj, indicatorPayload.value.kdj.k.color, 2),
-      addLineSeries(charts.kdj, indicatorPayload.value.kdj.d.color, 2),
-      addLineSeries(charts.kdj, indicatorPayload.value.kdj.j.color, 2),
-    ]
+    kdjSeriesRefs = charts.kdj
+      ? [
+          addLineSeries(charts.kdj, indicatorPayload.value.kdj.k.color, 2),
+          addLineSeries(charts.kdj, indicatorPayload.value.kdj.d.color, 2),
+          addLineSeries(charts.kdj, indicatorPayload.value.kdj.j.color, 2),
+        ]
+      : []
 
-    wrSeries = addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2)
-    emotionSeries = addLineSeries(charts.emotion, quantDataset.value.emotion?.color ?? '#0f4c75', 2)
-    basisMainSeries = addLineSeries(charts.basis, quantDataset.value.basis?.main.color ?? '#dc2626', 2)
-    basisMonthSeries = addLineSeries(charts.basis, quantDataset.value.basis?.month.color ?? '#2563eb', 2)
-    breadthSeries = addLineSeries(charts.breadth, quantDataset.value.breadth?.color ?? '#0ea5e9', 2)
-    breadthCountSeries = addLineSeries(charts.breadth, '#f97316', 2, 'left')
+    wrSeries = charts.wr ? addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2) : null
+    rsiSeries = charts.rsi ? addLineSeries(charts.rsi, indicatorPayload.value.rsi.color, 2) : null
+    emotionSeries = charts.emotion ? addLineSeries(charts.emotion, quantDataset.value.emotion?.color ?? '#0f4c75', 2) : null
+    basisMainSeries = charts.basis ? addLineSeries(charts.basis, quantDataset.value.basis?.main.color ?? '#dc2626', 2) : null
+    basisMonthSeries = charts.basis ? addLineSeries(charts.basis, quantDataset.value.basis?.month.color ?? '#2563eb', 2) : null
+    breadthSeries = charts.breadth ? addLineSeries(charts.breadth, quantDataset.value.breadth?.color ?? '#0ea5e9', 2) : null
+    breadthCountSeries = charts.breadth ? addLineSeries(charts.breadth, '#f97316', 2, 'left') : null
+    vixSeries = charts.vix ? addLineSeries(charts.vix, quantDataset.value.vix?.color ?? '#7c3aed', 2) : null
+    usVixSeries = charts.usVix ? addLineSeries(charts.usVix, quantDataset.value.usVix?.color ?? '#b45309', 2) : null
+    usFearGreedSeries = charts.usFearGreed ? addLineSeries(charts.usFearGreed, quantDataset.value.usFearGreed?.color ?? '#dc2626', 2) : null
+    usHedgeSeries = charts.usHedge ? addLineSeries(charts.usHedge, quantDataset.value.usHedgeProxy?.color ?? '#0f766e', 2) : null
 
     primarySeriesMap.set('main', mainCandleSeries)
-    primarySeriesMap.set('macd', macdDifSeries)
-    primarySeriesMap.set('kdj', kdjSeriesRefs[0])
-    primarySeriesMap.set('wr', wrSeries)
-    primarySeriesMap.set('emotion', emotionSeries)
-    primarySeriesMap.set('basis', basisMainSeries)
-    primarySeriesMap.set('breadth', breadthSeries)
+    if (macdDifSeries) primarySeriesMap.set('macd', macdDifSeries)
+    if (kdjSeriesRefs[0]) primarySeriesMap.set('kdj', kdjSeriesRefs[0])
+    if (wrSeries) primarySeriesMap.set('wr', wrSeries)
+    if (rsiSeries) primarySeriesMap.set('rsi', rsiSeries)
+    if (emotionSeries) primarySeriesMap.set('emotion', emotionSeries)
+    if (basisMainSeries) primarySeriesMap.set('basis', basisMainSeries)
+    if (breadthSeries) primarySeriesMap.set('breadth', breadthSeries)
+    if (vixSeries) primarySeriesMap.set('vix', vixSeries)
+    if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
+    if (usFearGreedSeries) primarySeriesMap.set('usFearGreed', usFearGreedSeries)
+    if (usHedgeSeries) primarySeriesMap.set('usHedge', usHedgeSeries)
 
-    ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis', 'breadth'] as PanelKey[]).forEach((panelKey) => {
+    getActivePanelKeys().forEach((panelKey) => {
       const chart = charts[panelKey]
       if (chart) {
         attachSync(panelKey, chart)
@@ -893,9 +1375,24 @@ function renderCharts() {
     attachHighlightPrimitive(macdDifSeries)
     attachHighlightPrimitive(kdjSeriesRefs[0] ?? null)
     attachHighlightPrimitive(wrSeries)
-    attachHighlightPrimitive(emotionSeries)
-    attachHighlightPrimitive(basisMainSeries)
-    attachHighlightPrimitive(breadthSeries)
+    attachHighlightPrimitive(rsiSeries)
+    if (props.supportsAuxiliaryPanels) {
+      attachHighlightPrimitive(emotionSeries)
+      attachHighlightPrimitive(basisMainSeries)
+      attachHighlightPrimitive(breadthSeries)
+    }
+    if (props.supportsVixPanel) {
+      attachHighlightPrimitive(vixSeries)
+    }
+    if (props.supportsUsVixPanel) {
+      attachHighlightPrimitive(usVixSeries)
+    }
+    if (props.supportsUsFearGreedPanel) {
+      attachHighlightPrimitive(usFearGreedSeries)
+    }
+    if (props.supportsUsHedgeProxyPanel) {
+      attachHighlightPrimitive(usHedgeSeries)
+    }
 
     updateAllSeries()
     syncHighlightBindings()
@@ -907,6 +1404,39 @@ function renderCharts() {
     renderError.value = `量化图表渲染失败：${String(error)}`
     console.error(error)
   }
+}
+
+function disposeCharts() {
+  unsubs.forEach((dispose) => dispose())
+  unsubs = []
+
+  cleanupHighlightBindings()
+
+  ALL_PANEL_KEYS.forEach((panelKey) => {
+    charts[panelKey]?.remove()
+    delete charts[panelKey]
+  })
+
+  primarySeriesMap.clear()
+  panelValueMaps.clear()
+  mainCandleSeries = null
+  mainMaSeries = []
+  bollSeriesRefs = []
+  macdDifSeries = null
+  macdDeaSeries = null
+  macdHistogramSeries = null
+  kdjSeriesRefs = []
+  wrSeries = null
+  rsiSeries = null
+  emotionSeries = null
+  basisMainSeries = null
+  basisMonthSeries = null
+  breadthSeries = null
+  breadthCountSeries = null
+  vixSeries = null
+  usVixSeries = null
+  usFearGreedSeries = null
+  usHedgeSeries = null
 }
 
 watch(mainCandles, (next, previous) => {
@@ -934,16 +1464,40 @@ watch(mainCandles, (next, previous) => {
 })
 
 watch(emotionSeriesData, () => {
-  updateAllSeries()
+  if (props.supportsAuxiliaryPanels) updateAllSeries()
 })
 
 watch(breadthSeriesData, () => {
-  updateAllSeries()
+  if (props.supportsAuxiliaryPanels) updateAllSeries()
 })
 
 watch(breadthCountSeriesData, () => {
-  updateAllSeries()
+  if (props.supportsAuxiliaryPanels) updateAllSeries()
 })
+
+watch(vixSeriesData, () => {
+  if (props.supportsVixPanel) updateAllSeries()
+})
+
+watch(usVixSeriesData, () => {
+  if (props.supportsUsVixPanel) updateAllSeries()
+})
+
+watch(usFearGreedSeriesData, () => {
+  if (props.supportsUsFearGreedPanel) updateAllSeries()
+})
+
+watch(usHedgeSeriesData, () => {
+  if (props.supportsUsHedgeProxyPanel) updateAllSeries()
+})
+
+watch(
+  () =>
+    `${props.supportsAuxiliaryPanels}:${props.supportsVixPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}`,
+  async () => {
+    await rebuildChartsPreservingRange()
+  },
+)
 
 watch(
   () => props.symbolCode,
@@ -966,7 +1520,7 @@ watch(
 watch(
   () => props.futuresBasisPoints,
   () => {
-    updateAllSeries()
+    if (props.supportsAuxiliaryPanels) updateAllSeries()
   },
   { deep: true },
 )
@@ -999,31 +1553,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  unsubs.forEach((dispose) => dispose())
-  unsubs = []
-
-  cleanupHighlightBindings()
-
-  ;(['main', 'macd', 'kdj', 'wr', 'emotion', 'basis', 'breadth'] as PanelKey[]).forEach((panelKey) => {
-    charts[panelKey]?.remove()
-    delete charts[panelKey]
-  })
-
-  primarySeriesMap.clear()
-  panelValueMaps.clear()
-  mainCandleSeries = null
-  mainMaSeries = []
-  bollSeriesRefs = []
-  macdDifSeries = null
-  macdDeaSeries = null
-  macdHistogramSeries = null
-  kdjSeriesRefs = []
-  wrSeries = null
-  emotionSeries = null
-  basisMainSeries = null
-  basisMonthSeries = null
-  breadthSeries = null
-  breadthCountSeries = null
+  disposeCharts()
   hoveredTradeDate.value = null
   shouldResetVisibleRange = true
   lastRequestedHistoryBoundary = null
@@ -1035,64 +1565,29 @@ onBeforeUnmount(() => {
     <div class="quant-chart-summary">
       <div class="quant-chart-summary-head">
         <div class="quant-chart-symbol-row">
-          <select
-            class="input quant-chart-symbol-select"
-            :value="symbolCode"
-            :disabled="loading || !marketOptions?.length"
-            @change="handleIndexSelect"
-          >
-            <option v-for="item in marketOptions" :key="item.code" :value="item.code">
-              {{ item.name }}
+          <select class="input quant-chart-symbol-select" :value="symbolCode" @change="handleIndexSelect" :disabled="loading || !marketOptions?.length">
+            <option v-for="option in marketOptions" :key="option.code" :value="option.code">
+              {{ option.name }}
             </option>
           </select>
-          <span class="quant-chart-symbol-code">（{{ symbolCode }}）</span>
+          <span class="quant-chart-symbol-code">({{ symbolCode }})</span>
         </div>
+
         <div class="quant-chart-head-actions">
-          <button
-            type="button"
-            class="quant-chart-tool-btn"
-            :disabled="loading || !sortedCandles.length"
-            aria-label="Zoom in"
-            @click="zoomChart('in')"
-          >
-            +
+          <button type="button" class="quant-chart-tool-btn" title="放大" :disabled="loading || !sortedCandles.length" @click="zoomChart('in')">+
           </button>
-          <button
-            type="button"
-            class="quant-chart-tool-btn"
-            :disabled="loading || !sortedCandles.length"
-            aria-label="Zoom out"
-            @click="zoomChart('out')"
-          >
-            -
+          <button type="button" class="quant-chart-tool-btn" title="缩小" :disabled="loading || !sortedCandles.length" @click="zoomChart('out')">-
           </button>
-          <button
-            type="button"
-            class="quant-chart-tool-btn quant-chart-tool-btn-gear"
-            :disabled="loading"
-            aria-label="Open parameter modal"
-            @click="emit('openSettings')"
-          >
-            <span aria-hidden="true">&#9881;</span>
+          <button type="button" class="quant-chart-tool-btn quant-chart-tool-btn-gear" title="调整指标参数" :disabled="loading" @click="emit('openSettings')">⚙
           </button>
         </div>
       </div>
 
       <div class="quant-chart-switches">
-        <button
-          type="button"
-          class="quant-switch"
-          :class="{ active: overlayMode === 'ma' }"
-          @click="overlayMode = 'ma'"
-        >
+        <button type="button" class="quant-switch" :class="{ active: overlayMode === 'ma' }" @click="overlayMode = 'ma'">
           均线
         </button>
-        <button
-          type="button"
-          class="quant-switch"
-          :class="{ active: overlayMode === 'boll' }"
-          @click="overlayMode = 'boll'"
-        >
+        <button type="button" class="quant-switch" :class="{ active: overlayMode === 'boll' }" @click="overlayMode = 'boll'">
           BOLL
         </button>
       </div>
@@ -1104,12 +1599,7 @@ onBeforeUnmount(() => {
             <span v-if="card.hint" class="quant-kpi-hint">{{ card.hint }}</span>
           </div>
           <div class="quant-kpi-list">
-            <div
-              v-for="(row, index) in card.rows"
-              :key="`${card.key}-${index}`"
-              class="quant-kpi-row"
-              :class="{ 'quant-kpi-placeholder': row.placeholder }"
-            >
+            <div v-for="(row, index) in card.rows" :key="`${card.key}-${index}`" class="quant-kpi-row" :class="{ 'quant-kpi-placeholder': row.placeholder }">
               <span class="quant-kpi-label">{{ row.label || '\u00A0' }}</span>
               <strong class="quant-kpi-value">{{ row.value }}</strong>
             </div>
@@ -1122,95 +1612,31 @@ onBeforeUnmount(() => {
     <p v-if="renderError" class="error">{{ renderError }}</p>
     <p v-if="!loading && !sortedCandles.length" class="muted">当前没有可展示的指数历史数据。</p>
 
-    <div class="quant-panel">
-      <div class="quant-panel-head">
-        <h3>主图</h3>
-        <div class="quant-legend">
-          <span v-for="item in mainLegend" :key="item.label" class="quant-legend-item">
-            <i :style="{ background: item.color }"></i>{{ item.label }}
-          </span>
-        </div>
-      </div>
-      <div ref="mainContainerRef" class="quant-panel-chart quant-panel-chart-main"></div>
-    </div>
+    <div class="quant-panel"><div class="quant-panel-head"><h3>主图</h3><div class="quant-legend"><span v-for="item in mainLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><div ref="mainContainerRef" class="quant-panel-chart quant-panel-chart-main"></div></div>
 
-    <div class="quant-panel">
-      <div class="quant-panel-head">
-        <h3>MACD</h3>
-        <div class="quant-legend">
-          <span v-for="item in macdLegend" :key="item.label" class="quant-legend-item">
-            <i :style="{ background: item.color }"></i>{{ item.label }}
-          </span>
-        </div>
-      </div>
-      <div ref="macdContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
-    </div>
+    <div class="quant-subpanel-switches"><span class="quant-subpanel-switches-label">副图指标</span><button v-for="option in availableSubPanelOptions" :key="option.key" type="button" class="quant-switch" :class="{ active: isSubPanelVisible(option.key) }" @click="toggleSubPanel(option.key)">{{ option.label }}</button></div>
 
-    <div class="quant-panel">
-      <div class="quant-panel-head">
-        <h3>KDJ</h3>
-        <div class="quant-legend">
-          <span v-for="item in kdjLegend" :key="item.label" class="quant-legend-item">
-            <i :style="{ background: item.color }"></i>{{ item.label }}
-          </span>
-        </div>
-      </div>
-      <div ref="kdjContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
-    </div>
+    <div v-if="isSubPanelVisible('macd')" class="quant-panel"><div class="quant-panel-head"><h3>MACD</h3><div class="quant-legend"><span v-for="item in macdLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><div ref="macdContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
-    <div class="quant-panel">
-      <div class="quant-panel-head">
-        <h3>WR</h3>
-        <div class="quant-legend">
-          <span v-for="item in wrLegend" :key="item.label" class="quant-legend-item">
-            <i :style="{ background: item.color }"></i>{{ item.label }}
-          </span>
-        </div>
-      </div>
-      <div ref="wrContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
-    </div>
+    <div v-if="isSubPanelVisible('kdj')" class="quant-panel"><div class="quant-panel-head"><h3>KDJ</h3><div class="quant-legend"><span v-for="item in kdjLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><div ref="kdjContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
-    <div class="quant-panel">
-      <div class="quant-panel-head">
-        <h3>情绪指标</h3>
-        <div class="quant-legend">
-          <span v-for="item in emotionLegend" :key="item.label" class="quant-legend-item">
-            <i :style="{ background: item.color }"></i>{{ item.label }}
-          </span>
-        </div>
-      </div>
-      <p v-if="emotionLoading" class="muted">情绪指标加载中...</p>
-      <p v-else-if="emotionErrorMessage" class="error">{{ emotionErrorMessage }}</p>
-      <div ref="emotionContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
-    </div>
+    <div v-if="isSubPanelVisible('wr')" class="quant-panel"><div class="quant-panel-head"><h3>WR</h3><div class="quant-legend"><span v-for="item in wrLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><div ref="wrContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
-    <div class="quant-panel">
-      <div class="quant-panel-head">
-        <h3>期现差</h3>
-        <div class="quant-legend">
-          <span v-for="item in basisLegend" :key="item.label" class="quant-legend-item">
-            <i :style="{ background: item.color }"></i>{{ item.label }}
-          </span>
-        </div>
-      </div>
-      <p v-if="futuresBasisLoading" class="muted">期现差指标加载中...</p>
-      <p v-else-if="futuresBasisErrorMessage" class="error">{{ futuresBasisErrorMessage }}</p>
-      <div ref="basisContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
-    </div>
+    <div v-if="isSubPanelVisible('rsi')" class="quant-panel"><div class="quant-panel-head"><h3>RSI</h3><div class="quant-legend"><span v-for="item in rsiLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><div ref="rsiContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
-    <div class="quant-panel">
-      <div class="quant-panel-head">
-        <h3>涨跌家数</h3>
-        <div class="quant-legend">
-          <span v-for="item in breadthLegend" :key="item.label" class="quant-legend-item">
-            <i :style="{ background: item.color }"></i>{{ item.label }}
-          </span>
-        </div>
-      </div>
-      <p v-if="breadthLoading" class="muted">涨跌家数加载中...</p>
-      <p v-else-if="breadthErrorMessage" class="error">{{ breadthErrorMessage }}</p>
-      <div ref="breadthContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
-    </div>
+    <div v-if="isSubPanelVisible('emotion')" class="quant-panel"><div class="quant-panel-head"><h3>情绪指标</h3><div class="quant-legend"><span v-for="item in emotionLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="emotionLoading" class="muted">情绪指标加载中...</p><p v-else-if="emotionErrorMessage" class="error">{{ emotionErrorMessage }}</p><div ref="emotionContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('basis')" class="quant-panel"><div class="quant-panel-head"><h3>期现差</h3><div class="quant-legend"><span v-for="item in basisLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="futuresBasisLoading" class="muted">期现差指标加载中...</p><p v-else-if="futuresBasisErrorMessage" class="error">{{ futuresBasisErrorMessage }}</p><div ref="basisContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('breadth')" class="quant-panel"><div class="quant-panel-head"><h3>涨跌家数</h3><div class="quant-legend"><span v-for="item in breadthLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="breadthLoading" class="muted">涨跌家数加载中...</p><p v-else-if="breadthErrorMessage" class="error">{{ breadthErrorMessage }}</p><div ref="breadthContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('vix')" class="quant-panel"><div class="quant-panel-head"><h3>VIX</h3><div class="quant-legend"><span v-for="item in vixLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!vixPoints.length" class="muted">当前范围暂无 VIX 数据</p><div ref="vixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('usVix')" class="quant-panel"><div class="quant-panel-head"><h3>美股 VIX</h3><div class="quant-legend"><span v-for="item in usVixLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usVixPoints.length" class="muted">当前范围暂无美股 VIX 数据</p><div ref="usVixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('usFearGreed')" class="quant-panel"><div class="quant-panel-head"><h3>恐贪指数</h3><div class="quant-legend"><span v-for="item in usFearGreedLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usFearGreedPoints.length" class="muted">当前范围暂无恐贪指数数据</p><div ref="usFearGreedContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('usHedge')" class="quant-panel"><div class="quant-panel-head"><h3>对冲基金代理</h3><div class="quant-legend"><span v-for="item in usHedgeLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usHedgeProxyPoints.length" class="muted">当前范围暂无对冲基金代理数据</p><div ref="usHedgeContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
   </section>
 </template>
 
@@ -1324,11 +1750,22 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.quant-chart-switches {
+.quant-chart-switches,
+.quant-subpanel-switches {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.quant-subpanel-switches {
+  padding: 2px 0;
+}
+
+.quant-subpanel-switches-label {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .quant-detail-grid {

@@ -167,6 +167,7 @@ function toPayload(strategy: QuantStrategyConfig): QuantStrategyPayload {
     strategy_engine: strategy.strategy_engine,
     sequence_mode: strategy.sequence_mode,
     strategy_type: strategy.strategy_type,
+    target_market: strategy.target_market,
     target_code: strategy.target_code,
     target_name: strategy.target_name,
     indicator_params: strategy.indicator_params,
