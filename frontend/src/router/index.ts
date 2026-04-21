@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import AccountView from '../views/AccountView.vue'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
+import MarketsView from '../views/MarketsView.vue'
 import ProgressView from '../views/ProgressView.vue'
 import QuantIndexView from '../views/QuantIndexView.vue'
 import QuantSequenceView from '../views/QuantSequenceView.vue'
@@ -24,6 +25,7 @@ export const router = createRouter({
     { path: '/account', component: AccountView, meta: { requiresAuth: true } },
     { path: '/', component: HomeView, meta: { requiresAuth: true } },
     { path: '/stocks', component: StocksView, meta: { requiresAuth: true } },
+    { path: '/markets', component: MarketsView, meta: { requiresAuth: true } },
     {
       path: '/quant',
       component: QuantView,

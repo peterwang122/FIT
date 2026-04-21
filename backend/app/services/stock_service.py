@@ -14,7 +14,15 @@ INDEX_DISPLAY_ORDER = [
     "沪深300",
     "中证500",
     "中证1000",
+    "北证50",
 ]
+
+SUPPORTED_INDEX_MARKETS = {"cn", "hk", "us"}
+
+BEIJING50_INDEX_OPTION = {
+    "code": "BJ899050",
+    "name": "北证50",
+}
 
 FOREX_DISPLAY_ORDER = [
     "美元指数",
@@ -56,14 +64,23 @@ CITIC_CUSTOMER_MEMBER_NAME_LEGACY = "中信期货"
 CITIC_CUSTOMER_MEMBER_BROKER_START_DATE = date(2024, 2, 26)
 CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE = date(2024, 4, 29)
 
-INDEX_OPTIONS_CACHE_KEY = "fit:stock:index_options:v1"
-FOREX_OPTIONS_CACHE_KEY = "fit:stock:forex_options:v1"
-INDEX_EMOTIONS_CACHE_KEY_PREFIX = "fit:stock:index_emotions:v1"
+INDEX_OPTIONS_CACHE_KEY_PREFIX = "fit:stock:index_options:v5"
+FOREX_OPTIONS_CACHE_KEY = "fit:stock:forex_options:v2"
+INDEX_EMOTIONS_CACHE_KEY_PREFIX = "fit:stock:index_emotions:v2"
 CFFEX_NET_POSITION_TABLES_CACHE_KEY_PREFIX = "fit:stock:cffex:tables:v1"
 CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX = "fit:stock:cffex:series:v1"
 INDEX_KLINE_CACHE_KEY_PREFIX = "fit:stock:index_kline:v1"
 FOREX_KLINE_CACHE_KEY_PREFIX = "fit:stock:forex_kline:v1"
 CACHE_TTL_SECONDS = 600
+
+
+def _to_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class StockService:
@@ -104,6 +121,20 @@ class StockService:
 
     def _cache_set_json(self, key: str, value) -> None:
         redis_client.set(key, json.dumps(value, ensure_ascii=False, default=str), ex=CACHE_TTL_SECONDS)
+
+    def clear_forex_cache(self, symbol_code: str | None = None) -> None:
+        redis_client.delete(FOREX_OPTIONS_CACHE_KEY)
+        normalized_codes = {
+            str(symbol_code or "").strip(),
+            str(symbol_code or "").strip().upper(),
+        }
+        cache_keys: set[str] = set()
+        for code in normalized_codes:
+            if not code:
+                continue
+            cache_keys.update(redis_client.scan_iter(f"{FOREX_KLINE_CACHE_KEY_PREFIX}:{code}:*"))
+        if cache_keys:
+            redis_client.delete(*cache_keys)
 
     @property
     def mapping(self) -> dict[str, str]:
@@ -561,18 +592,103 @@ class StockService:
             result.append(matched[0])
         return result
 
-    def list_index_options(self) -> list[dict]:
-        cached = self._cache_get_json(INDEX_OPTIONS_CACHE_KEY)
+    def _normalize_index_market(self, market: str | None) -> str:
+        normalized = str(market or "cn").strip().lower()
+        return normalized if normalized in SUPPORTED_INDEX_MARKETS else "cn"
+
+    def _get_index_market_config(self, market: str | None) -> dict[str, str]:
+        normalized = self._normalize_index_market(market)
+        if normalized == "hk":
+            return {
+                "market": "hk",
+                "basic_table": settings.index_hk_basic_info_table_name,
+                "basic_code_column": settings.index_hk_basic_info_code_column,
+                "basic_name_column": settings.index_hk_basic_info_name_column,
+                "daily_table": settings.index_hk_daily_table_name,
+                "daily_code_column": settings.index_hk_daily_code_column,
+                "daily_date_column": settings.index_hk_daily_date_column,
+                "daily_open_column": settings.index_hk_daily_open_column,
+                "daily_high_column": settings.index_hk_daily_high_column,
+                "daily_low_column": settings.index_hk_daily_low_column,
+                "daily_close_column": settings.index_hk_daily_close_column,
+                "daily_change_column": settings.index_hk_daily_change_column,
+                "daily_pct_chg_column": settings.index_hk_daily_pct_chg_column,
+                "daily_vol_column": settings.index_hk_daily_vol_column,
+                "daily_amount_column": settings.index_hk_daily_amount_column,
+            }
+        if normalized == "us":
+            return {
+                "market": "us",
+                "basic_table": settings.index_us_basic_info_table_name,
+                "basic_code_column": settings.index_us_basic_info_code_column,
+                "basic_name_column": settings.index_us_basic_info_name_column,
+                "daily_table": settings.index_us_daily_table_name,
+                "daily_code_column": settings.index_us_daily_code_column,
+                "daily_date_column": settings.index_us_daily_date_column,
+                "daily_open_column": settings.index_us_daily_open_column,
+                "daily_high_column": settings.index_us_daily_high_column,
+                "daily_low_column": settings.index_us_daily_low_column,
+                "daily_close_column": settings.index_us_daily_close_column,
+                "daily_change_column": settings.index_us_daily_change_column,
+                "daily_pct_chg_column": settings.index_us_daily_pct_chg_column,
+                "daily_vol_column": settings.index_us_daily_vol_column,
+                "daily_amount_column": settings.index_us_daily_amount_column,
+            }
+        return {
+            "market": "cn",
+            "basic_table": settings.index_basic_info_table_name,
+            "basic_code_column": settings.index_basic_info_code_column,
+            "basic_name_column": settings.index_basic_info_name_column,
+            "daily_table": settings.index_daily_table_name,
+            "daily_code_column": settings.index_daily_code_column,
+            "daily_date_column": settings.index_daily_date_column,
+            "daily_open_column": settings.index_daily_open_column,
+            "daily_high_column": settings.index_daily_high_column,
+            "daily_low_column": settings.index_daily_low_column,
+            "daily_close_column": settings.index_daily_close_column,
+            "daily_change_column": settings.index_daily_change_column,
+            "daily_pct_chg_column": settings.index_daily_pct_chg_column,
+            "daily_vol_column": settings.index_daily_vol_column,
+            "daily_amount_column": settings.index_daily_amount_column,
+        }
+
+    def list_index_options(self, market: str | None = "cn") -> list[dict]:
+        normalized_market = self._normalize_index_market(market)
+        cache_key = f"{INDEX_OPTIONS_CACHE_KEY_PREFIX}:{normalized_market}"
+        cached = self._cache_get_json(cache_key)
         if isinstance(cached, list):
             return cached
+        config = self._get_index_market_config(normalized_market)
         sql = text(
-            f"SELECT `{settings.index_basic_info_code_column}` AS code, "
-            f"`{settings.index_basic_info_name_column}` AS name "
-            f"FROM `{settings.index_basic_info_table_name}`"
+            f"SELECT `{config['basic_code_column']}` AS code, "
+            f"`{config['basic_name_column']}` AS name "
+            f"FROM `{config['basic_table']}`"
         )
         items = [dict(row) for row in self.db.execute(sql).mappings().all()]
-        result = self._filter_named_options(items, INDEX_DISPLAY_ORDER, "code", "name")
-        self._cache_set_json(INDEX_OPTIONS_CACHE_KEY, result)
+        if normalized_market == "cn" and not any(str(item.get("name", "")).strip() == BEIJING50_INDEX_OPTION["name"] for item in items):
+            items.append(dict(BEIJING50_INDEX_OPTION))
+        if normalized_market == "cn":
+            result = self._filter_named_options(items, INDEX_DISPLAY_ORDER, "code", "name")
+            result = [
+                {
+                    "code": BEIJING50_INDEX_OPTION["code"]
+                    if str(item.get("code", "")).strip().lower() == BEIJING50_INDEX_OPTION["code"].lower()
+                    or str(item.get("name", "")).strip() == BEIJING50_INDEX_OPTION["name"]
+                    else str(item.get("code", "")).strip(),
+                    "name": str(item.get("name", "")).strip(),
+                }
+                for item in result
+            ]
+        else:
+            result = sorted(
+                [
+                    {"code": str(item.get("code", "")).strip(), "name": str(item.get("name", "")).strip()}
+                    for item in items
+                    if str(item.get("code", "")).strip() and str(item.get("name", "")).strip()
+                ],
+                key=lambda item: (item["name"], item["code"]),
+            )
+        self._cache_set_json(cache_key, result)
         return result
 
     def list_forex_options(self) -> list[dict]:
@@ -941,7 +1057,12 @@ class StockService:
             "citic_member_name_current": CITIC_CUSTOMER_MEMBER_NAME,
         }
 
-    def _query_member_open_interest_series_rows(self, member_name: str) -> list[dict]:
+    def _query_member_open_interest_series_rows(
+        self,
+        member_name: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
         product_codes_sql = self._cffex_product_codes_sql()
         trade_date_column_sql = f"`{settings.cffex_trade_date_column}`"
         short_member_match_sql = self._member_match_sql(
@@ -954,6 +1075,14 @@ class StockService:
             trade_date_column_sql,
             member_name,
         )
+        params = self._member_match_params(member_name)
+        date_filter_sql = ""
+        if start_date:
+            params["start_date"] = start_date
+            date_filter_sql += f" AND {trade_date_column_sql} >= :start_date"
+        if end_date:
+            params["end_date"] = end_date
+            date_filter_sql += f" AND {trade_date_column_sql} <= :end_date"
         sql = text(
             f"SELECT "
             f"{trade_date_column_sql} AS trade_date, "
@@ -968,13 +1097,26 @@ class StockService:
             f"ELSE 0 END) AS long_position "
             f"FROM `{settings.cffex_member_rankings_table_name}` "
             f"WHERE `{settings.cffex_product_code_column}` IN ({product_codes_sql}) "
+            f"{date_filter_sql} "
             f"GROUP BY `{settings.cffex_trade_date_column}`, `{settings.cffex_product_code_column}` "
             f"ORDER BY `{settings.cffex_trade_date_column}` ASC, `{settings.cffex_product_code_column}` ASC"
         )
-        return [dict(row) for row in self.db.execute(sql, self._member_match_params(member_name)).mappings().all()]
+        return [dict(row) for row in self.db.execute(sql, params).mappings().all()]
 
-    def _query_top20_open_interest_series_rows(self) -> list[dict]:
+    def _query_top20_open_interest_series_rows(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
         product_codes_sql = self._cffex_product_codes_sql()
+        params: dict[str, object] = {}
+        date_filter_sql = ""
+        if start_date:
+            params["start_date"] = start_date
+            date_filter_sql += f" AND `{settings.cffex_trade_date_column}` >= :start_date"
+        if end_date:
+            params["end_date"] = end_date
+            date_filter_sql += f" AND `{settings.cffex_trade_date_column}` <= :end_date"
         sql = text(
             f"SELECT "
             f"`{settings.cffex_trade_date_column}` AS trade_date, "
@@ -985,10 +1127,11 @@ class StockService:
             f"WHERE `{settings.cffex_product_code_column}` IN ({product_codes_sql}) "
             f"AND `{settings.cffex_rank_no_column}` <= 20 "
             f"AND `{settings.cffex_volume_member_column}` IS NOT NULL "
+            f"{date_filter_sql} "
             f"GROUP BY `{settings.cffex_trade_date_column}`, `{settings.cffex_product_code_column}` "
             f"ORDER BY `{settings.cffex_trade_date_column}` ASC, `{settings.cffex_product_code_column}` ASC"
         )
-        return [dict(row) for row in self.db.execute(sql).mappings().all()]
+        return [dict(row) for row in self.db.execute(sql, params).mappings().all()]
 
     def _build_net_position_series(self, member_label: str, rows: list[dict]) -> dict:
         series: dict[str, list[dict]] = {key: [] for key in CFFEX_SERIES_KEYS}
@@ -1025,32 +1168,36 @@ class StockService:
             "series": series,
         }
 
-    def get_cffex_net_position_series(self, start_date: date | None = None) -> dict:
-        cache_key = f"{CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX}:{start_date.isoformat() if start_date else 'full'}"
+    def get_cffex_net_position_series(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        cache_key = (
+            f"{CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX}:"
+            f"{start_date.isoformat() if start_date else 'none'}:"
+            f"{end_date.isoformat() if end_date else 'none'}"
+        )
         cached = self._cache_get_json(cache_key)
         if isinstance(cached, dict):
             return cached
         result = {
             "citic_customer": self._build_net_position_series(
                 member_label=CITIC_CUSTOMER_MEMBER_NAME,
-                rows=self._query_member_open_interest_series_rows(CITIC_CUSTOMER_MEMBER_NAME),
+                rows=self._query_member_open_interest_series_rows(
+                    CITIC_CUSTOMER_MEMBER_NAME,
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
             ),
             "top20_institutions": self._build_net_position_series(
                 member_label="前20机构",
-                rows=self._query_top20_open_interest_series_rows(),
+                rows=self._query_top20_open_interest_series_rows(
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
             ),
         }
-        if start_date:
-            start_text = start_date.isoformat()
-            for group in result.values():
-                if not isinstance(group, dict):
-                    continue
-                series = group.get("series", {})
-                if not isinstance(series, dict):
-                    continue
-                for key, points in series.items():
-                    if isinstance(points, list):
-                        series[key] = [point for point in points if str(point.get("trade_date", "")) >= start_text]
         self._cache_set_json(cache_key, result)
         return result
 
@@ -1341,11 +1488,16 @@ class StockService:
     def list_index_daily_kline(
         self,
         index_code: str,
+        market: str | None = "cn",
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> list[dict]:
+        config = self._get_index_market_config(market)
+        normalized_index_code = str(index_code).strip()
+        if config["market"] == "cn" and normalized_index_code.lower() == BEIJING50_INDEX_OPTION["code"].lower():
+            normalized_index_code = BEIJING50_INDEX_OPTION["code"]
         cache_key = (
-            f"{INDEX_KLINE_CACHE_KEY_PREFIX}:{index_code}:"
+            f"{INDEX_KLINE_CACHE_KEY_PREFIX}:{config['market']}:{normalized_index_code}:"
             f"{start_date.isoformat() if start_date else 'none'}:{end_date.isoformat() if end_date else 'none'}"
         )
         cached = self._cache_get_json(cache_key)
@@ -1353,31 +1505,31 @@ class StockService:
             return cached
         sql = (
             f"SELECT "
-            f"`{settings.index_daily_date_column}` AS trade_date, "
-            f"`{settings.index_daily_open_column}` AS open, "
-            f"`{settings.index_daily_high_column}` AS high, "
-            f"`{settings.index_daily_low_column}` AS low, "
-            f"`{settings.index_daily_close_column}` AS close, "
+            f"`{config['daily_date_column']}` AS trade_date, "
+            f"`{config['daily_open_column']}` AS open, "
+            f"`{config['daily_high_column']}` AS high, "
+            f"`{config['daily_low_column']}` AS low, "
+            f"`{config['daily_close_column']}` AS close, "
             f"0 AS pre_close, "
-            f"`{settings.index_daily_change_column}` AS change_value, "
-            f"`{settings.index_daily_pct_chg_column}` AS pct_chg, "
-            f"`{settings.index_daily_vol_column}` AS vol, "
-            f"`{settings.index_daily_amount_column}` AS amount, "
+            f"`{config['daily_change_column']}` AS change_value, "
+            f"`{config['daily_pct_chg_column']}` AS pct_chg, "
+            f"`{config['daily_vol_column']}` AS vol, "
+            f"`{config['daily_amount_column']}` AS amount, "
             f"0 AS pe_ttm, "
             f"0 AS pb, "
             f"0 AS total_market_value, "
             f"0 AS circulating_market_value "
-            f"FROM `{settings.index_daily_table_name}` "
-            f"WHERE `{settings.index_daily_code_column}` = :index_code"
+            f"FROM `{config['daily_table']}` "
+            f"WHERE `{config['daily_code_column']}` = :index_code"
         )
-        params: dict[str, object] = {"index_code": index_code}
+        params: dict[str, object] = {"index_code": normalized_index_code}
         if start_date:
-            sql += f" AND `{settings.index_daily_date_column}` >= :start_date"
+            sql += f" AND `{config['daily_date_column']}` >= :start_date"
             params["start_date"] = start_date
         if end_date:
-            sql += f" AND `{settings.index_daily_date_column}` <= :end_date"
+            sql += f" AND `{config['daily_date_column']}` <= :end_date"
             params["end_date"] = end_date
-        sql += f" ORDER BY `{settings.index_daily_date_column}` ASC"
+        sql += f" ORDER BY `{config['daily_date_column']}` ASC"
 
         rows = self.db.execute(text(sql), params).mappings().all()
         numeric_fields = [
@@ -1398,6 +1550,175 @@ class StockService:
         result = self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
         self._cache_set_json(cache_key, result)
         return result
+
+    def list_index_qvix_daily_data(
+        self,
+        qvix_code: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        normalized_code = str(qvix_code or "").strip()
+        if not normalized_code:
+            return []
+        bind = self.db.get_bind()
+        if bind is None or not inspect(bind).has_table(settings.index_qvix_daily_table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_qvix_daily_date_column}` AS trade_date, "
+            f"`{settings.index_qvix_daily_open_column}` AS open_price, "
+            f"`{settings.index_qvix_daily_high_column}` AS high_price, "
+            f"`{settings.index_qvix_daily_low_column}` AS low_price, "
+            f"`{settings.index_qvix_daily_close_column}` AS close_price "
+            f"FROM `{settings.index_qvix_daily_table_name}` "
+            f"WHERE `{settings.index_qvix_daily_code_column}` = :index_code"
+        )
+        params: dict[str, object] = {"index_code": normalized_code}
+        if start_date:
+            sql += f" AND `{settings.index_qvix_daily_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_qvix_daily_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_qvix_daily_date_column}` ASC"
+
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "open_price": _to_float(row.get("open_price")),
+                "high_price": _to_float(row.get("high_price")),
+                "low_price": _to_float(row.get("low_price")),
+                "close_price": _to_float(row.get("close_price")),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
+    def list_index_us_vix_daily_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_us_vix_daily_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_us_vix_daily_date_column}` AS trade_date, "
+            f"`{settings.index_us_vix_daily_open_column}` AS open_value, "
+            f"`{settings.index_us_vix_daily_high_column}` AS high_value, "
+            f"`{settings.index_us_vix_daily_low_column}` AS low_value, "
+            f"`{settings.index_us_vix_daily_close_column}` AS close_value "
+            f"FROM `{table_name}` "
+            f"WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{settings.index_us_vix_daily_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_us_vix_daily_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_us_vix_daily_date_column}` ASC"
+
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "open_value": _to_float(row.get("open_value")),
+                "high_value": _to_float(row.get("high_value")),
+                "low_value": _to_float(row.get("low_value")),
+                "close_value": _to_float(row.get("close_value")),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
+    def list_index_us_fear_greed_daily_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_us_fear_greed_daily_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_us_fear_greed_daily_date_column}` AS trade_date, "
+            f"`{settings.index_us_fear_greed_daily_value_column}` AS fear_greed_value, "
+            f"`{settings.index_us_fear_greed_daily_label_column}` AS sentiment_label "
+            f"FROM `{table_name}` "
+            f"WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{settings.index_us_fear_greed_daily_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_us_fear_greed_daily_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_us_fear_greed_daily_date_column}` ASC"
+
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "fear_greed_value": _to_float(row.get("fear_greed_value")),
+                "sentiment_label": str(row.get("sentiment_label") or "").strip(),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
+    def list_index_us_hedge_proxy_data(
+        self,
+        contract_scope: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        normalized_scope = str(contract_scope or "").strip().upper()
+        if not normalized_scope:
+            return []
+        bind = self.db.get_bind()
+        table_name = settings.index_us_hedge_proxy_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_us_hedge_proxy_report_date_column}` AS report_date, "
+            f"`{settings.index_us_hedge_proxy_scope_column}` AS contract_scope, "
+            f"`{settings.index_us_hedge_proxy_long_column}` AS long_value, "
+            f"`{settings.index_us_hedge_proxy_short_column}` AS short_value, "
+            f"`{settings.index_us_hedge_proxy_ratio_column}` AS ratio_value, "
+            f"`{settings.index_us_hedge_proxy_release_date_column}` AS release_date "
+            f"FROM `{table_name}` "
+            f"WHERE `{settings.index_us_hedge_proxy_scope_column}` = :contract_scope"
+        )
+        params: dict[str, object] = {"contract_scope": normalized_scope}
+        if start_date:
+            sql += f" AND `{settings.index_us_hedge_proxy_release_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_us_hedge_proxy_release_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_us_hedge_proxy_release_date_column}` ASC"
+
+        return [
+            {
+                "report_date": row.get("report_date"),
+                "contract_scope": str(row.get("contract_scope") or "").strip().upper(),
+                "long_value": _to_float(row.get("long_value")),
+                "short_value": _to_float(row.get("short_value")),
+                "ratio_value": _to_float(row.get("ratio_value")),
+                "release_date": row.get("release_date"),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("release_date") is not None
+        ]
 
     def list_forex_daily_kline(
         self,
@@ -1465,3 +1786,4 @@ class StockService:
         result = self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
         self._cache_set_json(cache_key, result)
         return result
+

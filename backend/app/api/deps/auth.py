@@ -24,6 +24,23 @@ def get_current_user(
     return user
 
 
+def get_current_user_optional(
+    request: Request,
+    response: Response,
+    session_id: str | None = Cookie(default=None, alias=settings.auth_session_cookie_name),
+    db: Session = Depends(get_db),
+) -> User | None:
+    if not session_id:
+        return None
+    service = AuthService(db)
+    user = service.get_user_from_session(session_id)
+    if user is None:
+        service.logout(session_id, response)
+        return None
+    service.refresh_session(session_id, response, user, request)
+    return user
+
+
 def require_authenticated_user(_: User = Depends(get_current_user)) -> None:
     return None
 

@@ -57,16 +57,53 @@ export interface IndexBreadthPoint {
   total_count: number
 }
 
+export interface IndexVixPoint {
+  trade_date: string
+  open_price: number
+  high_price: number
+  low_price: number
+  close_price: number
+}
+
+export interface IndexUsVixPoint {
+  trade_date: string
+  open_value: number
+  high_value: number
+  low_value: number
+  close_value: number
+}
+
+export interface IndexUsFearGreedPoint {
+  trade_date: string
+  fear_greed_value: number
+  sentiment_label: string
+}
+
+export interface IndexUsHedgeProxyPoint {
+  report_date: string | null
+  release_date: string
+  contract_scope: string
+  long_value: number | null
+  short_value: number | null
+  ratio_value: number | null
+}
+
 export interface IndexDashboardResponse {
   index: {
     code: string
     name: string
   }
+  market: 'cn' | 'hk' | 'us'
+  supports_auxiliary_panels: boolean
   range_mode: 'recent' | 'full' | 'window'
   candles: KlineCandle[]
   emotion_points: IndexDashboardEmotionPoint[]
   basis_points: IndexDashboardBasisPoint[]
   breadth_points: IndexBreadthPoint[]
+  vix_points: IndexVixPoint[]
+  us_vix_points: IndexUsVixPoint[]
+  us_fear_greed_points: IndexUsFearGreedPoint[]
+  us_hedge_proxy_points: IndexUsHedgeProxyPoint[]
 }
 
 export interface NetPositionRow {
@@ -124,6 +161,18 @@ export interface TaskStatusResult {
   task_id: string
   state: string
   result: Record<string, unknown> | null
+}
+
+export interface ForexCollectResult {
+  status: string
+  symbol_code: string
+  symbol_name: string | null
+  refresh_mode?: string
+  rows_fetched: number
+  upserted_rows: number
+  earliest_trade_date: string | null
+  latest_trade_date: string | null
+  upstream_response?: Record<string, unknown>
 }
 
 export interface DbStatus {

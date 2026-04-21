@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   QuantChartPayload,
   QuantDailyIndicatorSnapshot,
   QuantFilterDataset,
@@ -10,7 +10,15 @@ import type {
   QuantLinePoint,
   QuantLineSeries,
 } from '../types/quant'
-import type { FuturesBasisPoint, IndexBreadthPoint, IndexEmotionPoint } from '../types/stock'
+import type {
+  FuturesBasisPoint,
+  IndexBreadthPoint,
+  IndexEmotionPoint,
+  IndexUsFearGreedPoint,
+  IndexUsHedgeProxyPoint,
+  IndexUsVixPoint,
+  IndexVixPoint,
+} from '../types/stock'
 
 export type QuantIndicatorCandle = {
   trade_date: string
@@ -21,13 +29,30 @@ export type QuantIndicatorCandle = {
   turnover_rate?: number | null
 }
 
+const SHANGHAI_INDEX_NAME = '上证指数'
+const BEIJING50_INDEX_NAME = '北证50'
 const CORE_EMOTION_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
+const SHARED_AUXILIARY_INDEX_NAMES = [SHANGHAI_INDEX_NAME, BEIJING50_INDEX_NAME] as const
+const VIX_INDEX_NAMES = ['上证50', '沪深300', '中证500'] as const
+
+function usesSharedAuxiliarySeries(symbolName: string) {
+  return SHARED_AUXILIARY_INDEX_NAMES.includes(symbolName as (typeof SHARED_AUXILIARY_INDEX_NAMES)[number])
+}
+
+function supportsVixSeries(symbolName: string) {
+  return VIX_INDEX_NAMES.includes(symbolName as (typeof VIX_INDEX_NAMES)[number])
+}
 
 export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'emotion',
   'basis-main',
   'basis-month',
   'breadth-up-pct',
+  'vix-open',
+  'vix-high',
+  'vix-low',
+  'vix-close',
+  'rsi',
   'wr',
   'macd-dif',
   'macd-dea',
@@ -35,6 +60,31 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'kdj-k',
   'kdj-d',
   'kdj-j',
+]
+
+export const US_INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+  'us-vix-open',
+  'us-vix-high',
+  'us-vix-low',
+  'us-vix-close',
+  'us-fear-greed',
+  'us-hedge-long',
+  'us-hedge-short',
+  'us-hedge-ratio',
+  'pct-chg',
+  'turnover-rate',
+  'rsi',
+  'wr',
+  'macd-dif',
+  'macd-dea',
+  'macd-histogram',
+  'kdj-k',
+  'kdj-d',
+  'kdj-j',
+  'ma-1',
+  'ma-2',
+  'ma-3',
+  'ma-4',
 ]
 
 export const STOCK_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
@@ -55,11 +105,39 @@ export const STOCK_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
 ]
 
 export const ALL_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
-  ...new Set([...INDEX_QUANT_FILTER_FIELD_KEYS, ...STOCK_QUANT_FILTER_FIELD_KEYS]),
+  ...new Set([...INDEX_QUANT_FILTER_FIELD_KEYS, ...US_INDEX_QUANT_FILTER_FIELD_KEYS, ...STOCK_QUANT_FILTER_FIELD_KEYS]),
 ]
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
+}
+
+function alignSparseRowsToTradeDates<T>(
+  tradeDates: string[],
+  rows: T[],
+  dateSelector: (row: T) => string | null | undefined,
+) {
+  const sortedTradeDates = [...tradeDates].filter(Boolean).sort((left, right) => left.localeCompare(right))
+  if (!sortedTradeDates.length || !rows.length) {
+    return new Map<string, T>()
+  }
+
+  const sortedRows = [...rows]
+    .filter((row) => Boolean(dateSelector(row)))
+    .sort((left, right) => String(dateSelector(left)).localeCompare(String(dateSelector(right))))
+
+  const aligned = new Map<string, T>()
+  let tradeIndex = 0
+  for (const row of sortedRows) {
+    const rowDate = String(dateSelector(row))
+    while (tradeIndex < sortedTradeDates.length && sortedTradeDates[tradeIndex] < rowDate) {
+      tradeIndex += 1
+    }
+    if (tradeIndex < sortedTradeDates.length) {
+      aligned.set(sortedTradeDates[tradeIndex], row)
+    }
+  }
+  return aligned
 }
 
 function sortCandles(candles: QuantIndicatorCandle[]): QuantIndicatorCandle[] {
@@ -355,7 +433,7 @@ function buildEmotionValueByDate(symbolName: string, emotionPoints: IndexEmotion
       continue
     }
 
-    if (symbolName === '上证指数') {
+    if (usesSharedAuxiliarySeries(symbolName)) {
       if (!CORE_EMOTION_INDEX_NAMES.includes(point.index_name as (typeof CORE_EMOTION_INDEX_NAMES)[number])) {
         continue
       }
@@ -382,7 +460,7 @@ export function calculateQuantEmotionSeries(
 
   return {
     key: 'emotion',
-    label: symbolName === '上证指数' ? '四大指数平均情绪' : `${symbolName}情绪`,
+    label: usesSharedAuxiliarySeries(symbolName) ? '四大指数平均情绪' : `${symbolName}情绪`,
     color: '#0f4c75',
     data: sortedCandles.map((item) => createLinePoint(item.trade_date, emotionValueByDate.get(item.trade_date) ?? 50)),
   }
@@ -412,7 +490,7 @@ export function calculateQuantFuturesBasisSeries(
   }
 
   const mainValues = sortedCandles.map((item) => {
-    if (symbolName === '上证指数') {
+    if (usesSharedAuxiliarySeries(symbolName)) {
       const total = CORE_EMOTION_INDEX_NAMES.reduce((sum, indexName) => {
         const value = grouped.get(indexName)?.get(item.trade_date)?.main_basis
         return sum + (isFiniteNumber(value) ? value : 0)
@@ -425,7 +503,7 @@ export function calculateQuantFuturesBasisSeries(
   })
 
   const monthValues = sortedCandles.map((item) => {
-    if (symbolName === '上证指数') {
+    if (usesSharedAuxiliarySeries(symbolName)) {
       const total = CORE_EMOTION_INDEX_NAMES.reduce((sum, indexName) => {
         const value = grouped.get(indexName)?.get(item.trade_date)?.month_basis
         return sum + (isFiniteNumber(value) ? value : 0)
@@ -463,12 +541,132 @@ export function calculateQuantBreadthSeries(
   }
 }
 
-function buildIndexQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMeta[] {
-  return [
-    { key: 'emotion', group: 'emotion', label: '情绪指标' },
-    { key: 'basis-main', group: 'basis', label: '主连期现差' },
-    { key: 'basis-month', group: 'basis', label: '月连期现差' },
-    { key: 'breadth-up-pct', group: 'breadth', label: '上涨家数百分比' },
+export function calculateQuantVixSeries(
+  candles: QuantIndicatorCandle[],
+  supportsVix: boolean,
+  vixPoints: IndexVixPoint[],
+): QuantLineSeries | null {
+  if (!supportsVix) {
+    return null
+  }
+
+  const sortedCandles = sortCandles(candles)
+  const closeByDate = new Map(
+    vixPoints
+      .filter((item) => Number.isFinite(Number(item.close_price)))
+      .map((item) => [item.trade_date, Number(item.close_price)]),
+  )
+
+  return {
+    key: 'vix-close',
+    label: 'VIX收',
+    color: '#7c3aed',
+    data: sortedCandles.map((item) => createLinePoint(item.trade_date, closeByDate.get(item.trade_date) ?? null)),
+  }
+}
+
+export function calculateQuantUsVixSeries(
+  candles: QuantIndicatorCandle[],
+  includeUsVix: boolean,
+  usVixPoints: IndexUsVixPoint[],
+): QuantLineSeries | null {
+  if (!includeUsVix) {
+    return null
+  }
+
+  const sortedCandles = sortCandles(candles)
+  const closeByDate = new Map(
+    usVixPoints
+      .filter((item) => Number.isFinite(Number(item.close_value)))
+      .map((item) => [item.trade_date, Number(item.close_value)]),
+  )
+
+  return {
+    key: 'us-vix-close',
+    label: '美股VIX收',
+    color: '#b45309',
+    data: sortedCandles.map((item) => createLinePoint(item.trade_date, closeByDate.get(item.trade_date) ?? null)),
+  }
+}
+
+export function calculateQuantUsFearGreedSeries(
+  candles: QuantIndicatorCandle[],
+  includeFearGreed: boolean,
+  usFearGreedPoints: IndexUsFearGreedPoint[],
+): QuantLineSeries | null {
+  if (!includeFearGreed) {
+    return null
+  }
+
+  const sortedCandles = sortCandles(candles)
+  const valueByDate = new Map(
+    usFearGreedPoints
+      .filter((item) => Number.isFinite(Number(item.fear_greed_value)))
+      .map((item) => [item.trade_date, Number(item.fear_greed_value)]),
+  )
+
+  return {
+    key: 'us-fear-greed',
+    label: '恐贪指数',
+    color: '#dc2626',
+    data: sortedCandles.map((item) => createLinePoint(item.trade_date, valueByDate.get(item.trade_date) ?? null)),
+  }
+}
+
+export function calculateQuantUsHedgeProxySeries(
+  candles: QuantIndicatorCandle[],
+  includeHedgeProxy: boolean,
+  usHedgeProxyPoints: IndexUsHedgeProxyPoint[],
+): QuantLineSeries | null {
+  if (!includeHedgeProxy) {
+    return null
+  }
+
+  const sortedCandles = sortCandles(candles)
+  const alignedRows = alignSparseRowsToTradeDates(
+    sortedCandles.map((item) => item.trade_date),
+    usHedgeProxyPoints,
+    (item) => item.release_date,
+  )
+  const ratioByDate = new Map(
+    [...alignedRows.entries()]
+      .filter(([, item]) => Number.isFinite(Number(item.ratio_value)))
+      .map(([tradeDate, item]) => [tradeDate, Number(item.ratio_value)]),
+  )
+  const scopeLabel =
+    usHedgeProxyPoints.find((item) => String(item.contract_scope || '').trim())?.contract_scope?.trim().toUpperCase() || '代理'
+
+  return {
+    key: 'us-hedge-ratio',
+    label: `${scopeLabel}对冲代理多空比`,
+    color: '#0f766e',
+    data: sortedCandles.map((item) => createLinePoint(item.trade_date, ratioByDate.get(item.trade_date) ?? null)),
+  }
+}
+
+type IndexDatasetOptions = {
+  includeCnAuxiliary?: boolean
+  includeCnVix?: boolean
+  includeUsVix?: boolean
+  includeUsFearGreed?: boolean
+  includeUsHedge?: boolean
+  usVixPoints?: IndexUsVixPoint[]
+  usFearGreedPoints?: IndexUsFearGreedPoint[]
+  usHedgeProxyPoints?: IndexUsHedgeProxyPoint[]
+}
+
+function buildIndexQuantFilterFields(
+  payload: QuantChartPayload,
+  options: {
+    includeCnAuxiliary: boolean
+    includeCnVix: boolean
+    includeUsVix: boolean
+    includeUsFearGreed: boolean
+    includeUsHedge: boolean
+  },
+): QuantFilterFieldMeta[] {
+  const fields: QuantFilterFieldMeta[] = [
+    { key: 'rsi', group: 'rsi', label: payload.rsi.label },
     { key: 'wr', group: 'wr', label: payload.wr.label },
     { key: 'macd-dif', group: 'macd', label: payload.macd.dif.label },
     { key: 'macd-dea', group: 'macd', label: payload.macd.dea.label },
@@ -477,6 +675,44 @@ function buildIndexQuantFilterFields(payload: QuantChartPayload): QuantFilterFie
     { key: 'kdj-d', group: 'kdj', label: payload.kdj.d.label },
     { key: 'kdj-j', group: 'kdj', label: payload.kdj.j.label },
   ]
+
+  if (options.includeCnAuxiliary) {
+    fields.unshift(
+      { key: 'emotion', group: 'emotion', label: '情绪指标' },
+      { key: 'basis-main', group: 'basis', label: '主连期现差' },
+      { key: 'basis-month', group: 'basis', label: '月连期现差' },
+      { key: 'breadth-up-pct', group: 'breadth', label: '上涨家数百分比' },
+    )
+  }
+  if (options.includeCnVix) {
+    fields.splice(
+      options.includeCnAuxiliary ? 4 : 0,
+      0,
+      { key: 'vix-open', group: 'vix', label: 'VIX开' },
+      { key: 'vix-high', group: 'vix', label: 'VIX高' },
+      { key: 'vix-low', group: 'vix', label: 'VIX低' },
+      { key: 'vix-close', group: 'vix', label: 'VIX收' },
+    )
+  }
+  if (options.includeUsVix) {
+    fields.unshift(
+      { key: 'us-vix-open', group: 'us-vix', label: '美股VIX开' },
+      { key: 'us-vix-high', group: 'us-vix', label: '美股VIX高' },
+      { key: 'us-vix-low', group: 'us-vix', label: '美股VIX低' },
+      { key: 'us-vix-close', group: 'us-vix', label: '美股VIX收' },
+    )
+  }
+  if (options.includeUsFearGreed) {
+    fields.unshift({ key: 'us-fear-greed', group: 'fear-greed', label: '恐贪指数' })
+  }
+  if (options.includeUsHedge) {
+    fields.unshift(
+      { key: 'us-hedge-long', group: 'hedge', label: '对冲代理多头' },
+      { key: 'us-hedge-short', group: 'hedge', label: '对冲代理空头' },
+      { key: 'us-hedge-ratio', group: 'hedge', label: '对冲代理多空比' },
+    )
+  }
+  return fields
 }
 
 function buildStockQuantFilterFields(payload: QuantChartPayload): QuantFilterFieldMeta[] {
@@ -538,19 +774,95 @@ export function buildIndexQuantFilterDataset(
   emotionPoints: IndexEmotionPoint[],
   basisPoints: FuturesBasisPoint[],
   breadthPoints: IndexBreadthPoint[],
+  vixPoints: IndexVixPoint[] = [],
+  supportsVix = false,
+  options: IndexDatasetOptions = {},
 ): QuantFilterDataset {
   const chart = calculateQuantIndicators(candles, params)
-  const emotion = calculateQuantEmotionSeries(candles, symbolName, emotionPoints)
-  const basis = calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints)
-  const breadth = calculateQuantBreadthSeries(candles, breadthPoints)
-  const snapshots = buildBaseSnapshots(chart, candles).map((snapshot, index) => ({
+  const includeCnAuxiliary = options.includeCnAuxiliary ?? true
+  const includeCnVix = options.includeCnVix ?? supportsVix
+  const includeUsVix = options.includeUsVix ?? false
+  const includeUsFearGreed = options.includeUsFearGreed ?? false
+  const includeUsHedge = options.includeUsHedge ?? false
+  const usVixPoints = options.usVixPoints ?? []
+  const usFearGreedPoints = options.usFearGreedPoints ?? []
+  const usHedgeProxyPoints = options.usHedgeProxyPoints ?? []
+
+  const emotion = includeCnAuxiliary ? calculateQuantEmotionSeries(candles, symbolName, emotionPoints) : null
+  const basis = includeCnAuxiliary ? calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints) : null
+  const breadth = includeCnAuxiliary ? calculateQuantBreadthSeries(candles, breadthPoints) : null
+  const vix = includeCnVix ? calculateQuantVixSeries(candles, true, vixPoints) : null
+  const usVix = includeUsVix ? calculateQuantUsVixSeries(candles, true, usVixPoints) : null
+  const usFearGreed = includeUsFearGreed
+    ? calculateQuantUsFearGreedSeries(candles, true, usFearGreedPoints)
+    : null
+  const usHedgeProxy = includeUsHedge
+    ? calculateQuantUsHedgeProxySeries(candles, true, usHedgeProxyPoints)
+    : null
+  const vixByDate = new Map(
+    vixPoints.map((item) => [
+      item.trade_date,
+      {
+        'vix-open': Number.isFinite(Number(item.open_price)) ? Number(item.open_price) : null,
+        'vix-high': Number.isFinite(Number(item.high_price)) ? Number(item.high_price) : null,
+        'vix-low': Number.isFinite(Number(item.low_price)) ? Number(item.low_price) : null,
+        'vix-close': Number.isFinite(Number(item.close_price)) ? Number(item.close_price) : null,
+      },
+    ]),
+  )
+  const usVixByDate = new Map(
+    usVixPoints.map((item) => [
+      item.trade_date,
+      {
+        'us-vix-open': Number.isFinite(Number(item.open_value)) ? Number(item.open_value) : null,
+        'us-vix-high': Number.isFinite(Number(item.high_value)) ? Number(item.high_value) : null,
+        'us-vix-low': Number.isFinite(Number(item.low_value)) ? Number(item.low_value) : null,
+        'us-vix-close': Number.isFinite(Number(item.close_value)) ? Number(item.close_value) : null,
+      },
+    ]),
+  )
+  const usFearGreedByDate = new Map(
+    usFearGreedPoints.map((item) => [
+      item.trade_date,
+      Number.isFinite(Number(item.fear_greed_value)) ? Number(item.fear_greed_value) : null,
+    ]),
+  )
+  const baseSnapshots = buildBaseSnapshots(chart, candles)
+  const alignedUsHedgeRows = alignSparseRowsToTradeDates(
+    baseSnapshots.map((item) => item.tradeDate),
+    usHedgeProxyPoints,
+    (item) => item.release_date,
+  )
+  const usHedgeByDate = new Map(
+    [...alignedUsHedgeRows.entries()].map(([tradeDate, item]) => [
+      tradeDate,
+      {
+        'us-hedge-long': Number.isFinite(Number(item.long_value)) ? Number(item.long_value) : null,
+        'us-hedge-short': Number.isFinite(Number(item.short_value)) ? Number(item.short_value) : null,
+        'us-hedge-ratio': Number.isFinite(Number(item.ratio_value)) ? Number(item.ratio_value) : null,
+      },
+    ]),
+  )
+  const snapshots = baseSnapshots.map((snapshot, index) => ({
     ...snapshot,
     values: {
       ...snapshot.values,
-      emotion: emotion.data[index]?.value ?? 50,
-      'basis-main': basis.main.data[index]?.value ?? 0,
-      'basis-month': basis.month.data[index]?.value ?? 0,
-      'breadth-up-pct': breadth.data[index]?.value ?? 0,
+      emotion: emotion?.data[index]?.value ?? null,
+      'basis-main': basis?.main.data[index]?.value ?? null,
+      'basis-month': basis?.month.data[index]?.value ?? null,
+      'breadth-up-pct': breadth?.data[index]?.value ?? null,
+      'vix-open': vixByDate.get(snapshot.tradeDate)?.['vix-open'] ?? null,
+      'vix-high': vixByDate.get(snapshot.tradeDate)?.['vix-high'] ?? null,
+      'vix-low': vixByDate.get(snapshot.tradeDate)?.['vix-low'] ?? null,
+      'vix-close': vixByDate.get(snapshot.tradeDate)?.['vix-close'] ?? null,
+      'us-vix-open': usVixByDate.get(snapshot.tradeDate)?.['us-vix-open'] ?? null,
+      'us-vix-high': usVixByDate.get(snapshot.tradeDate)?.['us-vix-high'] ?? null,
+      'us-vix-low': usVixByDate.get(snapshot.tradeDate)?.['us-vix-low'] ?? null,
+      'us-vix-close': usVixByDate.get(snapshot.tradeDate)?.['us-vix-close'] ?? null,
+      'us-fear-greed': usFearGreedByDate.get(snapshot.tradeDate) ?? null,
+      'us-hedge-long': usHedgeByDate.get(snapshot.tradeDate)?.['us-hedge-long'] ?? null,
+      'us-hedge-short': usHedgeByDate.get(snapshot.tradeDate)?.['us-hedge-short'] ?? null,
+      'us-hedge-ratio': usHedgeByDate.get(snapshot.tradeDate)?.['us-hedge-ratio'] ?? null,
     },
   }))
 
@@ -559,7 +871,17 @@ export function buildIndexQuantFilterDataset(
     emotion,
     basis,
     breadth,
-    fields: buildIndexQuantFilterFields(chart),
+    vix,
+    usVix,
+    usFearGreed,
+    usHedgeProxy,
+    fields: buildIndexQuantFilterFields(chart, {
+      includeCnAuxiliary,
+      includeCnVix,
+      includeUsVix,
+      includeUsFearGreed,
+      includeUsHedge,
+    }),
     snapshots,
   }
 }
@@ -576,6 +898,10 @@ export function buildStockQuantFilterDataset(
     emotion: null,
     basis: null,
     breadth: null,
+    vix: null,
+    usVix: null,
+    usFearGreed: null,
+    usHedgeProxy: null,
     fields: buildStockQuantFilterFields(chart),
     snapshots,
   }
@@ -588,6 +914,20 @@ export function buildQuantFilterDataset(
   emotionPoints: IndexEmotionPoint[],
   basisPoints: FuturesBasisPoint[],
   breadthPoints: IndexBreadthPoint[] = [],
+  vixPoints: IndexVixPoint[] = [],
+  supportsVix = false,
+  options: IndexDatasetOptions = {},
 ): QuantFilterDataset {
-  return buildIndexQuantFilterDataset(candles, params, symbolName, emotionPoints, basisPoints, breadthPoints)
+  return buildIndexQuantFilterDataset(
+    candles,
+    params,
+    symbolName,
+    emotionPoints,
+    basisPoints,
+    breadthPoints,
+    vixPoints,
+    supportsVix,
+    options,
+  )
 }
+

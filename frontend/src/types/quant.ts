@@ -80,6 +80,18 @@ export type QuantFilterFieldKey =
   | 'basis-main'
   | 'basis-month'
   | 'breadth-up-pct'
+  | 'vix-open'
+  | 'vix-high'
+  | 'vix-low'
+  | 'vix-close'
+  | 'us-vix-open'
+  | 'us-vix-high'
+  | 'us-vix-low'
+  | 'us-vix-close'
+  | 'us-fear-greed'
+  | 'us-hedge-long'
+  | 'us-hedge-short'
+  | 'us-hedge-ratio'
   | 'pct-chg'
   | 'turnover-rate'
   | 'rsi'
@@ -102,6 +114,10 @@ export type QuantFilterGroupKey =
   | 'emotion'
   | 'basis'
   | 'breadth'
+  | 'vix'
+  | 'us-vix'
+  | 'fear-greed'
+  | 'hedge'
   | 'change'
   | 'turnover'
   | 'rsi'
@@ -158,12 +174,17 @@ export interface QuantFilterDataset {
     month: QuantLineSeries
   } | null
   breadth: QuantLineSeries | null
+  vix: QuantLineSeries | null
+  usVix: QuantLineSeries | null
+  usFearGreed: QuantLineSeries | null
+  usHedgeProxy: QuantLineSeries | null
   fields: QuantFilterFieldMeta[]
   snapshots: QuantDailyIndicatorSnapshot[]
 }
 
 export type QuantStrategyType = 'index' | 'stock' | 'etf'
 export type QuantStrategyEngine = 'snapshot' | 'sequence'
+export type QuantTargetMarket = 'cn' | 'hk' | 'us'
 export type QuantExecutionPriceMode = 'next_open' | 'next_close' | 'next_best'
 export type QuantConflictMode = 'sell_first' | 'buy_first' | 'skip'
 export type QuantSignalColor = 'blue' | 'red'
@@ -292,6 +313,7 @@ export interface QuantStrategyConfig {
   strategy_engine: QuantStrategyEngine
   sequence_mode: QuantSequenceMode
   strategy_type: QuantStrategyType
+  target_market: QuantTargetMarket
   target_code: string
   target_name: string
   indicator_params: QuantIndicatorParams
@@ -323,6 +345,7 @@ export interface QuantStrategyPayload {
   strategy_engine: QuantStrategyEngine
   sequence_mode: QuantSequenceMode
   strategy_type: QuantStrategyType
+  target_market: QuantTargetMarket
   target_code: string
   target_name: string
   indicator_params: QuantIndicatorParams

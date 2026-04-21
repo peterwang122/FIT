@@ -9,6 +9,10 @@ class TaskCreatePayload(BaseModel):
     market_scope: str = Field(default="cn_stock", min_length=1, max_length=32)
     schedule_time: str = Field(min_length=5, max_length=5)
     enabled: bool = True
+    collector_key: str | None = Field(default=None, max_length=64)
+    target_type: str | None = Field(default=None, max_length=32)
+    target_code: str | None = Field(default=None, max_length=32)
+    target_name: str | None = Field(default=None, max_length=128)
     stock_code: str | None = Field(default=None, max_length=32)
     strategy_ids: list[int] = Field(default_factory=list)
 
@@ -19,6 +23,10 @@ class TaskUpdatePayload(BaseModel):
     market_scope: str = Field(default="cn_stock", min_length=1, max_length=32)
     schedule_time: str = Field(min_length=5, max_length=5)
     enabled: bool = True
+    collector_key: str | None = Field(default=None, max_length=64)
+    target_type: str | None = Field(default=None, max_length=32)
+    target_code: str | None = Field(default=None, max_length=32)
+    target_name: str | None = Field(default=None, max_length=128)
     stock_code: str | None = Field(default=None, max_length=32)
     strategy_ids: list[int] = Field(default_factory=list)
 
@@ -46,9 +54,14 @@ class ScheduledTaskResponse(BaseModel):
     owner_user_id: int
     task_type: str
     market_scope: str
+    collector_key: str | None = None
+    collection_label: str | None = None
     name: str
     enabled: bool
     schedule_time: str
+    target_type: str | None = None
+    target_code: str | None = None
+    target_name: str | None = None
     stock_code: str | None = None
     stock_name: str | None = None
     strategy_ids: list[int] = Field(default_factory=list)

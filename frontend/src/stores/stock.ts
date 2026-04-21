@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 
 import {
+  collectForexSymbol,
   fetchCffexNetPositionSeries,
   fetchCffexNetPositions,
   fetchForexKline,
@@ -17,6 +18,7 @@ import type {
   IndexEmotionPoint,
   KlineCandle,
   MarketOption,
+  NetPositionSeriesGroup,
   NetPositionSeries,
   NetPositionTables,
   StockSymbol,
@@ -31,6 +33,13 @@ const NET_POSITION_SERIES_RECENT_MONTHS = 12
 
 type ChunkedHistoryState = {
   candles: KlineCandle[]
+  earliestLoadedDate: string | null
+  hasMoreHistory: boolean
+  pendingWindowKey: string | null
+}
+
+type ChunkedNetPositionSeriesState = {
+  series: NetPositionSeries | null
   earliestLoadedDate: string | null
   hasMoreHistory: boolean
   pendingWindowKey: string | null
@@ -86,6 +95,66 @@ function buildChunkState(
   }
 }
 
+function mergeNetPositionGroup(
+  existing: NetPositionSeriesGroup | undefined,
+  incoming: NetPositionSeriesGroup | undefined,
+): NetPositionSeriesGroup {
+  const memberLabel = incoming?.member_label ?? existing?.member_label ?? ''
+  const keys = ['OVERALL', 'IF', 'IH', 'IC', 'IM'] as const
+  const series = Object.fromEntries(
+    keys.map((key) => {
+      const byDate = new Map<string, { trade_date: string; net_position: number }>()
+      for (const item of [...(existing?.series?.[key] ?? []), ...(incoming?.series?.[key] ?? [])]) {
+        byDate.set(item.trade_date, item)
+      }
+      return [key, [...byDate.values()].sort((left, right) => left.trade_date.localeCompare(right.trade_date))]
+    }),
+  ) as NetPositionSeriesGroup['series']
+
+  return {
+    member_label: memberLabel,
+    series,
+  }
+}
+
+function mergeNetPositionSeries(
+  existing: NetPositionSeries | null,
+  incoming: NetPositionSeries | null,
+): NetPositionSeries | null {
+  if (!existing) return incoming
+  if (!incoming) return existing
+  return {
+    citic_customer: mergeNetPositionGroup(existing.citic_customer, incoming.citic_customer),
+    top20_institutions: mergeNetPositionGroup(existing.top20_institutions, incoming.top20_institutions),
+  }
+}
+
+function extractEarliestNetPositionTradeDate(series: NetPositionSeries | null): string | null {
+  if (!series) return null
+  const tradeDates = [
+    ...Object.values(series.citic_customer?.series ?? {}).flatMap((items) => items.map((item) => item.trade_date)),
+    ...Object.values(series.top20_institutions?.series ?? {}).flatMap((items) => items.map((item) => item.trade_date)),
+  ]
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right))
+
+  return tradeDates[0] ?? null
+}
+
+function buildNetPositionSeriesState(
+  series: NetPositionSeries | null,
+  hasMoreHistory = true,
+  pendingWindowKey: string | null = null,
+): ChunkedNetPositionSeriesState {
+  const earliestLoadedDate = extractEarliestNetPositionTradeDate(series)
+  return {
+    series,
+    earliestLoadedDate,
+    hasMoreHistory: Boolean(earliestLoadedDate) && hasMoreHistory,
+    pendingWindowKey,
+  }
+}
+
 export const useStockStore = defineStore('stock', {
   state: () => ({
     tsCode: '002594',
@@ -96,6 +165,9 @@ export const useStockStore = defineStore('stock', {
     indexEmotionPoints: [] as IndexEmotionPoint[],
     netPositionTables: null as NetPositionTables | null,
     netPositionSeries: null as NetPositionSeries | null,
+    netPositionSeriesHasMoreHistory: false,
+    netPositionSeriesLoadingMore: false,
+    netPositionSeriesHistory: null as ChunkedNetPositionSeriesState | null,
     indexCode: '',
     indexOptions: [] as MarketOption[],
     indexCandles: [] as KlineCandle[],
@@ -114,6 +186,7 @@ export const useStockStore = defineStore('stock', {
     netPositionSeriesLoading: false,
     indexLoading: false,
     forexLoading: false,
+    forexCollecting: false,
     collectTaskId: '' as string,
     collectState: '' as string,
     error: '' as string,
@@ -165,6 +238,12 @@ export const useStockStore = defineStore('stock', {
       if (state) {
         this.forexHistoryByCode[forexCode] = state
       }
+    },
+    applyNetPositionSeriesState(state: ChunkedNetPositionSeriesState | null) {
+      this.netPositionSeries = state?.series ?? null
+      this.netPositionSeriesHasMoreHistory = state?.hasMoreHistory ?? false
+      this.netPositionSeriesLoadingMore = Boolean(state?.pendingWindowKey)
+      this.netPositionSeriesHistory = state
     },
     async loadSymbols() {
       this.symbols = await fetchSymbols()
@@ -243,11 +322,46 @@ export const useStockStore = defineStore('stock', {
     async loadNetPositionSeries() {
       this.netPositionSeriesLoading = true
       try {
-        this.netPositionSeries = await fetchCffexNetPositionSeries(monthsAgo(NET_POSITION_SERIES_RECENT_MONTHS))
+        const recentSeries = await fetchCffexNetPositionSeries(monthsAgo(NET_POSITION_SERIES_RECENT_MONTHS))
+        const cached = this.netPositionSeriesHistory
+        const mergedSeries = mergeNetPositionSeries(cached?.series ?? null, recentSeries)
+        this.applyNetPositionSeriesState(
+          buildNetPositionSeriesState(mergedSeries, cached?.hasMoreHistory ?? Boolean(mergedSeries)),
+        )
       } catch (error) {
         this.error = `加载中金所净空单折线图失败：${String(error)}`
       } finally {
         this.netPositionSeriesLoading = false
+      }
+    },
+    async loadMoreNetPositionSeries() {
+      const currentState = this.netPositionSeriesHistory
+      if (!currentState?.earliestLoadedDate || !currentState.hasMoreHistory || currentState.pendingWindowKey) {
+        return
+      }
+
+      const endDate = shiftDays(currentState.earliestLoadedDate, -1)
+      const startDate = shiftMonths(endDate, -NET_POSITION_SERIES_RECENT_MONTHS)
+      const windowKey = `${startDate}:${endDate}`
+      this.applyNetPositionSeriesState({
+        ...currentState,
+        pendingWindowKey: windowKey,
+      })
+
+      try {
+        const series = await fetchCffexNetPositionSeries(startDate, endDate)
+        const mergedSeries = mergeNetPositionSeries(currentState.series, series)
+        const nextEarliestTradeDate = extractEarliestNetPositionTradeDate(mergedSeries)
+        const hasOlderHistory = Boolean(
+          nextEarliestTradeDate && nextEarliestTradeDate < currentState.earliestLoadedDate,
+        )
+        this.applyNetPositionSeriesState(buildNetPositionSeriesState(mergedSeries, hasOlderHistory))
+      } catch (error) {
+        this.error = `加载更早中金所净空单折线图失败：${String(error)}`
+        this.applyNetPositionSeriesState({
+          ...currentState,
+          pendingWindowKey: null,
+        })
       }
     },
     async loadIndexKline() {
@@ -348,6 +462,26 @@ export const useStockStore = defineStore('stock', {
         })
       }
     },
+    async collectCurrentForex() {
+      const requestedCode = this.forexCode
+      if (!requestedCode || this.forexCollecting) return null
+
+      this.forexCollecting = true
+      this.error = ''
+      try {
+        const result = await collectForexSymbol(requestedCode)
+        delete this.forexHistoryByCode[requestedCode]
+        if (this.forexCode === requestedCode) {
+          await this.loadForexKline()
+        }
+        return result
+      } catch (error) {
+        this.error = `采集汇率失败：${String(error)}`
+        return null
+      } finally {
+        this.forexCollecting = false
+      }
+    },
     async triggerCollect() {
       if (!this.tsCode) return
       const result = await submitCollectTask(this.tsCode, buildIdempotencyKey(this.tsCode))
@@ -361,3 +495,4 @@ export const useStockStore = defineStore('stock', {
     },
   },
 })
+

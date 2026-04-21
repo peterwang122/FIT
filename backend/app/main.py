@@ -57,6 +57,7 @@ def ensure_runtime_tables() -> None:
 
     inspector = inspect(engine)
     existing_user_columns = {column["name"] for column in inspector.get_columns(User.__tablename__)}
+    existing_progress_columns = {column["name"] for column in inspector.get_columns(ProgressBoard.__tablename__)}
     existing_strategy_columns = {column["name"] for column in inspector.get_columns(QuantStrategyConfig.__tablename__)}
     existing_strategy_indexes = {index["name"] for index in inspector.get_indexes(QuantStrategyConfig.__tablename__)}
     existing_task_columns = {column["name"] for column in inspector.get_columns(ScheduledTask.__tablename__)}
@@ -117,6 +118,49 @@ def ensure_runtime_tables() -> None:
         user_alter_statements.append(f"ALTER TABLE `{User.__tablename__}` ADD COLUMN `last_login_at` DATETIME NULL")
     _ensure_columns(User.__tablename__, user_alter_statements)
 
+    progress_alter_statements: list[str] = []
+    if "last_synced_at" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `last_synced_at` DATETIME NULL"
+        )
+    if "last_synced_by_user_id" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `last_synced_by_user_id` BIGINT NULL"
+        )
+    if "last_sync_status" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `last_sync_status` VARCHAR(32) NOT NULL DEFAULT 'never'"
+        )
+    if "last_sync_error" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `last_sync_error` TEXT NULL"
+        )
+    if "published_progress_days" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `published_progress_days` JSON NULL"
+        )
+    if "draft_progress_days" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `draft_progress_days` JSON NULL"
+        )
+    if "published_generation_meta" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `published_generation_meta` JSON NULL"
+        )
+    if "draft_generation_meta" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `draft_generation_meta` JSON NULL"
+        )
+    if "last_published_at" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `last_published_at` DATETIME NULL"
+        )
+    if "last_published_by_user_id" not in existing_progress_columns:
+        progress_alter_statements.append(
+            f"ALTER TABLE `{ProgressBoard.__tablename__}` ADD COLUMN `last_published_by_user_id` BIGINT NULL"
+        )
+    _ensure_columns(ProgressBoard.__tablename__, progress_alter_statements)
+
     strategy_alter_statements: list[str] = []
     if "owner_user_id" not in existing_strategy_columns:
         strategy_alter_statements.append(
@@ -135,6 +179,11 @@ def ensure_runtime_tables() -> None:
         strategy_alter_statements.append(
             f"ALTER TABLE `{QuantStrategyConfig.__tablename__}` "
             f"ADD COLUMN `sequence_mode` VARCHAR(32) NOT NULL DEFAULT 'single_target'"
+        )
+    if "target_market" not in existing_strategy_columns:
+        strategy_alter_statements.append(
+            f"ALTER TABLE `{QuantStrategyConfig.__tablename__}` "
+            f"ADD COLUMN `target_market` VARCHAR(16) NOT NULL DEFAULT 'cn'"
         )
     if "buy_sequence_groups" not in existing_strategy_columns:
         strategy_alter_statements.append(
@@ -172,6 +221,14 @@ def ensure_runtime_tables() -> None:
                 text(
                     f"ALTER TABLE `{QuantStrategyConfig.__tablename__}` "
                     f"ADD INDEX `ix_quant_strategy_configs_owner_user_id` (`owner_user_id`)"
+                )
+            )
+    if "ix_quant_strategy_configs_target_market" not in existing_strategy_indexes:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"ALTER TABLE `{QuantStrategyConfig.__tablename__}` "
+                    f"ADD INDEX `ix_quant_strategy_configs_target_market` (`target_market`)"
                 )
             )
 

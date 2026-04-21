@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     smtp_from_email: str = ""
     smtp_from_name: str = "FIT 股票量化系统"
+    github_token: str = ""
+    github_api_base_url: str = "https://api.github.com"
+    github_request_timeout_seconds: int = 30
 
     # read-only existing table mapping (defaults aligned with current DB)
     stock_table_name: str = "stock_daily_data"
@@ -98,6 +101,67 @@ class Settings(BaseSettings):
     index_daily_pct_chg_column: str = "price_change_rate"
     index_daily_vol_column: str = "volume"
     index_daily_amount_column: str = "turnover"
+
+    index_us_basic_info_table_name: str = "index_us_basic_info"
+    index_us_basic_info_code_column: str = "index_code"
+    index_us_basic_info_name_column: str = "index_name"
+    index_us_daily_table_name: str = "index_us_daily_data"
+    index_us_daily_code_column: str = "index_code"
+    index_us_daily_date_column: str = "trade_date"
+    index_us_daily_open_column: str = "open_price"
+    index_us_daily_high_column: str = "high_price"
+    index_us_daily_low_column: str = "low_price"
+    index_us_daily_close_column: str = "close_price"
+    index_us_daily_change_column: str = "price_change_amount"
+    index_us_daily_pct_chg_column: str = "price_change_rate"
+    index_us_daily_vol_column: str = "volume"
+    index_us_daily_amount_column: str = "turnover"
+
+    index_hk_basic_info_table_name: str = "index_hk_basic_info"
+    index_hk_basic_info_code_column: str = "index_code"
+    index_hk_basic_info_name_column: str = "index_name"
+    index_hk_daily_table_name: str = "index_hk_daily_data"
+    index_hk_daily_code_column: str = "index_code"
+    index_hk_daily_date_column: str = "trade_date"
+    index_hk_daily_open_column: str = "open_price"
+    index_hk_daily_high_column: str = "high_price"
+    index_hk_daily_low_column: str = "low_price"
+    index_hk_daily_close_column: str = "close_price"
+    index_hk_daily_change_column: str = "price_change_amount"
+    index_hk_daily_pct_chg_column: str = "price_change_rate"
+    index_hk_daily_vol_column: str = "volume"
+    index_hk_daily_amount_column: str = "turnover"
+
+    index_qvix_basic_info_table_name: str = "index_qvix_basic_info"
+    index_qvix_basic_info_code_column: str = "index_code"
+    index_qvix_basic_info_name_column: str = "index_name"
+    index_qvix_daily_table_name: str = "index_qvix_daily_data"
+    index_qvix_daily_code_column: str = "index_code"
+    index_qvix_daily_date_column: str = "trade_date"
+    index_qvix_daily_open_column: str = "open_price"
+    index_qvix_daily_high_column: str = "high_price"
+    index_qvix_daily_low_column: str = "low_price"
+    index_qvix_daily_close_column: str = "close_price"
+
+    index_us_vix_daily_table_name: str = "index_us_vix_daily"
+    index_us_vix_daily_date_column: str = "trade_date"
+    index_us_vix_daily_open_column: str = "open_value"
+    index_us_vix_daily_high_column: str = "high_value"
+    index_us_vix_daily_low_column: str = "low_value"
+    index_us_vix_daily_close_column: str = "close_value"
+
+    index_us_fear_greed_daily_table_name: str = "index_us_fear_greed_daily"
+    index_us_fear_greed_daily_date_column: str = "trade_date"
+    index_us_fear_greed_daily_value_column: str = "fear_greed_value"
+    index_us_fear_greed_daily_label_column: str = "sentiment_label"
+
+    index_us_hedge_proxy_table_name: str = "index_us_hedge_fund_ls_proxy"
+    index_us_hedge_proxy_report_date_column: str = "report_date"
+    index_us_hedge_proxy_scope_column: str = "contract_scope"
+    index_us_hedge_proxy_long_column: str = "long_value"
+    index_us_hedge_proxy_short_column: str = "short_value"
+    index_us_hedge_proxy_ratio_column: str = "ratio_value"
+    index_us_hedge_proxy_release_date_column: str = "release_date"
 
     forex_basic_info_table_name: str = "forex_basic_info"
     forex_basic_info_code_column: str = "symbol_code"
@@ -175,6 +239,10 @@ class Settings(BaseSettings):
     stock_temp_task_soft_time_limit_seconds: int = 1800
     stock_temp_task_time_limit_seconds: int = 2100
     stock_temp_task_max_retries: int = 5
+    stock_temp_daily_service_timeout_seconds: int = 7200
+    stock_temp_daily_task_soft_time_limit_seconds: int = 7200
+    stock_temp_daily_task_time_limit_seconds: int = 7500
+    stock_temp_daily_task_max_retries: int = 3
 
     task_idempotency_ttl_seconds: int = 3600
     collector_dedupe_lock_ttl_seconds: int = 120

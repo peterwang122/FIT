@@ -129,13 +129,50 @@ class IndexDashboardBasisPointResponse(BaseModel):
     month_basis: float
 
 
+class IndexDashboardVixPointResponse(BaseModel):
+    trade_date: date
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+
+
+class IndexDashboardUsVixPointResponse(BaseModel):
+    trade_date: date
+    open_value: float
+    high_value: float
+    low_value: float
+    close_value: float
+
+
+class IndexDashboardUsFearGreedPointResponse(BaseModel):
+    trade_date: date
+    fear_greed_value: float
+    sentiment_label: str = ""
+
+
+class IndexDashboardUsHedgeProxyPointResponse(BaseModel):
+    report_date: date | None = None
+    release_date: date
+    contract_scope: str
+    long_value: float | None = None
+    short_value: float | None = None
+    ratio_value: float | None = None
+
+
 class IndexDashboardResponse(BaseModel):
     index: IndexDashboardIndexResponse
+    market: str = "cn"
+    supports_auxiliary_panels: bool = True
     range_mode: str
     candles: list[StockCandle]
     emotion_points: list[IndexDashboardEmotionPointResponse]
     basis_points: list[IndexDashboardBasisPointResponse]
     breadth_points: list[IndexBreadthPointResponse]
+    vix_points: list[IndexDashboardVixPointResponse]
+    us_vix_points: list[IndexDashboardUsVixPointResponse] = Field(default_factory=list)
+    us_fear_greed_points: list[IndexDashboardUsFearGreedPointResponse] = Field(default_factory=list)
+    us_hedge_proxy_points: list[IndexDashboardUsHedgeProxyPointResponse] = Field(default_factory=list)
 
 
 class HfqCollectTaskPayload(BaseModel):
@@ -159,6 +196,7 @@ class QuantStrategySavePayload(BaseModel):
     strategy_engine: str = "snapshot"
     sequence_mode: str = "single_target"
     strategy_type: str
+    target_market: str = "cn"
     target_code: str
     target_name: str
     indicator_params: dict
@@ -193,6 +231,7 @@ class QuantStrategyConfigResponse(BaseModel):
     strategy_engine: str = "snapshot"
     sequence_mode: str = "single_target"
     strategy_type: str
+    target_market: str = "cn"
     target_code: str
     target_name: str
     indicator_params: dict
