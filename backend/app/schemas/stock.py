@@ -125,8 +125,12 @@ class IndexDashboardEmotionPointResponse(BaseModel):
 
 class IndexDashboardBasisPointResponse(BaseModel):
     trade_date: date
+    index_name: str = ""
     main_basis: float
     month_basis: float
+    main_basis_adjusted: float | None = None
+    basis_roll_flag: bool = False
+    basis_roll_delta: float | None = None
 
 
 class IndexDashboardVixPointResponse(BaseModel):
@@ -160,10 +164,33 @@ class IndexDashboardUsHedgeProxyPointResponse(BaseModel):
     ratio_value: float | None = None
 
 
+class IndexDashboardUsPutCallPointResponse(BaseModel):
+    trade_date: date
+    total_put_call_ratio: float | None = None
+    index_put_call_ratio: float | None = None
+    equity_put_call_ratio: float | None = None
+    etf_put_call_ratio: float | None = None
+
+
+class IndexDashboardUsTreasuryYieldPointResponse(BaseModel):
+    trade_date: date
+    yield_3m: float | None = None
+    yield_2y: float | None = None
+    yield_10y: float | None = None
+    spread_10y_2y: float | None = None
+    spread_10y_3m: float | None = None
+
+
+class IndexDashboardUsCreditSpreadPointResponse(BaseModel):
+    trade_date: date
+    high_yield_oas: float | None = None
+
+
 class IndexDashboardResponse(BaseModel):
     index: IndexDashboardIndexResponse
     market: str = "cn"
     supports_auxiliary_panels: bool = True
+    supports_basis_panel: bool = False
     range_mode: str
     candles: list[StockCandle]
     emotion_points: list[IndexDashboardEmotionPointResponse]
@@ -173,6 +200,9 @@ class IndexDashboardResponse(BaseModel):
     us_vix_points: list[IndexDashboardUsVixPointResponse] = Field(default_factory=list)
     us_fear_greed_points: list[IndexDashboardUsFearGreedPointResponse] = Field(default_factory=list)
     us_hedge_proxy_points: list[IndexDashboardUsHedgeProxyPointResponse] = Field(default_factory=list)
+    us_put_call_points: list[IndexDashboardUsPutCallPointResponse] = Field(default_factory=list)
+    us_treasury_yield_points: list[IndexDashboardUsTreasuryYieldPointResponse] = Field(default_factory=list)
+    us_credit_spread_points: list[IndexDashboardUsCreditSpreadPointResponse] = Field(default_factory=list)
 
 
 class HfqCollectTaskPayload(BaseModel):

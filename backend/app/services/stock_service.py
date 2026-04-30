@@ -1720,6 +1720,125 @@ class StockService:
             if row.get("release_date") is not None
         ]
 
+    def list_index_us_put_call_ratio_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_us_put_call_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_us_put_call_date_column}` AS trade_date, "
+            f"`{settings.index_us_put_call_total_column}` AS total_put_call_ratio, "
+            f"`{settings.index_us_put_call_index_column}` AS index_put_call_ratio, "
+            f"`{settings.index_us_put_call_equity_column}` AS equity_put_call_ratio, "
+            f"`{settings.index_us_put_call_etf_column}` AS etf_put_call_ratio "
+            f"FROM `{table_name}` "
+            f"WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{settings.index_us_put_call_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_us_put_call_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_us_put_call_date_column}` ASC"
+
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "total_put_call_ratio": _to_float(row.get("total_put_call_ratio")),
+                "index_put_call_ratio": _to_float(row.get("index_put_call_ratio")),
+                "equity_put_call_ratio": _to_float(row.get("equity_put_call_ratio")),
+                "etf_put_call_ratio": _to_float(row.get("etf_put_call_ratio")),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
+    def list_index_us_treasury_yield_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_us_treasury_yield_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_us_treasury_yield_date_column}` AS trade_date, "
+            f"`{settings.index_us_treasury_yield_3m_column}` AS yield_3m, "
+            f"`{settings.index_us_treasury_yield_2y_column}` AS yield_2y, "
+            f"`{settings.index_us_treasury_yield_10y_column}` AS yield_10y, "
+            f"`{settings.index_us_treasury_yield_spread_10y_2y_column}` AS spread_10y_2y, "
+            f"`{settings.index_us_treasury_yield_spread_10y_3m_column}` AS spread_10y_3m "
+            f"FROM `{table_name}` "
+            f"WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{settings.index_us_treasury_yield_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_us_treasury_yield_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_us_treasury_yield_date_column}` ASC"
+
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "yield_3m": _to_float(row.get("yield_3m")),
+                "yield_2y": _to_float(row.get("yield_2y")),
+                "yield_10y": _to_float(row.get("yield_10y")),
+                "spread_10y_2y": _to_float(row.get("spread_10y_2y")),
+                "spread_10y_3m": _to_float(row.get("spread_10y_3m")),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
+    def list_index_us_credit_spread_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_us_credit_spread_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_us_credit_spread_date_column}` AS trade_date, "
+            f"`{settings.index_us_credit_spread_hy_oas_column}` AS high_yield_oas "
+            f"FROM `{table_name}` "
+            f"WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{settings.index_us_credit_spread_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_us_credit_spread_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_us_credit_spread_date_column}` ASC"
+
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "high_yield_oas": _to_float(row.get("high_yield_oas")),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
     def list_forex_daily_kline(
         self,
         symbol_code: str,

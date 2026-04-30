@@ -14,8 +14,11 @@ import type {
   FuturesBasisPoint,
   IndexBreadthPoint,
   IndexEmotionPoint,
+  IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
+  IndexUsPutCallPoint,
+  IndexUsTreasuryYieldPoint,
   IndexUsVixPoint,
   IndexVixPoint,
 } from '../types/stock'
@@ -63,6 +66,8 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
 ]
 
 export const US_INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+  'basis-main',
+  'basis-main-adjusted',
   'us-vix-open',
   'us-vix-high',
   'us-vix-low',
@@ -71,6 +76,17 @@ export const US_INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'us-hedge-long',
   'us-hedge-short',
   'us-hedge-ratio',
+  'us-put-call-total',
+  'us-put-call-index',
+  'us-put-call-equity',
+  'us-put-call-etf',
+  'us-yield-3m',
+  'us-yield-2y',
+  'us-yield-10y',
+  'us-yield-spread-10y-2y',
+  'us-yield-spread-10y-3m',
+  'us-hy-oas',
+  'us-hy-oas-change-5d',
   'pct-chg',
   'turnover-rate',
   'rsi',
@@ -472,7 +488,10 @@ export function calculateQuantFuturesBasisSeries(
   basisPoints: FuturesBasisPoint[],
 ) {
   const sortedCandles = sortCandles(candles)
-  const grouped = new Map<string, Map<string, { main_basis: number | null; month_basis: number | null }>>()
+  const grouped = new Map<
+    string,
+    Map<string, { main_basis: number | null; main_basis_adjusted: number | null; month_basis: number | null }>
+  >()
 
   for (const point of basisPoints) {
     const indexName = String(point.index_name ?? '').trim()
@@ -481,9 +500,12 @@ export function calculateQuantFuturesBasisSeries(
       continue
     }
 
-    const rowsByDate = grouped.get(indexName) ?? new Map<string, { main_basis: number | null; month_basis: number | null }>()
+    const rowsByDate =
+      grouped.get(indexName) ??
+      new Map<string, { main_basis: number | null; main_basis_adjusted: number | null; month_basis: number | null }>()
     rowsByDate.set(tradeDate, {
       main_basis: isFiniteNumber(point.main_basis) ? point.main_basis : null,
+      main_basis_adjusted: isFiniteNumber(point.main_basis_adjusted) ? point.main_basis_adjusted : null,
       month_basis: isFiniteNumber(point.month_basis) ? point.month_basis : null,
     })
     grouped.set(indexName, rowsByDate)
@@ -515,9 +537,16 @@ export function calculateQuantFuturesBasisSeries(
     return isFiniteNumber(value) ? value : 0
   })
 
+  const adjustedValues = sortedCandles.map((item) => {
+    const value = grouped.get(symbolName)?.get(item.trade_date)?.main_basis_adjusted
+    const fallback = grouped.get(symbolName)?.get(item.trade_date)?.main_basis
+    return isFiniteNumber(value) ? value : isFiniteNumber(fallback) ? fallback : 0
+  })
+
   const times = sortedCandles.map((item) => item.trade_date)
   return {
     main: buildLineSeries('basis-main', '主连期现差', '#dc2626', times, mainValues),
+    adjusted: buildLineSeries('basis-main-adjusted', '换月调整期现差', '#2563eb', times, adjustedValues),
     month: buildLineSeries('basis-month', '月连期现差', '#2563eb', times, monthValues),
   }
 }
@@ -644,25 +673,136 @@ export function calculateQuantUsHedgeProxySeries(
   }
 }
 
+export function calculateQuantUsPutCallSeries(
+  candles: QuantIndicatorCandle[],
+  includePutCall: boolean,
+  usPutCallPoints: IndexUsPutCallPoint[],
+): QuantLineSeries | null {
+  if (!includePutCall) {
+    return null
+  }
+
+  const sortedCandles = sortCandles(candles)
+  const valueByDate = new Map(
+    usPutCallPoints
+      .filter((item) => Number.isFinite(Number(item.total_put_call_ratio)))
+      .map((item) => [item.trade_date, Number(item.total_put_call_ratio)]),
+  )
+
+  return {
+    key: 'us-put-call-total',
+    label: '总Put/Call',
+    color: '#9333ea',
+    data: sortedCandles.map((item) => createLinePoint(item.trade_date, valueByDate.get(item.trade_date) ?? null)),
+  }
+}
+
+export function calculateQuantUsTreasuryYieldSeries(
+  candles: QuantIndicatorCandle[],
+  includeTreasuryYield: boolean,
+  usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[],
+): { spread10y2y: QuantLineSeries; spread10y3m: QuantLineSeries } | null {
+  if (!includeTreasuryYield) {
+    return null
+  }
+
+  const sortedCandles = sortCandles(candles)
+  const rowByDate = new Map(usTreasuryYieldPoints.map((item) => [item.trade_date, item]))
+
+  return {
+    spread10y2y: {
+      key: 'us-yield-spread-10y-2y',
+      label: '10Y-2Y利差',
+      color: '#2563eb',
+      data: sortedCandles.map((item) =>
+        createLinePoint(
+          item.trade_date,
+          Number.isFinite(Number(rowByDate.get(item.trade_date)?.spread_10y_2y))
+            ? Number(rowByDate.get(item.trade_date)?.spread_10y_2y)
+            : null,
+        ),
+      ),
+    },
+    spread10y3m: {
+      key: 'us-yield-spread-10y-3m',
+      label: '10Y-3M利差',
+      color: '#f97316',
+      data: sortedCandles.map((item) =>
+        createLinePoint(
+          item.trade_date,
+          Number.isFinite(Number(rowByDate.get(item.trade_date)?.spread_10y_3m))
+            ? Number(rowByDate.get(item.trade_date)?.spread_10y_3m)
+            : null,
+        ),
+      ),
+    },
+  }
+}
+
+export function calculateQuantUsCreditSpreadSeries(
+  candles: QuantIndicatorCandle[],
+  includeCreditSpread: boolean,
+  usCreditSpreadPoints: IndexUsCreditSpreadPoint[],
+): QuantLineSeries | null {
+  if (!includeCreditSpread) {
+    return null
+  }
+
+  const sortedCandles = sortCandles(candles)
+  const valueByDate = new Map(
+    usCreditSpreadPoints
+      .filter((item) => Number.isFinite(Number(item.high_yield_oas)))
+      .map((item) => [item.trade_date, Number(item.high_yield_oas)]),
+  )
+
+  return {
+    key: 'us-hy-oas',
+    label: 'HY OAS',
+    color: '#be123c',
+    data: sortedCandles.map((item) => createLinePoint(item.trade_date, valueByDate.get(item.trade_date) ?? null)),
+  }
+}
+
 type IndexDatasetOptions = {
   includeCnAuxiliary?: boolean
+  includeBasis?: boolean
+  includeBasisMonth?: boolean
+  includeBasisAdjusted?: boolean
+  basisMainLabel?: string
+  basisAdjustedLabel?: string
+  basisMonthLabel?: string
   includeCnVix?: boolean
   includeUsVix?: boolean
   includeUsFearGreed?: boolean
   includeUsHedge?: boolean
+  includeUsPutCall?: boolean
+  includeUsTreasuryYield?: boolean
+  includeUsCreditSpread?: boolean
   usVixPoints?: IndexUsVixPoint[]
   usFearGreedPoints?: IndexUsFearGreedPoint[]
   usHedgeProxyPoints?: IndexUsHedgeProxyPoint[]
+  usPutCallPoints?: IndexUsPutCallPoint[]
+  usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
+  usCreditSpreadPoints?: IndexUsCreditSpreadPoint[]
 }
 
 function buildIndexQuantFilterFields(
   payload: QuantChartPayload,
   options: {
     includeCnAuxiliary: boolean
+    includeBasis: boolean
+    includeBasisMonth: boolean
+    includeBasisAdjusted: boolean
+    basisMainLabel: string
+    basisAdjustedLabel: string
+    basisMonthLabel: string
     includeCnVix: boolean
     includeUsVix: boolean
     includeUsFearGreed: boolean
     includeUsHedge: boolean
+    includeUsPutCall: boolean
+    includeUsTreasuryYield: boolean
+    includeUsCreditSpread: boolean
   },
 ): QuantFilterFieldMeta[] {
   const fields: QuantFilterFieldMeta[] = [
@@ -679,10 +819,18 @@ function buildIndexQuantFilterFields(
   if (options.includeCnAuxiliary) {
     fields.unshift(
       { key: 'emotion', group: 'emotion', label: '情绪指标' },
-      { key: 'basis-main', group: 'basis', label: '主连期现差' },
-      { key: 'basis-month', group: 'basis', label: '月连期现差' },
       { key: 'breadth-up-pct', group: 'breadth', label: '上涨家数百分比' },
     )
+  }
+  if (options.includeBasis) {
+    const basisFields: QuantFilterFieldMeta[] = [{ key: 'basis-main', group: 'basis', label: options.basisMainLabel }]
+    if (options.includeBasisAdjusted) {
+      basisFields.unshift({ key: 'basis-main-adjusted', group: 'basis', label: options.basisAdjustedLabel })
+    }
+    if (options.includeBasisMonth) {
+      basisFields.push({ key: 'basis-month', group: 'basis', label: options.basisMonthLabel })
+    }
+    fields.unshift(...basisFields)
   }
   if (options.includeCnVix) {
     fields.splice(
@@ -710,6 +858,29 @@ function buildIndexQuantFilterFields(
       { key: 'us-hedge-long', group: 'hedge', label: '对冲代理多头' },
       { key: 'us-hedge-short', group: 'hedge', label: '对冲代理空头' },
       { key: 'us-hedge-ratio', group: 'hedge', label: '对冲代理多空比' },
+    )
+  }
+  if (options.includeUsPutCall) {
+    fields.unshift(
+      { key: 'us-put-call-total', group: 'put-call', label: '总Put/Call' },
+      { key: 'us-put-call-index', group: 'put-call', label: '指数Put/Call' },
+      { key: 'us-put-call-equity', group: 'put-call', label: '股票Put/Call' },
+      { key: 'us-put-call-etf', group: 'put-call', label: 'ETF Put/Call' },
+    )
+  }
+  if (options.includeUsTreasuryYield) {
+    fields.unshift(
+      { key: 'us-yield-3m', group: 'treasury', label: '3M收益率' },
+      { key: 'us-yield-2y', group: 'treasury', label: '2Y收益率' },
+      { key: 'us-yield-10y', group: 'treasury', label: '10Y收益率' },
+      { key: 'us-yield-spread-10y-2y', group: 'treasury', label: '10Y-2Y利差' },
+      { key: 'us-yield-spread-10y-3m', group: 'treasury', label: '10Y-3M利差' },
+    )
+  }
+  if (options.includeUsCreditSpread) {
+    fields.unshift(
+      { key: 'us-hy-oas', group: 'credit', label: 'HY OAS' },
+      { key: 'us-hy-oas-change-5d', group: 'credit', label: 'HY OAS 5日变化' },
     )
   }
   return fields
@@ -780,17 +951,38 @@ export function buildIndexQuantFilterDataset(
 ): QuantFilterDataset {
   const chart = calculateQuantIndicators(candles, params)
   const includeCnAuxiliary = options.includeCnAuxiliary ?? true
+  const includeBasis = options.includeBasis ?? includeCnAuxiliary
+  const includeBasisMonth = options.includeBasisMonth ?? includeCnAuxiliary
+  const includeBasisAdjusted = options.includeBasisAdjusted ?? false
+  const basisMainLabel = options.basisMainLabel ?? '主连期现差'
+  const basisAdjustedLabel = options.basisAdjustedLabel ?? '换月调整期现差'
+  const basisMonthLabel = options.basisMonthLabel ?? '月连期现差'
   const includeCnVix = options.includeCnVix ?? supportsVix
   const includeUsVix = options.includeUsVix ?? false
   const includeUsFearGreed = options.includeUsFearGreed ?? false
   const includeUsHedge = options.includeUsHedge ?? false
+  const includeUsPutCall = options.includeUsPutCall ?? false
+  const includeUsTreasuryYield = options.includeUsTreasuryYield ?? false
+  const includeUsCreditSpread = options.includeUsCreditSpread ?? false
   const usVixPoints = options.usVixPoints ?? []
   const usFearGreedPoints = options.usFearGreedPoints ?? []
   const usHedgeProxyPoints = options.usHedgeProxyPoints ?? []
+  const usPutCallPoints = options.usPutCallPoints ?? []
+  const usTreasuryYieldPoints = options.usTreasuryYieldPoints ?? []
+  const usCreditSpreadPoints = options.usCreditSpreadPoints ?? []
 
   const emotion = includeCnAuxiliary ? calculateQuantEmotionSeries(candles, symbolName, emotionPoints) : null
-  const basis = includeCnAuxiliary ? calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints) : null
+  const basis = includeBasis ? calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints) : null
   const breadth = includeCnAuxiliary ? calculateQuantBreadthSeries(candles, breadthPoints) : null
+  if (basis) {
+    basis.main.label = basisMainLabel
+    if (includeBasisAdjusted && basis.adjusted) {
+      basis.adjusted.label = basisAdjustedLabel
+    } else {
+      delete (basis as { adjusted?: QuantLineSeries }).adjusted
+    }
+    basis.month.label = basisMonthLabel
+  }
   const vix = includeCnVix ? calculateQuantVixSeries(candles, true, vixPoints) : null
   const usVix = includeUsVix ? calculateQuantUsVixSeries(candles, true, usVixPoints) : null
   const usFearGreed = includeUsFearGreed
@@ -798,6 +990,13 @@ export function buildIndexQuantFilterDataset(
     : null
   const usHedgeProxy = includeUsHedge
     ? calculateQuantUsHedgeProxySeries(candles, true, usHedgeProxyPoints)
+    : null
+  const usPutCall = includeUsPutCall ? calculateQuantUsPutCallSeries(candles, true, usPutCallPoints) : null
+  const usTreasuryYield = includeUsTreasuryYield
+    ? calculateQuantUsTreasuryYieldSeries(candles, true, usTreasuryYieldPoints)
+    : null
+  const usCreditSpread = includeUsCreditSpread
+    ? calculateQuantUsCreditSpreadSeries(candles, true, usCreditSpreadPoints)
     : null
   const vixByDate = new Map(
     vixPoints.map((item) => [
@@ -827,6 +1026,47 @@ export function buildIndexQuantFilterDataset(
       Number.isFinite(Number(item.fear_greed_value)) ? Number(item.fear_greed_value) : null,
     ]),
   )
+  const usPutCallByDate = new Map(
+    usPutCallPoints.map((item) => [
+      item.trade_date,
+      {
+        'us-put-call-total': Number.isFinite(Number(item.total_put_call_ratio)) ? Number(item.total_put_call_ratio) : null,
+        'us-put-call-index': Number.isFinite(Number(item.index_put_call_ratio)) ? Number(item.index_put_call_ratio) : null,
+        'us-put-call-equity': Number.isFinite(Number(item.equity_put_call_ratio)) ? Number(item.equity_put_call_ratio) : null,
+        'us-put-call-etf': Number.isFinite(Number(item.etf_put_call_ratio)) ? Number(item.etf_put_call_ratio) : null,
+      },
+    ]),
+  )
+  const usTreasuryByDate = new Map(
+    usTreasuryYieldPoints.map((item) => [
+      item.trade_date,
+      {
+        'us-yield-3m': Number.isFinite(Number(item.yield_3m)) ? Number(item.yield_3m) : null,
+        'us-yield-2y': Number.isFinite(Number(item.yield_2y)) ? Number(item.yield_2y) : null,
+        'us-yield-10y': Number.isFinite(Number(item.yield_10y)) ? Number(item.yield_10y) : null,
+        'us-yield-spread-10y-2y': Number.isFinite(Number(item.spread_10y_2y)) ? Number(item.spread_10y_2y) : null,
+        'us-yield-spread-10y-3m': Number.isFinite(Number(item.spread_10y_3m)) ? Number(item.spread_10y_3m) : null,
+      },
+    ]),
+  )
+  const sortedCreditPoints = [...usCreditSpreadPoints]
+    .filter((item) => item.trade_date)
+    .sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+  const usCreditByDate = new Map(
+    sortedCreditPoints.map((item, index) => {
+      const value = Number.isFinite(Number(item.high_yield_oas)) ? Number(item.high_yield_oas) : null
+      const previous = index >= 5 ? sortedCreditPoints[index - 5] : null
+      const previousValue =
+        previous && Number.isFinite(Number(previous.high_yield_oas)) ? Number(previous.high_yield_oas) : null
+      return [
+        item.trade_date,
+        {
+          'us-hy-oas': value,
+          'us-hy-oas-change-5d': value !== null && previousValue !== null ? value - previousValue : null,
+        },
+      ]
+    }),
+  )
   const baseSnapshots = buildBaseSnapshots(chart, candles)
   const alignedUsHedgeRows = alignSparseRowsToTradeDates(
     baseSnapshots.map((item) => item.tradeDate),
@@ -849,6 +1089,7 @@ export function buildIndexQuantFilterDataset(
       ...snapshot.values,
       emotion: emotion?.data[index]?.value ?? null,
       'basis-main': basis?.main.data[index]?.value ?? null,
+      'basis-main-adjusted': includeBasisAdjusted ? (basis?.adjusted?.data[index]?.value ?? null) : null,
       'basis-month': basis?.month.data[index]?.value ?? null,
       'breadth-up-pct': breadth?.data[index]?.value ?? null,
       'vix-open': vixByDate.get(snapshot.tradeDate)?.['vix-open'] ?? null,
@@ -863,6 +1104,17 @@ export function buildIndexQuantFilterDataset(
       'us-hedge-long': usHedgeByDate.get(snapshot.tradeDate)?.['us-hedge-long'] ?? null,
       'us-hedge-short': usHedgeByDate.get(snapshot.tradeDate)?.['us-hedge-short'] ?? null,
       'us-hedge-ratio': usHedgeByDate.get(snapshot.tradeDate)?.['us-hedge-ratio'] ?? null,
+      'us-put-call-total': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-total'] ?? null,
+      'us-put-call-index': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-index'] ?? null,
+      'us-put-call-equity': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-equity'] ?? null,
+      'us-put-call-etf': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-etf'] ?? null,
+      'us-yield-3m': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-3m'] ?? null,
+      'us-yield-2y': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-2y'] ?? null,
+      'us-yield-10y': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-10y'] ?? null,
+      'us-yield-spread-10y-2y': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-spread-10y-2y'] ?? null,
+      'us-yield-spread-10y-3m': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-spread-10y-3m'] ?? null,
+      'us-hy-oas': usCreditByDate.get(snapshot.tradeDate)?.['us-hy-oas'] ?? null,
+      'us-hy-oas-change-5d': usCreditByDate.get(snapshot.tradeDate)?.['us-hy-oas-change-5d'] ?? null,
     },
   }))
 
@@ -875,12 +1127,24 @@ export function buildIndexQuantFilterDataset(
     usVix,
     usFearGreed,
     usHedgeProxy,
+    usPutCall,
+    usTreasuryYield,
+    usCreditSpread,
     fields: buildIndexQuantFilterFields(chart, {
       includeCnAuxiliary,
+      includeBasis,
+      includeBasisMonth,
+      includeBasisAdjusted,
+      basisMainLabel,
+      basisAdjustedLabel,
+      basisMonthLabel,
       includeCnVix,
       includeUsVix,
       includeUsFearGreed,
       includeUsHedge,
+      includeUsPutCall,
+      includeUsTreasuryYield,
+      includeUsCreditSpread,
     }),
     snapshots,
   }
@@ -902,6 +1166,9 @@ export function buildStockQuantFilterDataset(
     usVix: null,
     usFearGreed: null,
     usHedgeProxy: null,
+    usPutCall: null,
+    usTreasuryYield: null,
+    usCreditSpread: null,
     fields: buildStockQuantFilterFields(chart),
     snapshots,
   }

@@ -20,8 +20,11 @@ import type {
   IndexDashboardEmotionPoint,
   IndexDashboardResponse,
   IndexEmotionPoint,
+  IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
+  IndexUsPutCallPoint,
+  IndexUsTreasuryYieldPoint,
   IndexUsVixPoint,
   IndexVixPoint,
   KlineCandle,
@@ -64,6 +67,7 @@ type QuantFilterColor = 'blue' | 'red'
 type IndexDashboardChunkState = {
   market: QuantTargetMarket
   supportsAuxiliaryPanels: boolean
+  supportsBasisPanel: boolean
   candles: KlineCandle[]
   emotionPoints: IndexDashboardEmotionPoint[]
   basisPoints: IndexDashboardBasisPoint[]
@@ -72,6 +76,9 @@ type IndexDashboardChunkState = {
   usVixPoints: IndexUsVixPoint[]
   usFearGreedPoints: IndexUsFearGreedPoint[]
   usHedgeProxyPoints: IndexUsHedgeProxyPoint[]
+  usPutCallPoints: IndexUsPutCallPoint[]
+  usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[]
+  usCreditSpreadPoints: IndexUsCreditSpreadPoint[]
   earliestLoadedDate: string | null
   hasMoreHistory: boolean
   pendingWindowKey: string | null
@@ -178,11 +185,18 @@ function resolveUsHedgeProxyScope(name: string, code: string) {
   return ''
 }
 
+function indexSupportsAdjustedBasis(name: string, code: string) {
+  const normalizedCode = String(code || '').trim().toUpperCase()
+  const normalizedName = String(name || '').trim()
+  return normalizedCode === '.NDX' || normalizedName === '纳斯达克100指数'
+}
+
 function buildDashboardChunkState(
   payload: Pick<
     IndexDashboardResponse,
     | 'market'
     | 'supports_auxiliary_panels'
+    | 'supports_basis_panel'
     | 'candles'
     | 'emotion_points'
     | 'basis_points'
@@ -191,6 +205,9 @@ function buildDashboardChunkState(
     | 'us_vix_points'
     | 'us_fear_greed_points'
     | 'us_hedge_proxy_points'
+    | 'us_put_call_points'
+    | 'us_treasury_yield_points'
+    | 'us_credit_spread_points'
   >,
   hasMoreHistory = true,
   pendingWindowKey: string | null = null,
@@ -198,14 +215,18 @@ function buildDashboardChunkState(
   return {
     market: payload.market,
     supportsAuxiliaryPanels: payload.supports_auxiliary_panels,
+    supportsBasisPanel: payload.supports_basis_panel,
     candles: payload.candles,
     emotionPoints: payload.emotion_points,
     basisPoints: payload.basis_points,
     breadthPoints: payload.breadth_points,
     vixPoints: payload.vix_points,
-    usVixPoints: payload.us_vix_points,
-    usFearGreedPoints: payload.us_fear_greed_points,
-    usHedgeProxyPoints: payload.us_hedge_proxy_points,
+    usVixPoints: payload.us_vix_points ?? [],
+    usFearGreedPoints: payload.us_fear_greed_points ?? [],
+    usHedgeProxyPoints: payload.us_hedge_proxy_points ?? [],
+    usPutCallPoints: payload.us_put_call_points ?? [],
+    usTreasuryYieldPoints: payload.us_treasury_yield_points ?? [],
+    usCreditSpreadPoints: payload.us_credit_spread_points ?? [],
     earliestLoadedDate: payload.candles[0]?.trade_date ?? null,
     hasMoreHistory: payload.candles.length > 0 ? hasMoreHistory : false,
     pendingWindowKey,
@@ -375,6 +396,9 @@ const vixPoints = ref<IndexVixPoint[]>([])
 const usVixPoints = ref<IndexUsVixPoint[]>([])
 const usFearGreedPoints = ref<IndexUsFearGreedPoint[]>([])
 const usHedgeProxyPoints = ref<IndexUsHedgeProxyPoint[]>([])
+const usPutCallPoints = ref<IndexUsPutCallPoint[]>([])
+const usTreasuryYieldPoints = ref<IndexUsTreasuryYieldPoint[]>([])
+const usCreditSpreadPoints = ref<IndexUsCreditSpreadPoint[]>([])
 const loading = ref(false)
 const loadingMoreHistory = ref(false)
 const hasMoreHistory = ref(false)
@@ -386,6 +410,7 @@ const emotionLoading = ref(false)
 const emotionError = ref('')
 const futuresBasisLoading = ref(false)
 const futuresBasisError = ref('')
+const supportsBasisPanel = ref(false)
 const breadthLoading = ref(false)
 const breadthError = ref('')
 const saveName = ref('')
@@ -415,6 +440,10 @@ const usHedgeProxyScope = computed(() => resolveUsHedgeProxyScope(selectedIndexN
 const supportsUsVixPanel = computed(() => isUsMarket.value)
 const supportsUsFearGreedPanel = computed(() => isUsMarket.value)
 const supportsUsHedgeProxyPanel = computed(() => isUsMarket.value && Boolean(usHedgeProxyScope.value))
+const supportsUsPutCallPanel = computed(() => isUsMarket.value)
+const supportsUsTreasuryYieldPanel = computed(() => isUsMarket.value)
+const supportsUsCreditSpreadPanel = computed(() => isUsMarket.value)
+const supportsAdjustedBasisPanel = computed(() => isUsMarket.value && indexSupportsAdjustedBasis(selectedIndexName.value, indexCode.value))
 const quantFilterDataset = computed(() => {
   if (isCnMarket.value && supportsAuxiliaryPanels.value) {
     return buildIndexQuantFilterDataset(
@@ -434,19 +463,50 @@ const quantFilterDataset = computed(() => {
       appliedParams.value,
       selectedIndexName.value,
       [],
-      [],
+      futuresBasisPoints.value,
       [],
       [],
       false,
       {
         includeCnAuxiliary: false,
+        includeBasis: supportsBasisPanel.value,
+        includeBasisMonth: false,
+        includeBasisAdjusted: supportsAdjustedBasisPanel.value,
+        basisMainLabel: '连续期现差',
+        basisAdjustedLabel: '换月调整期现差',
         includeCnVix: false,
         includeUsVix: true,
         includeUsFearGreed: true,
         includeUsHedge: supportsUsHedgeProxyPanel.value,
+        includeUsPutCall: true,
+        includeUsTreasuryYield: true,
+        includeUsCreditSpread: true,
         usVixPoints: usVixPoints.value,
         usFearGreedPoints: usFearGreedPoints.value,
         usHedgeProxyPoints: usHedgeProxyPoints.value,
+        usPutCallPoints: usPutCallPoints.value,
+        usTreasuryYieldPoints: usTreasuryYieldPoints.value,
+        usCreditSpreadPoints: usCreditSpreadPoints.value,
+      },
+    )
+  }
+  if (supportsBasisPanel.value) {
+    return buildIndexQuantFilterDataset(
+      indexCandles.value,
+      appliedParams.value,
+      selectedIndexName.value,
+      [],
+      futuresBasisPoints.value,
+      [],
+      [],
+      false,
+      {
+        includeCnAuxiliary: false,
+        includeBasis: true,
+        includeBasisMonth: true,
+        basisMainLabel: '主连期现差',
+        basisMonthLabel: '月连期现差',
+        includeCnVix: false,
       },
     )
   }
@@ -456,13 +516,15 @@ const allowedNumericFieldKeys = computed(() => numericFieldOptions.value.map((it
 const numericFieldOptions = computed(() =>
   quantFilterDataset.value.fields
     .filter((field) =>
-      (
-        isCnMarket.value
+      [
+        ...(isCnMarket.value
           ? INDEX_QUANT_FILTER_FIELD_KEYS
           : isUsMarket.value
             ? US_INDEX_QUANT_FILTER_FIELD_KEYS
-            : STOCK_QUANT_FILTER_FIELD_KEYS
-      ).includes(field.key),
+            : STOCK_QUANT_FILTER_FIELD_KEYS),
+        ...(!isCnMarket.value && supportsBasisPanel.value ? (isUsMarket.value ? ['basis-main'] : ['basis-main', 'basis-month']) : []),
+        ...(supportsAdjustedBasisPanel.value ? ['basis-main-adjusted'] : []),
+      ].includes(field.key),
     )
     .map((field) => ({ value: field.key, label: field.label })),
 )
@@ -547,9 +609,42 @@ const unsupportedAuxiliaryRuleMessage = computed(() => {
   }
 
   if (
-    hasNumericFieldRules(blueGroups, ['us-vix-open', 'us-vix-high', 'us-vix-low', 'us-vix-close', 'us-fear-greed']) ||
-    hasNumericFieldRules(redGroups, ['us-vix-open', 'us-vix-high', 'us-vix-low', 'us-vix-close', 'us-fear-greed'])
+    hasNumericFieldRules(blueGroups, ['basis-main', 'basis-month', 'basis-main-adjusted']) ||
+    hasNumericFieldRules(redGroups, ['basis-main', 'basis-month', 'basis-main-adjusted'])
   ) {
+    if (!supportsBasisPanel.value) {
+      return '当前指数不支持期现差条件，请先移除相关规则后再保存。'
+    }
+    if (isUsMarket.value && (hasNumericFieldRules(blueGroups, ['basis-month']) || hasNumericFieldRules(redGroups, ['basis-month']))) {
+      return '当前美股指数只支持连续期现差条件，请先移除月连期现差规则后再保存。'
+    }
+    if (
+      (hasNumericFieldRules(blueGroups, ['basis-main-adjusted']) || hasNumericFieldRules(redGroups, ['basis-main-adjusted'])) &&
+      !supportsAdjustedBasisPanel.value
+    ) {
+      return '当前指数不支持换月调整期现差条件，请先移除相关规则后再保存。'
+    }
+  }
+
+  const usMarketAuxiliaryFields = [
+    'us-vix-open',
+    'us-vix-high',
+    'us-vix-low',
+    'us-vix-close',
+    'us-fear-greed',
+    'us-put-call-total',
+    'us-put-call-index',
+    'us-put-call-equity',
+    'us-put-call-etf',
+    'us-yield-3m',
+    'us-yield-2y',
+    'us-yield-10y',
+    'us-yield-spread-10y-2y',
+    'us-yield-spread-10y-3m',
+    'us-hy-oas',
+    'us-hy-oas-change-5d',
+  ]
+  if (hasNumericFieldRules(blueGroups, usMarketAuxiliaryFields) || hasNumericFieldRules(redGroups, usMarketAuxiliaryFields)) {
     if (!isUsMarket.value) {
       return '当前市场不支持美股辅助指标条件，请先移除相关规则后再保存。'
     }
@@ -661,6 +756,7 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
       : [targetName]
   indexCandles.value = state?.candles ?? []
   supportsAuxiliaryPanels.value = state?.supportsAuxiliaryPanels ?? isCnMarket.value
+  supportsBasisPanel.value = state?.supportsBasisPanel ?? isCnMarket.value
   emotionPoints.value = supportsAuxiliaryPanels.value
     ? state?.emotionPoints.flatMap((item) =>
         basisIndexNames.map((indexName) => ({
@@ -670,13 +766,16 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
         })),
       ) ?? []
     : []
-  futuresBasisPoints.value = supportsAuxiliaryPanels.value
+  futuresBasisPoints.value = supportsBasisPanel.value
     ? state?.basisPoints.flatMap((item) =>
-        basisIndexNames.map((indexName) => ({
+        (state?.supportsAuxiliaryPanels ? basisIndexNames : [item.index_name || targetName]).map((indexName) => ({
           trade_date: item.trade_date,
           index_name: indexName,
           main_basis: item.main_basis,
           month_basis: item.month_basis,
+          main_basis_adjusted: item.main_basis_adjusted,
+          basis_roll_flag: item.basis_roll_flag,
+          basis_roll_delta: item.basis_roll_delta,
         })),
       ) ?? []
     : []
@@ -686,6 +785,9 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
   usFearGreedPoints.value = targetMarket.value === 'us' ? state?.usFearGreedPoints ?? [] : []
   usHedgeProxyPoints.value =
     targetMarket.value === 'us' && nextUsHedgeScope ? state?.usHedgeProxyPoints ?? [] : []
+  usPutCallPoints.value = targetMarket.value === 'us' ? state?.usPutCallPoints ?? [] : []
+  usTreasuryYieldPoints.value = targetMarket.value === 'us' ? state?.usTreasuryYieldPoints ?? [] : []
+  usCreditSpreadPoints.value = targetMarket.value === 'us' ? state?.usCreditSpreadPoints ?? [] : []
   hasMoreHistory.value = state?.hasMoreHistory ?? false
   loadingMoreHistory.value = Boolean(state?.pendingWindowKey)
   if (state) {
@@ -706,6 +808,7 @@ function mergeDashboardState(
   return {
     market: payload.market,
     supportsAuxiliaryPanels: payload.supports_auxiliary_panels,
+    supportsBasisPanel: payload.supports_basis_panel,
     candles: mergedCandles,
     emotionPoints: mergeByTradeDate(currentState.emotionPoints, payload.emotion_points),
     basisPoints: mergeByTradeDate(currentState.basisPoints, payload.basis_points),
@@ -718,6 +821,9 @@ function mergeDashboardState(
       payload.us_hedge_proxy_points,
       (item) => String(item.release_date || ''),
     ),
+    usPutCallPoints: mergeByTradeDate(currentState.usPutCallPoints, payload.us_put_call_points ?? []),
+    usTreasuryYieldPoints: mergeByTradeDate(currentState.usTreasuryYieldPoints, payload.us_treasury_yield_points ?? []),
+    usCreditSpreadPoints: mergeByTradeDate(currentState.usCreditSpreadPoints, payload.us_credit_spread_points ?? []),
     earliestLoadedDate: mergedCandles[0]?.trade_date ?? null,
     hasMoreHistory: hasOlderHistory,
     pendingWindowKey: null,
@@ -998,7 +1104,11 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     usVixPoints.value = []
     usFearGreedPoints.value = []
     usHedgeProxyPoints.value = []
+    usPutCallPoints.value = []
+    usTreasuryYieldPoints.value = []
+    usCreditSpreadPoints.value = []
     supportsAuxiliaryPanels.value = nextMarket === 'cn'
+    supportsBasisPanel.value = nextMarket === 'cn'
     error.value = '当前市场暂无可用指数'
     return
   }
@@ -1150,9 +1260,15 @@ watch(
           :us-vix-points="usVixPoints"
           :us-fear-greed-points="usFearGreedPoints"
           :us-hedge-proxy-points="usHedgeProxyPoints"
+          :us-put-call-points="usPutCallPoints"
+          :us-treasury-yield-points="usTreasuryYieldPoints"
+          :us-credit-spread-points="usCreditSpreadPoints"
           :supports-us-vix-panel="supportsUsVixPanel"
           :supports-us-fear-greed-panel="supportsUsFearGreedPanel"
           :supports-us-hedge-proxy-panel="supportsUsHedgeProxyPanel"
+          :supports-us-put-call-panel="supportsUsPutCallPanel"
+          :supports-us-treasury-yield-panel="supportsUsTreasuryYieldPanel"
+          :supports-us-credit-spread-panel="supportsUsCreditSpreadPanel"
           :highlight-bands="highlightBands"
           :has-more-history="hasMoreHistory"
           :loading-more-history="loadingMoreHistory"
@@ -1161,6 +1277,8 @@ watch(
           :symbol-code="indexCode"
           :params="appliedParams"
           :supports-auxiliary-panels="supportsAuxiliaryPanels"
+          :supports-basis-panel="supportsBasisPanel"
+          :show-basis-month-line="!isUsMarket"
           :loading="loading || booting"
           :default-visible-days="90"
           @select-index="handleChartIndexSelect"
