@@ -131,6 +131,13 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "requires_target": False,
         "endpoint": "/collect-us-index-futures-daily",
     },
+    "us_index_futures_official_daily": {
+        "label": "美股股指期货官方合约日更",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-us-index-futures-official-daily",
+    },
     "index_qvix_daily": {
         "label": "QVIX 日更",
         "market_scope": "cn_stock",
@@ -166,6 +173,27 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "requires_target": False,
         "endpoint": "/collect-index-us-hedge-proxy-daily",
     },
+    "index_us_put_call_ratio_daily": {
+        "label": "美股 Put/Call Ratio 日更",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-us-put-call-ratio-daily",
+    },
+    "index_us_treasury_yield_daily": {
+        "label": "美债收益率日更",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-us-treasury-yield-daily",
+    },
+    "index_us_credit_spread_daily": {
+        "label": "美股高收益债利差日更",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-us-credit-spread-daily",
+    },
 }
 
 COLLECTION_TASK_LABEL_OVERRIDES = {
@@ -184,11 +212,15 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "index_us_daily": "美股指数日更",
     "hk_index_futures_daily": "港股股指期货日更",
     "us_index_futures_daily": "美股股指期货日更",
+    "us_index_futures_official_daily": "美股股指期货官方合约日更",
     "index_qvix_daily": "QVIX 日更",
     "index_news_sentiment_daily": "新闻情绪日更",
     "index_us_vix_daily": "美股 VIX 日更",
     "index_us_fear_greed_daily": "美股恐贪指数日更",
     "index_us_hedge_proxy_daily": "美股对冲基金代理日更",
+    "index_us_put_call_ratio_daily": "美股 Put/Call Ratio 日更",
+    "index_us_treasury_yield_daily": "美债收益率日更",
+    "index_us_credit_spread_daily": "美股高收益债利差日更",
 }
 for _collector_key, _label in COLLECTION_TASK_LABEL_OVERRIDES.items():
     if _collector_key in COLLECTION_TASK_DEFINITIONS:
@@ -264,6 +296,12 @@ class TaskService:
         if "美股" in normalized_name or "us " in lowered_name or "u.s." in lowered_name:
             if is_futures_task:
                 return "us_index_futures_daily"
+            if "put" in lowered_name or "call" in lowered_name:
+                return "index_us_put_call_ratio_daily"
+            if "treasury" in lowered_name or "yield" in lowered_name or "收益率" in normalized_name or "美债" in normalized_name:
+                return "index_us_treasury_yield_daily"
+            if "credit" in lowered_name or "spread" in lowered_name or "高收益债" in normalized_name or "利差" in normalized_name:
+                return "index_us_credit_spread_daily"
             if "hedge" in lowered_name or "对冲" in normalized_name:
                 return "index_us_hedge_proxy_daily"
             if "fear" in lowered_name or "greed" in lowered_name or "恐贪" in normalized_name:
@@ -281,6 +319,12 @@ class TaskService:
         if market_scope == "us_index":
             if is_futures_task:
                 return "us_index_futures_daily"
+            if "put" in lowered_name or "call" in lowered_name:
+                return "index_us_put_call_ratio_daily"
+            if "treasury" in lowered_name or "yield" in lowered_name or "收益率" in normalized_name or "美债" in normalized_name:
+                return "index_us_treasury_yield_daily"
+            if "credit" in lowered_name or "spread" in lowered_name or "高收益债" in normalized_name or "利差" in normalized_name:
+                return "index_us_credit_spread_daily"
             if "hedge" in lowered_name or "对冲" in normalized_name:
                 return "index_us_hedge_proxy_daily"
             if "fear" in lowered_name or "greed" in lowered_name or "恐贪" in normalized_name:
@@ -1086,6 +1130,12 @@ class TaskService:
 
         upstream_status = str(result.get("upstream_status", result.get("status", "ok"))).upper()
         upstream_payload = result.get("upstream_response") if isinstance(result, dict) else None
+        upstream_task_name = str(upstream_payload.get("task_name") or "").strip() if isinstance(upstream_payload, dict) else ""
+        if upstream_task_name and upstream_task_name != collector_key:
+            raise RuntimeError(
+                f"采集接口返回任务名不匹配：期望 {label}（{collector_key}），"
+                f"实际 {upstream_task_name}。请检查采集端服务是否已重启并加载最新路由。"
+            )
         result_value = upstream_payload.get("result") if isinstance(upstream_payload, dict) else None
         if result_value not in (None, ""):
             return f"{label}执行完成，结果：{result_value}。"

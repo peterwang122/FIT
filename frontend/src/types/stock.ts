@@ -42,12 +42,19 @@ export interface FuturesBasisPoint {
   index_name: string
   main_basis: number | null
   month_basis: number | null
+  main_basis_adjusted?: number | null
+  basis_roll_flag?: boolean
+  basis_roll_delta?: number | null
 }
 
 export interface IndexDashboardBasisPoint {
   trade_date: string
+  index_name: string
   main_basis: number
   month_basis: number
+  main_basis_adjusted?: number | null
+  basis_roll_flag?: boolean
+  basis_roll_delta?: number | null
 }
 
 export interface IndexBreadthPoint {
@@ -88,6 +95,28 @@ export interface IndexUsHedgeProxyPoint {
   ratio_value: number | null
 }
 
+export interface IndexUsPutCallPoint {
+  trade_date: string
+  total_put_call_ratio: number | null
+  index_put_call_ratio: number | null
+  equity_put_call_ratio: number | null
+  etf_put_call_ratio: number | null
+}
+
+export interface IndexUsTreasuryYieldPoint {
+  trade_date: string
+  yield_3m: number | null
+  yield_2y: number | null
+  yield_10y: number | null
+  spread_10y_2y: number | null
+  spread_10y_3m: number | null
+}
+
+export interface IndexUsCreditSpreadPoint {
+  trade_date: string
+  high_yield_oas: number | null
+}
+
 export interface IndexDashboardResponse {
   index: {
     code: string
@@ -95,6 +124,7 @@ export interface IndexDashboardResponse {
   }
   market: 'cn' | 'hk' | 'us'
   supports_auxiliary_panels: boolean
+  supports_basis_panel: boolean
   range_mode: 'recent' | 'full' | 'window'
   candles: KlineCandle[]
   emotion_points: IndexDashboardEmotionPoint[]
@@ -104,6 +134,9 @@ export interface IndexDashboardResponse {
   us_vix_points: IndexUsVixPoint[]
   us_fear_greed_points: IndexUsFearGreedPoint[]
   us_hedge_proxy_points: IndexUsHedgeProxyPoint[]
+  us_put_call_points: IndexUsPutCallPoint[]
+  us_treasury_yield_points: IndexUsTreasuryYieldPoint[]
+  us_credit_spread_points: IndexUsCreditSpreadPoint[]
 }
 
 export interface NetPositionRow {

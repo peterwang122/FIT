@@ -68,7 +68,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v5"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v8"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 INDEX_DASHBOARD_RECENT_LIMIT = 750
 BUY_POSITION_SEARCH_RATIOS = [step / 100 for step in range(20, 101, 5)]
@@ -107,7 +107,29 @@ VIX_FILTER_KEYS = ["vix-open", "vix-high", "vix-low", "vix-close"]
 US_VIX_FILTER_KEYS = ["us-vix-open", "us-vix-high", "us-vix-low", "us-vix-close"]
 US_FEAR_GREED_FILTER_KEYS = ["us-fear-greed"]
 US_HEDGE_FILTER_KEYS = ["us-hedge-long", "us-hedge-short", "us-hedge-ratio"]
-US_AUXILIARY_FILTER_KEYS = US_VIX_FILTER_KEYS + US_FEAR_GREED_FILTER_KEYS + US_HEDGE_FILTER_KEYS
+US_PUT_CALL_FILTER_KEYS = [
+    "us-put-call-total",
+    "us-put-call-index",
+    "us-put-call-equity",
+    "us-put-call-etf",
+]
+US_TREASURY_FILTER_KEYS = [
+    "us-yield-3m",
+    "us-yield-2y",
+    "us-yield-10y",
+    "us-yield-spread-10y-2y",
+    "us-yield-spread-10y-3m",
+]
+US_CREDIT_FILTER_KEYS = ["us-hy-oas", "us-hy-oas-change-5d"]
+US_BASIS_ADJUSTED_FILTER_KEYS = ["basis-main-adjusted"]
+US_MARKET_AUXILIARY_FILTER_KEYS = (
+    US_VIX_FILTER_KEYS
+    + US_FEAR_GREED_FILTER_KEYS
+    + US_PUT_CALL_FILTER_KEYS
+    + US_TREASURY_FILTER_KEYS
+    + US_CREDIT_FILTER_KEYS
+)
+US_AUXILIARY_FILTER_KEYS = US_MARKET_AUXILIARY_FILTER_KEYS + US_HEDGE_FILTER_KEYS
 US_HEDGE_PROXY_SCOPE_BY_INDEX_CODE = {
     ".INX": "ES",
     ".NDX": "NQ",
@@ -116,6 +138,41 @@ US_HEDGE_PROXY_SCOPE_BY_INDEX_NAME = {
     "标普500指数": "ES",
     "纳斯达克100指数": "NQ",
 }
+HK_INDEX_FUTURES_ROOT_BY_INDEX_CODE = {
+    "HSI": "HSI",
+    "HSCEI": "HHI",
+    "HSTECH": "HTI",
+    "HHI": "HHI",
+    "HTI": "HTI",
+}
+HK_INDEX_FUTURES_ROOT_BY_INDEX_NAME = {
+    "恒生指数": "HSI",
+    "恒生中国企业指数": "HHI",
+    "国企指数": "HHI",
+    "恒生科技指数": "HTI",
+}
+BASIS_FILTER_KEYS = ["basis-main", "basis-month"]
+US_BASIS_FILTER_KEYS = ["basis-main"]
+NDX_INDEX_CODES = {".NDX"}
+NDX_INDEX_NAMES = {"纳斯达克100指数"}
+NDX_BASIS_ROLL_DATES = {
+    "2022-09-12",
+    "2022-12-12",
+    "2023-03-13",
+    "2023-06-13",
+    "2023-09-11",
+    "2023-12-11",
+    "2024-03-11",
+    "2024-06-18",
+    "2024-09-19",
+    "2024-12-18",
+    "2025-03-20",
+    "2025-06-18",
+    "2025-09-17",
+    "2025-12-17",
+    "2026-03-18",
+}
+NDX_BASIS_ROLL_START_DATE = date(2022, 9, 12)
 
 
 def _date_text(value: object) -> str:
@@ -409,6 +466,45 @@ class QuantService:
     def _index_supports_us_auxiliary_panels(self, market: str) -> bool:
         return self._normalize_target_market(market) == "us"
 
+    def _resolve_hk_index_futures_root(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> str | None:
+        if self._normalize_target_market(target_market) != "hk":
+            return None
+        normalized_code = str(target_code or "").strip().upper()
+        if normalized_code in HK_INDEX_FUTURES_ROOT_BY_INDEX_CODE:
+            return HK_INDEX_FUTURES_ROOT_BY_INDEX_CODE[normalized_code]
+        normalized_name = str(target_name or "").strip()
+        return HK_INDEX_FUTURES_ROOT_BY_INDEX_NAME.get(normalized_name)
+
+    def _resolve_us_index_futures_root(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> str | None:
+        if self._normalize_target_market(target_market) != "us":
+            return None
+        return self._resolve_us_hedge_proxy_scope(target_code, target_name, target_market)
+
+    def _index_supports_basis(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        normalized_market = self._normalize_target_market(target_market)
+        if normalized_market == "cn":
+            return True
+        if normalized_market == "hk":
+            return self._resolve_hk_index_futures_root(target_code, target_name, target_market) is not None
+        if normalized_market == "us":
+            return self._resolve_us_index_futures_root(target_code, target_name, target_market) is not None
+        return False
+
     def _resolve_index_vix_code(
         self,
         target_code: object = "",
@@ -445,6 +541,103 @@ class QuantService:
         normalized_name = str(target_name or "").strip()
         return US_HEDGE_PROXY_SCOPE_BY_INDEX_NAME.get(normalized_name)
 
+    def _index_supports_adjusted_basis(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        if self._normalize_target_market(target_market) != "us":
+            return False
+        normalized_code = str(target_code or "").strip().upper()
+        normalized_name = str(target_name or "").strip()
+        return normalized_code in NDX_INDEX_CODES or normalized_name in NDX_INDEX_NAMES
+
+    def _load_basis_rows_for_adjustment(
+        self,
+        index_code: str,
+        target_name: str,
+        target_market: str,
+        start_date: date | None,
+        end_date: date | None,
+    ) -> list[dict]:
+        query_start_date = start_date
+        if self._index_supports_adjusted_basis(index_code, target_name, target_market):
+            query_start_date = NDX_BASIS_ROLL_START_DATE
+        rows = self._load_index_dashboard_rows(index_code, start_date=query_start_date, end_date=end_date)
+        rows = self._apply_adjusted_basis(rows, index_code, target_name, target_market)
+        if start_date is not None:
+            rows = [row for row in rows if row.get("trade_date") is not None and row["trade_date"] >= start_date]
+        return rows
+
+    def _apply_adjusted_basis(
+        self,
+        rows: list[dict],
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> list[dict]:
+        if not self._index_supports_adjusted_basis(target_code, target_name, target_market):
+            return [
+                {
+                    **row,
+                    "main_basis_adjusted": None,
+                    "basis_roll_flag": False,
+                    "basis_roll_delta": None,
+                }
+                for row in rows
+            ]
+
+        sorted_rows = sorted(rows, key=lambda item: _date_text(item.get("trade_date")))
+        roll_points: list[dict[str, object]] = []
+        previous_basis: float | None = None
+        for index, row in enumerate(sorted_rows):
+            trade_date = _date_text(row.get("trade_date"))
+            main_basis = _to_float(row.get("main_basis"))
+            if trade_date in NDX_BASIS_ROLL_DATES and main_basis is not None and previous_basis is not None:
+                roll_points.append(
+                    {
+                        "index": index,
+                        "trade_date": trade_date,
+                        "delta": main_basis - previous_basis,
+                    }
+                )
+            if main_basis is not None:
+                previous_basis = main_basis
+
+        roll_by_index = {int(point["index"]): point for point in roll_points}
+        offsets_by_index: dict[int, float] = {}
+        for roll_index, point in enumerate(roll_points):
+            start_index = int(point["index"])
+            next_index = (
+                int(roll_points[roll_index + 1]["index"])
+                if roll_index + 1 < len(roll_points)
+                else len(sorted_rows)
+            )
+            delta = float(point["delta"])
+            segment_length = max(next_index - start_index, 1)
+            denominator = max(segment_length - 1, 1)
+            for row_index in range(start_index, next_index):
+                # Remove the roll jump at the switch date, then release the adjustment
+                # through the current contract cycle so the series stays on the raw basis scale.
+                progress = (row_index - start_index) / denominator if segment_length > 1 else 0.0
+                offsets_by_index[row_index] = delta * (1 - progress)
+
+        adjusted_rows: list[dict] = []
+        for index, row in enumerate(sorted_rows):
+            main_basis = _to_float(row.get("main_basis"))
+            offset = offsets_by_index.get(index, 0.0)
+            roll_point = roll_by_index.get(index)
+            adjusted_rows.append(
+                {
+                    **row,
+                    "main_basis_adjusted": main_basis - offset if main_basis is not None else None,
+                    "basis_roll_flag": roll_point is not None,
+                    "basis_roll_delta": float(roll_point["delta"]) if roll_point is not None else None,
+                }
+            )
+        return adjusted_rows
+
     def _allowed_snapshot_filter_keys(
         self,
         strategy_type: str,
@@ -457,10 +650,19 @@ class QuantService:
                 if self._index_supports_vix(target_code, target_name, target_market):
                     return CN_INDEX_STRATEGY_FILTER_KEYS
                 return [key for key in CN_INDEX_STRATEGY_FILTER_KEYS if key not in VIX_FILTER_KEYS]
+            if self._normalize_target_market(target_market) == "hk":
+                keys = list(STOCK_STRATEGY_FILTER_KEYS)
+                if self._index_supports_basis(target_code, target_name, target_market):
+                    keys += BASIS_FILTER_KEYS
+                return keys
             if self._index_supports_us_auxiliary_panels(target_market):
-                keys = list(STOCK_STRATEGY_FILTER_KEYS) + US_VIX_FILTER_KEYS + US_FEAR_GREED_FILTER_KEYS
+                keys = list(STOCK_STRATEGY_FILTER_KEYS) + US_MARKET_AUXILIARY_FILTER_KEYS
                 if self._resolve_us_hedge_proxy_scope(target_code, target_name, target_market):
                     keys += US_HEDGE_FILTER_KEYS
+                if self._index_supports_basis(target_code, target_name, target_market):
+                    keys += US_BASIS_FILTER_KEYS
+                if self._index_supports_adjusted_basis(target_code, target_name, target_market):
+                    keys += US_BASIS_ADJUSTED_FILTER_KEYS
                 return keys
             return STOCK_STRATEGY_FILTER_KEYS
         return STOCK_STRATEGY_FILTER_KEYS
@@ -539,6 +741,18 @@ class QuantService:
             )
             if hedge_scope
             else [],
+            "us_put_call_rows": self.stock_service.list_index_us_put_call_ratio_data(
+                start_date=start_date,
+                end_date=end_date,
+            ),
+            "us_treasury_yield_rows": self.stock_service.list_index_us_treasury_yield_data(
+                start_date=start_date,
+                end_date=end_date,
+            ),
+            "us_credit_spread_rows": self.stock_service.list_index_us_credit_spread_data(
+                start_date=start_date,
+                end_date=end_date,
+            ),
         }
 
     def _align_sparse_rows_to_trade_dates(
@@ -579,6 +793,28 @@ class QuantService:
         base_snapshots = self._build_stock_snapshots(params, candles)
         first_trade_date = sorted_candles[0].get("trade_date")
         last_trade_date = sorted_candles[-1].get("trade_date")
+        basis_rows = self._load_basis_rows_for_adjustment(
+            target_code,
+            target_name,
+            "us",
+            start_date=first_trade_date if isinstance(first_trade_date, date) else None,
+            end_date=last_trade_date if isinstance(last_trade_date, date) else None,
+        )
+        basis_main_by_date = {
+            _date_text(item["trade_date"]): _to_float(item.get("main_basis"))
+            for item in basis_rows
+            if item.get("trade_date") is not None
+        }
+        basis_month_by_date = {
+            _date_text(item["trade_date"]): _to_float(item.get("month_basis"))
+            for item in basis_rows
+            if item.get("trade_date") is not None
+        }
+        basis_adjusted_by_date = {
+            _date_text(item["trade_date"]): _to_float(item.get("main_basis_adjusted"))
+            for item in basis_rows
+            if item.get("trade_date") is not None
+        }
         auxiliary_rows = self._load_us_auxiliary_rows(
             target_code,
             target_name,
@@ -613,6 +849,50 @@ class QuantService:
             }
             for trade_date, item in hedge_rows_by_trade_date.items()
         }
+        put_call_by_date = {
+            _date_text(item["trade_date"]): {
+                "us-put-call-total": _to_float(item.get("total_put_call_ratio")),
+                "us-put-call-index": _to_float(item.get("index_put_call_ratio")),
+                "us-put-call-equity": _to_float(item.get("equity_put_call_ratio")),
+                "us-put-call-etf": _to_float(item.get("etf_put_call_ratio")),
+            }
+            for item in auxiliary_rows["us_put_call_rows"]
+            if item.get("trade_date") is not None
+        }
+        treasury_by_date = {
+            _date_text(item["trade_date"]): {
+                "us-yield-3m": _to_float(item.get("yield_3m")),
+                "us-yield-2y": _to_float(item.get("yield_2y")),
+                "us-yield-10y": _to_float(item.get("yield_10y")),
+                "us-yield-spread-10y-2y": _to_float(item.get("spread_10y_2y")),
+                "us-yield-spread-10y-3m": _to_float(item.get("spread_10y_3m")),
+            }
+            for item in auxiliary_rows["us_treasury_yield_rows"]
+            if item.get("trade_date") is not None
+        }
+        sorted_credit_rows = sorted(
+            (
+                {
+                    "trade_date": _date_text(item.get("trade_date")),
+                    "high_yield_oas": _to_float(item.get("high_yield_oas")),
+                }
+                for item in auxiliary_rows["us_credit_spread_rows"]
+                if item.get("trade_date") is not None
+            ),
+            key=lambda item: item["trade_date"],
+        )
+        credit_by_date = {}
+        for index, item in enumerate(sorted_credit_rows):
+            value = item.get("high_yield_oas")
+            previous_value = sorted_credit_rows[index - 5].get("high_yield_oas") if index >= 5 else None
+            credit_by_date[item["trade_date"]] = {
+                "us-hy-oas": value,
+                "us-hy-oas-change-5d": (
+                    round(value - previous_value, 6)
+                    if value is not None and previous_value is not None
+                    else None
+                ),
+            }
 
         snapshots: list[dict] = []
         for snapshot in base_snapshots:
@@ -620,6 +900,9 @@ class QuantService:
             values = dict(snapshot.get("values") or {})
             values.update(
                 {
+                    "basis-main": basis_main_by_date.get(trade_date),
+                    "basis-month": basis_month_by_date.get(trade_date),
+                    "basis-main-adjusted": basis_adjusted_by_date.get(trade_date),
                     "us-vix-open": us_vix_by_date.get(trade_date, {}).get("us-vix-open"),
                     "us-vix-high": us_vix_by_date.get(trade_date, {}).get("us-vix-high"),
                     "us-vix-low": us_vix_by_date.get(trade_date, {}).get("us-vix-low"),
@@ -628,6 +911,59 @@ class QuantService:
                     "us-hedge-long": hedge_by_date.get(trade_date, {}).get("us-hedge-long"),
                     "us-hedge-short": hedge_by_date.get(trade_date, {}).get("us-hedge-short"),
                     "us-hedge-ratio": hedge_by_date.get(trade_date, {}).get("us-hedge-ratio"),
+                    "us-put-call-total": put_call_by_date.get(trade_date, {}).get("us-put-call-total"),
+                    "us-put-call-index": put_call_by_date.get(trade_date, {}).get("us-put-call-index"),
+                    "us-put-call-equity": put_call_by_date.get(trade_date, {}).get("us-put-call-equity"),
+                    "us-put-call-etf": put_call_by_date.get(trade_date, {}).get("us-put-call-etf"),
+                    "us-yield-3m": treasury_by_date.get(trade_date, {}).get("us-yield-3m"),
+                    "us-yield-2y": treasury_by_date.get(trade_date, {}).get("us-yield-2y"),
+                    "us-yield-10y": treasury_by_date.get(trade_date, {}).get("us-yield-10y"),
+                    "us-yield-spread-10y-2y": treasury_by_date.get(trade_date, {}).get("us-yield-spread-10y-2y"),
+                    "us-yield-spread-10y-3m": treasury_by_date.get(trade_date, {}).get("us-yield-spread-10y-3m"),
+                    "us-hy-oas": credit_by_date.get(trade_date, {}).get("us-hy-oas"),
+                    "us-hy-oas-change-5d": credit_by_date.get(trade_date, {}).get("us-hy-oas-change-5d"),
+                }
+            )
+            snapshots.append({**snapshot, "values": values})
+        return snapshots
+
+    def _build_hk_index_snapshots(
+        self,
+        target_code: str,
+        params: dict,
+        candles: list[dict],
+    ) -> list[dict]:
+        sorted_candles = _sort_candles(candles)
+        if not sorted_candles:
+            return []
+
+        base_snapshots = self._build_stock_snapshots(params, candles)
+        first_trade_date = sorted_candles[0].get("trade_date")
+        last_trade_date = sorted_candles[-1].get("trade_date")
+        basis_rows = self._load_index_dashboard_rows(
+            target_code,
+            start_date=first_trade_date if isinstance(first_trade_date, date) else None,
+            end_date=last_trade_date if isinstance(last_trade_date, date) else None,
+        )
+        basis_main_by_date = {
+            _date_text(item["trade_date"]): _to_float(item.get("main_basis"))
+            for item in basis_rows
+            if item.get("trade_date") is not None
+        }
+        basis_month_by_date = {
+            _date_text(item["trade_date"]): _to_float(item.get("month_basis"))
+            for item in basis_rows
+            if item.get("trade_date") is not None
+        }
+
+        snapshots: list[dict] = []
+        for snapshot in base_snapshots:
+            trade_date = _date_text(snapshot.get("trade_date"))
+            values = dict(snapshot.get("values") or {})
+            values.update(
+                {
+                    "basis-main": basis_main_by_date.get(trade_date),
+                    "basis-month": basis_month_by_date.get(trade_date),
                 }
             )
             snapshots.append({**snapshot, "values": values})
@@ -644,6 +980,8 @@ class QuantService:
         normalized_market = self._normalize_target_market(target_market)
         if self._index_supports_auxiliary_panels(normalized_market):
             return self._build_index_snapshots(target_code, symbol_name, params, candles)
+        if normalized_market == "hk":
+            return self._build_hk_index_snapshots(target_code, params, candles)
         if self._index_supports_us_auxiliary_panels(normalized_market):
             return self._build_us_index_snapshots(target_code, symbol_name, params, candles)
         return self._build_stock_snapshots(params, candles)
@@ -657,6 +995,7 @@ class QuantService:
         sql = (
             f"SELECT "
             f"`{settings.quant_index_dashboard_date_column}` AS trade_date, "
+            f"`{settings.quant_index_dashboard_name_column}` AS index_name, "
             f"`{settings.quant_index_dashboard_emotion_column}` AS emotion_value, "
             f"`{settings.quant_index_dashboard_main_basis_column}` AS main_basis, "
             f"`{settings.quant_index_dashboard_month_basis_column}` AS month_basis, "
@@ -729,6 +1068,18 @@ class QuantService:
         )
 
         if not self._index_supports_auxiliary_panels(normalized_market):
+            supports_basis_panel = self._index_supports_basis(option["code"], option["name"], normalized_market)
+            basis_rows = (
+                self._load_basis_rows_for_adjustment(
+                    option["code"],
+                    option["name"],
+                    normalized_market,
+                    start_date=resolved_start_date,
+                    end_date=end_date,
+                )
+                if supports_basis_panel
+                else []
+            )
             auxiliary_rows = (
                 self._load_us_auxiliary_rows(
                     option["code"],
@@ -737,16 +1088,35 @@ class QuantService:
                     end_date=end_date,
                 )
                 if self._index_supports_us_auxiliary_panels(normalized_market)
-                else {"us_vix_rows": [], "us_fear_greed_rows": [], "us_hedge_proxy_rows": []}
+                else {
+                    "us_vix_rows": [],
+                    "us_fear_greed_rows": [],
+                    "us_hedge_proxy_rows": [],
+                    "us_put_call_rows": [],
+                    "us_treasury_yield_rows": [],
+                    "us_credit_spread_rows": [],
+                }
             )
             result = {
                 "index": {"code": option["code"], "name": option["name"]},
                 "market": normalized_market,
                 "supports_auxiliary_panels": False,
+                "supports_basis_panel": supports_basis_panel,
                 "range_mode": response_mode,
                 "candles": candles,
                 "emotion_points": [],
-                "basis_points": [],
+                "basis_points": [
+                    {
+                        "trade_date": row["trade_date"],
+                        "index_name": str(row.get("index_name") or option["name"]).strip(),
+                        "main_basis": _to_float(row.get("main_basis")) or 0.0,
+                        "month_basis": _to_float(row.get("month_basis")) or 0.0,
+                        "main_basis_adjusted": _to_float(row.get("main_basis_adjusted")),
+                        "basis_roll_flag": bool(row.get("basis_roll_flag")),
+                        "basis_roll_delta": _to_float(row.get("basis_roll_delta")),
+                    }
+                    for row in basis_rows
+                ],
                 "breadth_points": [],
                 "vix_points": [],
                 "us_vix_points": [
@@ -777,6 +1147,34 @@ class QuantService:
                         "ratio_value": _to_float(row.get("ratio_value")),
                     }
                     for row in auxiliary_rows["us_hedge_proxy_rows"]
+                ],
+                "us_put_call_points": [
+                    {
+                        "trade_date": row["trade_date"],
+                        "total_put_call_ratio": _to_float(row.get("total_put_call_ratio")),
+                        "index_put_call_ratio": _to_float(row.get("index_put_call_ratio")),
+                        "equity_put_call_ratio": _to_float(row.get("equity_put_call_ratio")),
+                        "etf_put_call_ratio": _to_float(row.get("etf_put_call_ratio")),
+                    }
+                    for row in auxiliary_rows["us_put_call_rows"]
+                ],
+                "us_treasury_yield_points": [
+                    {
+                        "trade_date": row["trade_date"],
+                        "yield_3m": _to_float(row.get("yield_3m")),
+                        "yield_2y": _to_float(row.get("yield_2y")),
+                        "yield_10y": _to_float(row.get("yield_10y")),
+                        "spread_10y_2y": _to_float(row.get("spread_10y_2y")),
+                        "spread_10y_3m": _to_float(row.get("spread_10y_3m")),
+                    }
+                    for row in auxiliary_rows["us_treasury_yield_rows"]
+                ],
+                "us_credit_spread_points": [
+                    {
+                        "trade_date": row["trade_date"],
+                        "high_yield_oas": _to_float(row.get("high_yield_oas")),
+                    }
+                    for row in auxiliary_rows["us_credit_spread_rows"]
                 ],
             }
             redis_client.set(
@@ -813,6 +1211,7 @@ class QuantService:
             "index": {"code": option["code"], "name": option["name"]},
             "market": normalized_market,
             "supports_auxiliary_panels": True,
+            "supports_basis_panel": True,
             "range_mode": response_mode,
             "candles": candles,
             "emotion_points": [
@@ -825,6 +1224,7 @@ class QuantService:
             "basis_points": [
                 {
                     "trade_date": row["trade_date"],
+                    "index_name": str(row.get("index_name") or auxiliary_source_name).strip(),
                     "main_basis": _to_float(row.get("main_basis")) or 0.0,
                     "month_basis": _to_float(row.get("month_basis")) or 0.0,
                 }
@@ -852,6 +1252,9 @@ class QuantService:
             "us_vix_points": [],
             "us_fear_greed_points": [],
             "us_hedge_proxy_points": [],
+            "us_put_call_points": [],
+            "us_treasury_yield_points": [],
+            "us_credit_spread_points": [],
         }
         redis_client.set(
             cache_key,
@@ -977,6 +1380,7 @@ class QuantService:
         sql = text(
             f"SELECT "
             f"`{settings.quant_index_dashboard_date_column}` AS trade_date, "
+            f"`{settings.quant_index_dashboard_name_column}` AS index_name, "
             f"`{settings.quant_index_dashboard_emotion_column}` AS emotion_value, "
             f"`{settings.quant_index_dashboard_main_basis_column}` AS main_basis, "
             f"`{settings.quant_index_dashboard_month_basis_column}` AS month_basis, "
@@ -2293,7 +2697,17 @@ class QuantService:
             target_code, target_name, target_market
         ):
             raise ValueError("当前指数不支持 VIX 条件，请先移除相关规则。")
-        if self._payload_contains_numeric_rules(payload, US_VIX_FILTER_KEYS + US_FEAR_GREED_FILTER_KEYS) and target_market != "us":
+        if self._payload_contains_numeric_rules(payload, BASIS_FILTER_KEYS) and not self._index_supports_basis(
+            target_code, target_name, target_market
+        ):
+            raise ValueError("当前指数不支持期现差条件，请先移除相关规则。")
+        if target_market == "us" and self._payload_contains_numeric_rules(payload, ["basis-month"]):
+            raise ValueError("当前美股指数只支持连续期现差条件，请先移除月连期现差规则。")
+        if self._payload_contains_numeric_rules(payload, US_BASIS_ADJUSTED_FILTER_KEYS) and not self._index_supports_adjusted_basis(
+            target_code, target_name, target_market
+        ):
+            raise ValueError("当前指数不支持换月调整期现差条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(payload, US_MARKET_AUXILIARY_FILTER_KEYS) and target_market != "us":
             raise ValueError("当前市场不支持美股辅助指标条件，请先移除相关规则。")
         if self._payload_contains_numeric_rules(payload, US_HEDGE_FILTER_KEYS) and not self._resolve_us_hedge_proxy_scope(
             target_code, target_name, target_market

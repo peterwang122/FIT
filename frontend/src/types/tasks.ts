@@ -20,11 +20,15 @@ export type CollectionCollectorKey =
   | 'index_us_daily'
   | 'hk_index_futures_daily'
   | 'us_index_futures_daily'
+  | 'us_index_futures_official_daily'
   | 'index_qvix_daily'
   | 'index_news_sentiment_daily'
   | 'index_us_vix_daily'
   | 'index_us_fear_greed_daily'
   | 'index_us_hedge_proxy_daily'
+  | 'index_us_put_call_ratio_daily'
+  | 'index_us_treasury_yield_daily'
+  | 'index_us_credit_spread_daily'
 export type RootVisibleStrategyTypeFilter = QuantStrategyType | 'all'
 
 export interface ScheduledTask {

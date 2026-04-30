@@ -78,6 +78,7 @@ export interface QuantChartPayload {
 export type QuantFilterFieldKey =
   | 'emotion'
   | 'basis-main'
+  | 'basis-main-adjusted'
   | 'basis-month'
   | 'breadth-up-pct'
   | 'vix-open'
@@ -92,6 +93,17 @@ export type QuantFilterFieldKey =
   | 'us-hedge-long'
   | 'us-hedge-short'
   | 'us-hedge-ratio'
+  | 'us-put-call-total'
+  | 'us-put-call-index'
+  | 'us-put-call-equity'
+  | 'us-put-call-etf'
+  | 'us-yield-3m'
+  | 'us-yield-2y'
+  | 'us-yield-10y'
+  | 'us-yield-spread-10y-2y'
+  | 'us-yield-spread-10y-3m'
+  | 'us-hy-oas'
+  | 'us-hy-oas-change-5d'
   | 'pct-chg'
   | 'turnover-rate'
   | 'rsi'
@@ -118,6 +130,9 @@ export type QuantFilterGroupKey =
   | 'us-vix'
   | 'fear-greed'
   | 'hedge'
+  | 'put-call'
+  | 'treasury'
+  | 'credit'
   | 'change'
   | 'turnover'
   | 'rsi'
@@ -171,6 +186,7 @@ export interface QuantFilterDataset {
   emotion: QuantLineSeries | null
   basis: {
     main: QuantLineSeries
+    adjusted?: QuantLineSeries
     month: QuantLineSeries
   } | null
   breadth: QuantLineSeries | null
@@ -178,6 +194,12 @@ export interface QuantFilterDataset {
   usVix: QuantLineSeries | null
   usFearGreed: QuantLineSeries | null
   usHedgeProxy: QuantLineSeries | null
+  usPutCall: QuantLineSeries | null
+  usTreasuryYield: {
+    spread10y2y: QuantLineSeries
+    spread10y3m: QuantLineSeries
+  } | null
+  usCreditSpread: QuantLineSeries | null
   fields: QuantFilterFieldMeta[]
   snapshots: QuantDailyIndicatorSnapshot[]
 }

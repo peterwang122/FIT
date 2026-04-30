@@ -79,7 +79,7 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
   {
     value: 'index_bj50_daily',
     label: '北证50日更',
-    group: '独立日更',
+    group: '鐙珛鏃ユ洿',
     marketScope: 'cn_stock',
     targetType: null,
     requiresTargetSelection: false,
@@ -151,7 +151,7 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
   {
     value: 'index_hk_daily',
     label: '港股指数日更',
-    group: '独立日更',
+    group: '鐙珛鏃ユ洿',
     marketScope: 'hk_index',
     targetType: 'index',
     requiresTargetSelection: false,
@@ -162,7 +162,7 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
   {
     value: 'index_us_daily',
     label: '美股指数日更',
-    group: '独立日更',
+    group: '鐙珛鏃ユ洿',
     marketScope: 'us_index',
     targetType: 'index',
     requiresTargetSelection: false,
@@ -187,6 +187,15 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     targetType: null,
     requiresTargetSelection: false,
     description: '执行美股股指期货日更整批采集，按美股交易日自动调度。',
+  },
+  {
+    value: 'us_index_futures_official_daily',
+    label: '美股股指期货官方合约日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行 CME 官方 ES / NQ 逐合约结算数据采集，按美股交易日自动调度；不替代现有新浪连续期货任务。',
   },
   {
     value: 'index_qvix_daily',
@@ -232,6 +241,33 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     targetType: null,
     requiresTargetSelection: false,
     description: '执行美股对冲基金代理日更整批采集，按美股交易日自动调度。',
+  },
+  {
+    value: 'index_us_put_call_ratio_daily',
+    label: '美股 Put/Call Ratio 日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美股 Put/Call Ratio 日更整批采集，按美股交易日自动调度。',
+  },
+  {
+    value: 'index_us_treasury_yield_daily',
+    label: '美债收益率日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美债 3M / 2Y / 10Y 收益率与利差日更采集，按美股交易日自动调度。',
+  },
+  {
+    value: 'index_us_credit_spread_daily',
+    label: '美股高收益债利差日更',
+    group: '独立日更',
+    marketScope: 'us_index',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '执行美股高收益债 HY OAS 日更采集，按美股交易日自动调度。',
   },
 ]
 

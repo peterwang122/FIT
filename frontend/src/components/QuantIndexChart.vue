@@ -27,8 +27,11 @@ import type {
   FuturesBasisPoint,
   IndexBreadthPoint,
   IndexEmotionPoint,
+  IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
+  IndexUsPutCallPoint,
+  IndexUsTreasuryYieldPoint,
   IndexUsVixPoint,
   IndexVixPoint,
   KlineCandle,
@@ -50,8 +53,14 @@ type PanelKey =
   | 'usVix'
   | 'usFearGreed'
   | 'usHedge'
+  | 'usPutCall'
+  | 'usTreasury'
+  | 'usCredit'
 type SubPanelKey = Exclude<PanelKey, 'main'>
 type MainOverlayMode = 'ma' | 'boll'
+type UsPutCallMetricKey = 'total' | 'index' | 'equity' | 'etf'
+type UsCreditMetricKey = 'hyOas' | 'change5d'
+type BasisMetricKey = 'adjusted' | 'main'
 type AnySeries = ISeriesApi<SeriesType, Time>
 type LineSeriesApi = ISeriesApi<'Line', Time>
 type HistogramSeriesApi = ISeriesApi<'Histogram', Time>
@@ -59,6 +68,7 @@ type CandleSeriesApi = ISeriesApi<'Candlestick', Time>
 type PrimitiveBinding = {
   series: AnySeries
   primitive: DateHighlightPrimitive
+  getHighlights: () => QuantHighlightBand[]
 }
 type SummaryRow = { label: string; value: string; placeholder?: boolean }
 type SummaryCard = { key: string; title: string; hint?: string; rows: SummaryRow[] }
@@ -77,6 +87,9 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'usVix',
   'usFearGreed',
   'usHedge',
+  'usPutCall',
+  'usTreasury',
+  'usCredit',
 ]
 const ALL_SUB_PANEL_KEYS: SubPanelKey[] = ALL_PANEL_KEYS.filter((item): item is SubPanelKey => item !== 'main')
 
@@ -97,15 +110,23 @@ const props = withDefaults(
     usVixPoints?: IndexUsVixPoint[]
     usFearGreedPoints?: IndexUsFearGreedPoint[]
     usHedgeProxyPoints?: IndexUsHedgeProxyPoint[]
+    usPutCallPoints?: IndexUsPutCallPoint[]
+    usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
+    usCreditSpreadPoints?: IndexUsCreditSpreadPoint[]
     supportsUsVixPanel?: boolean
     supportsUsFearGreedPanel?: boolean
     supportsUsHedgeProxyPanel?: boolean
+    supportsUsPutCallPanel?: boolean
+    supportsUsTreasuryYieldPanel?: boolean
+    supportsUsCreditSpreadPanel?: boolean
     highlightBands?: QuantHighlightBand[]
     marketOptions?: MarketOption[]
     symbolName: string
     symbolCode: string
     params: QuantIndicatorParams
     supportsAuxiliaryPanels?: boolean
+    supportsBasisPanel?: boolean
+    showBasisMonthLine?: boolean
     loading?: boolean
     defaultVisibleDays?: number
     zoomStep?: number
@@ -127,11 +148,19 @@ const props = withDefaults(
     usVixPoints: () => [],
     usFearGreedPoints: () => [],
     usHedgeProxyPoints: () => [],
+    usPutCallPoints: () => [],
+    usTreasuryYieldPoints: () => [],
+    usCreditSpreadPoints: () => [],
     supportsUsVixPanel: false,
     supportsUsFearGreedPanel: false,
     supportsUsHedgeProxyPanel: false,
+    supportsUsPutCallPanel: false,
+    supportsUsTreasuryYieldPanel: false,
+    supportsUsCreditSpreadPanel: false,
     highlightBands: () => [],
     supportsAuxiliaryPanels: true,
+    supportsBasisPanel: true,
+    showBasisMonthLine: true,
     loading: false,
     defaultVisibleDays: 90,
     zoomStep: 0.18,
@@ -158,10 +187,16 @@ const vixContainerRef = ref<HTMLDivElement | null>(null)
 const usVixContainerRef = ref<HTMLDivElement | null>(null)
 const usFearGreedContainerRef = ref<HTMLDivElement | null>(null)
 const usHedgeContainerRef = ref<HTMLDivElement | null>(null)
+const usPutCallContainerRef = ref<HTMLDivElement | null>(null)
+const usTreasuryContainerRef = ref<HTMLDivElement | null>(null)
+const usCreditContainerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 const overlayMode = ref<MainOverlayMode>('ma')
 const hoveredTradeDate = ref<string | null>(null)
 const visibleSubPanels = ref<SubPanelKey[]>([...ALL_SUB_PANEL_KEYS])
+const activeUsPutCallKey = ref<UsPutCallMetricKey>('total')
+const activeUsCreditKey = ref<UsCreditMetricKey>('hyOas')
+const activeBasisKey = ref<BasisMetricKey>('adjusted')
 
 const charts: Partial<Record<PanelKey, IChartApi>> = {}
 const primarySeriesMap = new Map<PanelKey, AnySeries>()
@@ -180,10 +215,14 @@ let basisMainSeries: LineSeriesApi | null = null
 let basisMonthSeries: LineSeriesApi | null = null
 let breadthSeries: LineSeriesApi | null = null
 let breadthCountSeries: LineSeriesApi | null = null
-let vixSeries: LineSeriesApi | null = null
-let usVixSeries: LineSeriesApi | null = null
+let vixSeries: CandleSeriesApi | null = null
+let usVixSeries: CandleSeriesApi | null = null
 let usFearGreedSeries: LineSeriesApi | null = null
 let usHedgeSeries: LineSeriesApi | null = null
+let usPutCallSeries: LineSeriesApi | null = null
+let usTreasurySpread10y2ySeries: LineSeriesApi | null = null
+let usTreasurySpread10y3mSeries: LineSeriesApi | null = null
+let usCreditSeries: LineSeriesApi | null = null
 let highlightBindings: PrimitiveBinding[] = []
 let isSyncingRange = false
 let isSyncingCrosshair = false
@@ -198,12 +237,15 @@ const visiblePanelOptions = computed<SubPanelOption[]>(() => [
   { key: 'wr', label: 'WR', available: true },
   { key: 'rsi', label: 'RSI', available: true },
   { key: 'emotion', label: '情绪', available: props.supportsAuxiliaryPanels },
-  { key: 'basis', label: '期现差', available: props.supportsAuxiliaryPanels },
+  { key: 'basis', label: '期现差', available: props.supportsBasisPanel },
   { key: 'breadth', label: '涨跌家数', available: props.supportsAuxiliaryPanels },
   { key: 'vix', label: 'VIX', available: props.supportsVixPanel },
   { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
   { key: 'usFearGreed', label: '恐贪', available: props.supportsUsFearGreedPanel },
   { key: 'usHedge', label: '对冲代理', available: props.supportsUsHedgeProxyPanel },
+  { key: 'usPutCall', label: 'Put/Call', available: props.supportsUsPutCallPanel },
+  { key: 'usTreasury', label: '美债利差', available: props.supportsUsTreasuryYieldPanel },
+  { key: 'usCredit', label: '信用利差', available: props.supportsUsCreditSpreadPanel },
 ])
 const availableSubPanelOptions = computed(() => visiblePanelOptions.value.filter((item) => item.available))
 
@@ -232,6 +274,9 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   if (panelKey === 'usVix') return usVixContainerRef.value
   if (panelKey === 'usFearGreed') return usFearGreedContainerRef.value
   if (panelKey === 'usHedge') return usHedgeContainerRef.value
+  if (panelKey === 'usPutCall') return usPutCallContainerRef.value
+  if (panelKey === 'usTreasury') return usTreasuryContainerRef.value
+  if (panelKey === 'usCredit') return usCreditContainerRef.value
   return null
 }
 
@@ -343,6 +388,12 @@ const mainCandles = computed(() =>
   })),
 )
 
+const supportsAdjustedBasisForSymbol = computed(
+  () =>
+    !props.showBasisMonthLine &&
+    (String(props.symbolCode || '').trim().toUpperCase() === '.NDX' || String(props.symbolName || '').trim() === '纳斯达克100指数'),
+)
+
 const quantDataset = computed(() =>
   buildQuantFilterDataset(
     sortedCandles.value,
@@ -355,13 +406,25 @@ const quantDataset = computed(() =>
     props.supportsVixPanel,
     {
       includeCnAuxiliary: props.supportsAuxiliaryPanels,
+      includeBasis: props.supportsBasisPanel,
+      includeBasisMonth: props.showBasisMonthLine,
+      includeBasisAdjusted: supportsAdjustedBasisForSymbol.value,
+      basisMainLabel: props.showBasisMonthLine ? '主连期现差' : '连续期现差',
+      basisAdjustedLabel: '换月调整期现差',
+      basisMonthLabel: '月连期现差',
       includeCnVix: props.supportsVixPanel,
       includeUsVix: props.supportsUsVixPanel,
       includeUsFearGreed: props.supportsUsFearGreedPanel,
       includeUsHedge: props.supportsUsHedgeProxyPanel,
+      includeUsPutCall: props.supportsUsPutCallPanel,
+      includeUsTreasuryYield: props.supportsUsTreasuryYieldPanel,
+      includeUsCreditSpread: props.supportsUsCreditSpreadPanel,
       usVixPoints: props.usVixPoints,
       usFearGreedPoints: props.usFearGreedPoints,
       usHedgeProxyPoints: props.usHedgeProxyPoints,
+      usPutCallPoints: props.usPutCallPoints,
+      usTreasuryYieldPoints: props.usTreasuryYieldPoints,
+      usCreditSpreadPoints: props.usCreditSpreadPoints,
     },
   ),
 )
@@ -394,19 +457,49 @@ const breadthCountSeriesData = computed(() => {
 })
 
 const vixSeriesData = computed(() =>
-  (quantDataset.value.vix?.data ?? []).map((item) => ({
-    time: item.time as Time,
-    rawDate: item.time,
-    value: item.value ?? null,
-  })),
+  {
+    const pointByDate = new Map(
+      props.vixPoints.map((item) => [
+        item.trade_date,
+        {
+          open: toNullableNumber(item.open_price),
+          high: toNullableNumber(item.high_price),
+          low: toNullableNumber(item.low_price),
+          close: toNullableNumber(item.close_price),
+        },
+      ]),
+    )
+    return sortedCandles.value.map((item) => ({
+      trade_date: item.trade_date,
+      open: pointByDate.get(item.trade_date)?.open ?? null,
+      high: pointByDate.get(item.trade_date)?.high ?? null,
+      low: pointByDate.get(item.trade_date)?.low ?? null,
+      close: pointByDate.get(item.trade_date)?.close ?? null,
+    }))
+  },
 )
 
 const usVixSeriesData = computed(() =>
-  (quantDataset.value.usVix?.data ?? []).map((item) => ({
-    time: item.time as Time,
-    rawDate: item.time,
-    value: item.value ?? null,
-  })),
+  {
+    const pointByDate = new Map(
+      props.usVixPoints.map((item) => [
+        item.trade_date,
+        {
+          open: toNullableNumber(item.open_value),
+          high: toNullableNumber(item.high_value),
+          low: toNullableNumber(item.low_value),
+          close: toNullableNumber(item.close_value),
+        },
+      ]),
+    )
+    return sortedCandles.value.map((item) => ({
+      trade_date: item.trade_date,
+      open: pointByDate.get(item.trade_date)?.open ?? null,
+      high: pointByDate.get(item.trade_date)?.high ?? null,
+      low: pointByDate.get(item.trade_date)?.low ?? null,
+      close: pointByDate.get(item.trade_date)?.close ?? null,
+    }))
+  },
 )
 
 const usFearGreedSeriesData = computed(() =>
@@ -423,6 +516,97 @@ const usHedgeSeriesData = computed(() =>
     rawDate: item.time,
     value: item.value ?? null,
   })),
+)
+
+const usPutCallMetricConfig: Record<UsPutCallMetricKey, { label: string; color: string }> = {
+  total: { label: '总Put/Call', color: '#9333ea' },
+  index: { label: '指数Put/Call', color: '#2563eb' },
+  equity: { label: '股票Put/Call', color: '#f97316' },
+  etf: { label: 'ETF Put/Call', color: '#0f766e' },
+}
+
+const usCreditMetricConfig: Record<UsCreditMetricKey, { label: string; color: string }> = {
+  hyOas: { label: 'HY OAS', color: '#be123c' },
+  change5d: { label: '5日变化', color: '#2563eb' },
+}
+
+function getUsPutCallMetricValue(item: IndexUsPutCallPoint | undefined, key: UsPutCallMetricKey) {
+  if (!item) return null
+  const value =
+    key === 'total'
+      ? item.total_put_call_ratio
+      : key === 'index'
+        ? item.index_put_call_ratio
+        : key === 'equity'
+          ? item.equity_put_call_ratio
+          : item.etf_put_call_ratio
+  return toNullableNumber(value)
+}
+
+const usPutCallSeriesData = computed(() => {
+  const rowByDate = new Map(props.usPutCallPoints.map((item) => [item.trade_date, item]))
+  const activeKey = activeUsPutCallKey.value
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: getUsPutCallMetricValue(rowByDate.get(item.trade_date), activeKey),
+  }))
+})
+
+const usTreasurySpread10y2ySeriesData = computed(() =>
+  (quantDataset.value.usTreasuryYield?.spread10y2y.data ?? []).map((item) => ({
+    time: item.time as Time,
+    rawDate: item.time,
+    value: item.value ?? null,
+  })),
+)
+
+const usTreasurySpread10y3mSeriesData = computed(() =>
+  (quantDataset.value.usTreasuryYield?.spread10y3m.data ?? []).map((item) => ({
+    time: item.time as Time,
+    rawDate: item.time,
+    value: item.value ?? null,
+  })),
+)
+
+const usCreditSeriesData = computed(() => {
+  const activeKey = activeUsCreditKey.value
+  return sortedCandles.value.map((item) => {
+    const point = usCreditSpreadPointByDate.value.get(item.trade_date)
+    return {
+      time: item.trade_date as Time,
+      rawDate: item.trade_date,
+      value: activeKey === 'hyOas' ? point?.highYieldOas ?? null : point?.change5d ?? null,
+    }
+  })
+})
+
+const basisPointByDate = computed(
+  () =>
+    new Map(
+      props.futuresBasisPoints.map((item) => [
+        item.trade_date,
+        {
+          rollFlag: Boolean(item.basis_roll_flag),
+          rollDelta:
+            item.basis_roll_delta === null || item.basis_roll_delta === undefined
+              ? null
+              : Number.isFinite(Number(item.basis_roll_delta))
+                ? Number(item.basis_roll_delta)
+                : null,
+        },
+      ]),
+    ),
+)
+
+const basisRollHighlights = computed<QuantHighlightBand[]>(() =>
+  props.futuresBasisPoints
+    .filter((item) => Boolean(item.basis_roll_flag))
+    .map((item) => ({
+      tradeDate: item.trade_date,
+      color: 'purple',
+      variant: 'striped',
+    })),
 )
 
 const breadthPointByDate = computed(
@@ -503,6 +687,58 @@ const usHedgeProxyPointByDate = computed(() => {
   )
 })
 
+const usPutCallPointByDate = computed(
+  () =>
+    new Map(
+      props.usPutCallPoints.map((item) => [
+        item.trade_date,
+        {
+          total: item.total_put_call_ratio,
+          index: item.index_put_call_ratio,
+          equity: item.equity_put_call_ratio,
+          etf: item.etf_put_call_ratio,
+        },
+      ]),
+    ),
+)
+
+const usTreasuryYieldPointByDate = computed(
+  () =>
+    new Map(
+      props.usTreasuryYieldPoints.map((item) => [
+        item.trade_date,
+        {
+          yield3m: item.yield_3m,
+          yield2y: item.yield_2y,
+          yield10y: item.yield_10y,
+          spread10y2y: item.spread_10y_2y,
+          spread10y3m: item.spread_10y_3m,
+        },
+      ]),
+    ),
+)
+
+const usCreditSpreadPointByDate = computed(() => {
+  const sortedPoints = [...props.usCreditSpreadPoints]
+    .filter((item) => item.trade_date)
+    .sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+  return new Map(
+    sortedPoints.map((item, index) => {
+      const value = Number.isFinite(Number(item.high_yield_oas)) ? Number(item.high_yield_oas) : null
+      const previous = index >= 5 ? sortedPoints[index - 5] : null
+      const previousValue =
+        previous && Number.isFinite(Number(previous.high_yield_oas)) ? Number(previous.high_yield_oas) : null
+      return [
+        item.trade_date,
+        {
+          highYieldOas: value,
+          change5d: value !== null && previousValue !== null ? value - previousValue : null,
+        },
+      ]
+    }),
+  )
+})
+
 const mainLegend = computed(() =>
   overlayMode.value === 'boll'
     ? [
@@ -536,10 +772,52 @@ const emotionLegend = computed(() => [
   },
 ])
 
-const basisLegend = computed(() => [
-  { label: quantDataset.value.basis?.main.label ?? '主连期现差', color: quantDataset.value.basis?.main.color ?? '#dc2626' },
-  { label: quantDataset.value.basis?.month.label ?? '月连期现差', color: quantDataset.value.basis?.month.color ?? '#2563eb' },
-])
+const supportsAdjustedBasisSeries = computed(
+  () => !props.showBasisMonthLine && Boolean(quantDataset.value.basis?.adjusted?.data?.length),
+)
+
+const activeBasisSeries = computed(() => {
+  if (supportsAdjustedBasisSeries.value && activeBasisKey.value === 'adjusted') {
+    return quantDataset.value.basis?.adjusted ?? quantDataset.value.basis?.main ?? null
+  }
+  return quantDataset.value.basis?.main ?? null
+})
+
+const basisLegend = computed(() => {
+  if (supportsAdjustedBasisSeries.value) {
+    return [
+      {
+        key: 'adjusted' as const,
+        label: quantDataset.value.basis?.adjusted?.label ?? '换月调整期现差',
+        color: quantDataset.value.basis?.adjusted?.color ?? '#2563eb',
+        active: activeBasisKey.value === 'adjusted',
+      },
+      {
+        key: 'main' as const,
+        label: quantDataset.value.basis?.main.label ?? '原始连续期现差',
+        color: quantDataset.value.basis?.main.color ?? '#dc2626',
+        active: activeBasisKey.value === 'main',
+      },
+    ]
+  }
+  const items = [
+    {
+      key: 'main' as const,
+      label: quantDataset.value.basis?.main.label ?? '主连期现差',
+      color: quantDataset.value.basis?.main.color ?? '#dc2626',
+      active: true,
+    },
+  ]
+  if (props.showBasisMonthLine) {
+    items.push({
+      key: 'main' as const,
+      label: quantDataset.value.basis?.month.label ?? '月连期现差',
+      color: quantDataset.value.basis?.month.color ?? '#2563eb',
+      active: true,
+    })
+  }
+  return items
+})
 
 const breadthLegend = computed(() => [
   {
@@ -554,15 +832,15 @@ const breadthLegend = computed(() => [
 
 const vixLegend = computed(() => [
   {
-    label: quantDataset.value.vix?.label ?? 'VIX收',
-    color: quantDataset.value.vix?.color ?? '#7c3aed',
+    label: 'VIX蜡烛',
+    color: '#7c3aed',
   },
 ])
 
 const usVixLegend = computed(() => [
   {
-    label: quantDataset.value.usVix?.label ?? '美股VIX收',
-    color: quantDataset.value.usVix?.color ?? '#b45309',
+    label: '美股VIX蜡烛',
+    color: '#b45309',
   },
 ])
 
@@ -580,6 +858,37 @@ const usHedgeLegend = computed(() => [
   },
 ])
 
+const usPutCallLegend = computed(() =>
+  (Object.entries(usPutCallMetricConfig) as Array<[UsPutCallMetricKey, { label: string; color: string }]>).map(
+    ([key, item]) => ({
+      key,
+      label: item.label,
+      color: item.color,
+      active: activeUsPutCallKey.value === key,
+    }),
+  ),
+)
+
+const usTreasuryLegend = computed(() => [
+  {
+    label: quantDataset.value.usTreasuryYield?.spread10y2y.label ?? '10Y-2Y利差',
+    color: quantDataset.value.usTreasuryYield?.spread10y2y.color ?? '#2563eb',
+  },
+  {
+    label: quantDataset.value.usTreasuryYield?.spread10y3m.label ?? '10Y-3M利差',
+    color: quantDataset.value.usTreasuryYield?.spread10y3m.color ?? '#f97316',
+  },
+])
+
+const usCreditLegend = computed(() =>
+  (Object.entries(usCreditMetricConfig) as Array<[UsCreditMetricKey, { label: string; color: string }]>).map(([key, item]) => ({
+    key,
+    label: item.label,
+    color: item.color,
+    active: activeUsCreditKey.value === key,
+  })),
+)
+
 const activeTradeDate = computed(() => hoveredTradeDate.value ?? latestSnapshot.value?.trade_date ?? '')
 
 
@@ -590,6 +899,24 @@ function handleIndexSelect(event: Event) {
     return
   }
   emit('selectIndex', nextCode)
+}
+
+function selectUsPutCallMetric(key: UsPutCallMetricKey) {
+  activeUsPutCallKey.value = key
+  updateAllSeries()
+}
+
+function selectUsCreditMetric(key: UsCreditMetricKey) {
+  activeUsCreditKey.value = key
+  updateAllSeries()
+}
+
+function selectBasisMetric(key: BasisMetricKey) {
+  if (!supportsAdjustedBasisSeries.value && key === 'adjusted') {
+    return
+  }
+  activeBasisKey.value = key
+  updateAllSeries()
 }
 
 function formatMetric(value: number | null | undefined) {
@@ -635,11 +962,38 @@ function toLineData(points: QuantLinePoint[]) {
   )
 }
 
+function toNullableNumber(value: unknown) {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : null
+}
+
 function toHistogramData(points: QuantHistogramPoint[]) {
   return points.map((item) =>
     item.value === null
       ? ({ time: item.time as Time } as WhitespaceData<Time>)
       : ({ time: item.time as Time, value: item.value, color: item.color }),
+  )
+}
+
+function toVixCandleData(
+  points: Array<{
+    trade_date: string
+    open: number | null
+    high: number | null
+    low: number | null
+    close: number | null
+  }>,
+) {
+  return points.map((item) =>
+    item.open === null || item.high === null || item.low === null || item.close === null
+      ? ({ time: item.trade_date as Time } as WhitespaceData<Time>)
+      : {
+          time: item.trade_date as Time,
+          open: item.open,
+          high: item.high,
+          low: item.low,
+          close: item.close,
+        },
   )
 }
 
@@ -687,6 +1041,7 @@ const indicatorValueMaps = computed(() => {
     emotion: buildValueMap(quantDataset.value.emotion?.data ?? []),
     basis: {
       main: buildValueMap(quantDataset.value.basis?.main.data ?? []),
+      adjusted: buildValueMap(quantDataset.value.basis?.adjusted?.data ?? []),
       month: buildValueMap(quantDataset.value.basis?.month.data ?? []),
     },
     breadth: buildValueMap(quantDataset.value.breadth?.data ?? []),
@@ -694,6 +1049,12 @@ const indicatorValueMaps = computed(() => {
     usVix: buildValueMap(quantDataset.value.usVix?.data ?? []),
     usFearGreed: buildValueMap(quantDataset.value.usFearGreed?.data ?? []),
     usHedge: buildValueMap(quantDataset.value.usHedgeProxy?.data ?? []),
+    usPutCall: buildValueMap(quantDataset.value.usPutCall?.data ?? []),
+    usTreasury: {
+      spread10y2y: buildValueMap(quantDataset.value.usTreasuryYield?.spread10y2y.data ?? []),
+      spread10y3m: buildValueMap(quantDataset.value.usTreasuryYield?.spread10y3m.data ?? []),
+    },
+    usCredit: buildValueMap(quantDataset.value.usCreditSpread?.data ?? []),
   }
 })
 
@@ -727,7 +1088,10 @@ const activeIndicatorSnapshot = computed(() => {
     emotion: maps.emotion.get(tradeDate),
     basis: {
       main: maps.basis.main.get(tradeDate),
+      adjusted: maps.basis.adjusted.get(tradeDate),
       month: maps.basis.month.get(tradeDate),
+      rollFlag: basisPointByDate.value.get(tradeDate)?.rollFlag ?? false,
+      rollDelta: basisPointByDate.value.get(tradeDate)?.rollDelta ?? null,
     },
     breadth: {
       pct: maps.breadth.get(tradeDate),
@@ -756,6 +1120,23 @@ const activeIndicatorSnapshot = computed(() => {
       ratio: maps.usHedge.get(tradeDate) ?? null,
       scope: usHedgeProxyPointByDate.value.get(tradeDate)?.contract_scope ?? '',
       releaseDate: usHedgeProxyPointByDate.value.get(tradeDate)?.release_date ?? null,
+    },
+    usPutCall: {
+      total: maps.usPutCall.get(tradeDate) ?? null,
+      index: usPutCallPointByDate.value.get(tradeDate)?.index ?? null,
+      equity: usPutCallPointByDate.value.get(tradeDate)?.equity ?? null,
+      etf: usPutCallPointByDate.value.get(tradeDate)?.etf ?? null,
+    },
+    usTreasury: {
+      yield3m: usTreasuryYieldPointByDate.value.get(tradeDate)?.yield3m ?? null,
+      yield2y: usTreasuryYieldPointByDate.value.get(tradeDate)?.yield2y ?? null,
+      yield10y: usTreasuryYieldPointByDate.value.get(tradeDate)?.yield10y ?? null,
+      spread10y2y: maps.usTreasury.spread10y2y.get(tradeDate) ?? null,
+      spread10y3m: maps.usTreasury.spread10y3m.get(tradeDate) ?? null,
+    },
+    usCredit: {
+      highYieldOas: maps.usCredit.get(tradeDate) ?? null,
+      change5d: usCreditSpreadPointByDate.value.get(tradeDate)?.change5d ?? null,
     },
   }
 })
@@ -841,6 +1222,29 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
+    ...(props.supportsBasisPanel && !props.supportsAuxiliaryPanels
+      ? [
+          {
+            key: 'basis-summary',
+            title: '期现差',
+            rows: [
+              ...(supportsAdjustedBasisSeries.value
+                ? [{ label: '换月调整期现差', value: formatMetric(indicator.basis.adjusted) }]
+                : []),
+              {
+                label: props.showBasisMonthLine ? '主连期现差' : '连续期现差',
+                value: formatMetric(indicator.basis.main),
+              },
+              ...(props.showBasisMonthLine
+                ? [{ label: '月连期现差', value: formatMetric(indicator.basis.month) }]
+                : []),
+              ...(indicator.basis.rollFlag
+                ? [{ label: '换月调整幅度', value: formatMetric(indicator.basis.rollDelta) }]
+                : []),
+            ],
+          },
+        ]
+      : []),
     ...(props.supportsVixPanel
       ? [
           {
@@ -892,6 +1296,47 @@ const summaryCards = computed<SummaryCard[]>(() => {
               { label: '代理空头', value: formatMetric(indicator.usHedge.short) },
               { label: '多空比', value: formatMetric(indicator.usHedge.ratio) },
               { label: '发布日期', value: indicator.usHedge.releaseDate || '-' },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsUsPutCallPanel
+      ? [
+          {
+            key: 'us-put-call',
+            title: 'Put/Call',
+            rows: [
+              { label: '总Put/Call', value: formatMetric(indicator.usPutCall.total) },
+              { label: '指数Put/Call', value: formatMetric(indicator.usPutCall.index) },
+              { label: '股票Put/Call', value: formatMetric(indicator.usPutCall.equity) },
+              { label: 'ETF Put/Call', value: formatMetric(indicator.usPutCall.etf) },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsUsTreasuryYieldPanel
+      ? [
+          {
+            key: 'us-treasury',
+            title: '美债收益率 / 利差',
+            rows: [
+              { label: '3M收益率', value: formatMetric(indicator.usTreasury.yield3m) },
+              { label: '2Y收益率', value: formatMetric(indicator.usTreasury.yield2y) },
+              { label: '10Y收益率', value: formatMetric(indicator.usTreasury.yield10y) },
+              { label: '10Y-2Y利差', value: formatMetric(indicator.usTreasury.spread10y2y) },
+              { label: '10Y-3M利差', value: formatMetric(indicator.usTreasury.spread10y3m) },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsUsCreditSpreadPanel
+      ? [
+          {
+            key: 'us-credit',
+            title: '高收益债利差',
+            rows: [
+              { label: 'HY OAS', value: formatMetric(indicator.usCredit.highYieldOas) },
+              { label: '5日变化', value: formatMetric(indicator.usCredit.change5d) },
             ],
           },
         ]
@@ -995,6 +1440,18 @@ function addCandles(chart: IChartApi) {
     borderVisible: false,
     wickUpColor: '#ef4444',
     wickDownColor: '#10b981',
+  })
+}
+
+function addVixCandles(chart: IChartApi) {
+  return chart.addSeries(CandlestickSeries, {
+    upColor: '#ef4444',
+    downColor: '#10b981',
+    borderVisible: false,
+    wickUpColor: '#ef4444',
+    wickDownColor: '#10b981',
+    lastValueVisible: false,
+    priceLineVisible: false,
   })
 }
 
@@ -1135,18 +1592,18 @@ function cleanupHighlightBindings() {
   highlightBindings = []
 }
 
-function attachHighlightPrimitive(series: AnySeries | null) {
+function attachHighlightPrimitive(series: AnySeries | null, getHighlights: () => QuantHighlightBand[] = () => props.highlightBands) {
   if (!series) {
     return
   }
 
-  const primitive = new DateHighlightPrimitive(props.highlightBands)
+  const primitive = new DateHighlightPrimitive(getHighlights())
   series.attachPrimitive(primitive)
-  highlightBindings.push({ series, primitive })
+  highlightBindings.push({ series, primitive, getHighlights })
 }
 
 function syncHighlightBindings() {
-  highlightBindings.forEach(({ primitive }) => primitive.setHighlights(props.highlightBands))
+  highlightBindings.forEach(({ primitive, getHighlights }) => primitive.setHighlights(getHighlights()))
 }
 
 function updateAllSeries() {
@@ -1218,10 +1675,14 @@ function updateAllSeries() {
   }
 
   if (isSubPanelVisible('basis')) {
-    if (!basisMainSeries || !basisMonthSeries) return
-    basisMainSeries.setData(toLineData(quantDataset.value.basis?.main.data ?? []))
-    basisMonthSeries.setData(toLineData(quantDataset.value.basis?.month.data ?? []))
-    panelValueMaps.set('basis', buildValueMap(quantDataset.value.basis?.main.data ?? []))
+    if (!basisMainSeries) return
+    const activeSeries = activeBasisSeries.value
+    basisMainSeries.applyOptions({ color: activeSeries?.color ?? '#dc2626' })
+    basisMainSeries.setData(toLineData(activeSeries?.data ?? []))
+    if (props.showBasisMonthLine && basisMonthSeries) {
+      basisMonthSeries.setData(toLineData(quantDataset.value.basis?.month.data ?? []))
+    }
+    panelValueMaps.set('basis', buildValueMap(activeSeries?.data ?? []))
   } else {
     panelValueMaps.delete('basis')
   }
@@ -1242,16 +1703,30 @@ function updateAllSeries() {
 
   if (isSubPanelVisible('vix')) {
     if (!vixSeries) return
-    vixSeries.setData(toLineData(quantDataset.value.vix?.data ?? []))
-    panelValueMaps.set('vix', new Map(vixSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])))
+    vixSeries.setData(toVixCandleData(vixSeriesData.value))
+    panelValueMaps.set(
+      'vix',
+      new Map(
+        vixSeriesData.value
+          .filter((item) => item.close !== null)
+          .map((item) => [item.trade_date, item.close as number]),
+      ),
+    )
   } else {
     panelValueMaps.delete('vix')
   }
 
   if (isSubPanelVisible('usVix')) {
     if (!usVixSeries) return
-    usVixSeries.setData(toLineData(quantDataset.value.usVix?.data ?? []))
-    panelValueMaps.set('usVix', new Map(usVixSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])))
+    usVixSeries.setData(toVixCandleData(usVixSeriesData.value))
+    panelValueMaps.set(
+      'usVix',
+      new Map(
+        usVixSeriesData.value
+          .filter((item) => item.close !== null)
+          .map((item) => [item.trade_date, item.close as number]),
+      ),
+    )
   } else {
     panelValueMaps.delete('usVix')
   }
@@ -1276,6 +1751,60 @@ function updateAllSeries() {
     )
   } else {
     panelValueMaps.delete('usHedge')
+  }
+
+  if (isSubPanelVisible('usPutCall')) {
+    if (!usPutCallSeries) return
+    const metricConfig = usPutCallMetricConfig[activeUsPutCallKey.value]
+    usPutCallSeries.applyOptions({ color: metricConfig.color })
+    usPutCallSeries.setData(
+      usPutCallSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    panelValueMaps.set(
+      'usPutCall',
+      new Map(usPutCallSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])),
+    )
+  } else {
+    panelValueMaps.delete('usPutCall')
+  }
+
+  if (isSubPanelVisible('usTreasury')) {
+    if (!usTreasurySpread10y2ySeries || !usTreasurySpread10y3mSeries) return
+    usTreasurySpread10y2ySeries.setData(toLineData(quantDataset.value.usTreasuryYield?.spread10y2y.data ?? []))
+    usTreasurySpread10y3mSeries.setData(toLineData(quantDataset.value.usTreasuryYield?.spread10y3m.data ?? []))
+    panelValueMaps.set(
+      'usTreasury',
+      new Map(
+        usTreasurySpread10y2ySeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('usTreasury')
+  }
+
+  if (isSubPanelVisible('usCredit')) {
+    if (!usCreditSeries) return
+    const metricConfig = usCreditMetricConfig[activeUsCreditKey.value]
+    usCreditSeries.applyOptions({ color: metricConfig.color })
+    usCreditSeries.setData(
+      usCreditSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    panelValueMaps.set(
+      'usCredit',
+      new Map(usCreditSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])),
+    )
+  } else {
+    panelValueMaps.delete('usCredit')
   }
 }
 
@@ -1317,6 +1846,15 @@ function renderCharts() {
     if (isSubPanelVisible('usHedge')) {
       charts.usHedge = createBaseChart(usHedgeContainerRef.value!, true)
     }
+    if (isSubPanelVisible('usPutCall')) {
+      charts.usPutCall = createBaseChart(usPutCallContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('usTreasury')) {
+      charts.usTreasury = createBaseChart(usTreasuryContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('usCredit')) {
+      charts.usCredit = createBaseChart(usCreditContainerRef.value!, true)
+    }
 
     mainCandleSeries = addCandles(charts.main)
     mainMaSeries = indicatorPayload.value.ma.map((item) => addLineSeries(charts.main!, item.color, 2))
@@ -1341,14 +1879,25 @@ function renderCharts() {
     wrSeries = charts.wr ? addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2) : null
     rsiSeries = charts.rsi ? addLineSeries(charts.rsi, indicatorPayload.value.rsi.color, 2) : null
     emotionSeries = charts.emotion ? addLineSeries(charts.emotion, quantDataset.value.emotion?.color ?? '#0f4c75', 2) : null
-    basisMainSeries = charts.basis ? addLineSeries(charts.basis, quantDataset.value.basis?.main.color ?? '#dc2626', 2) : null
-    basisMonthSeries = charts.basis ? addLineSeries(charts.basis, quantDataset.value.basis?.month.color ?? '#2563eb', 2) : null
+    basisMainSeries = charts.basis ? addLineSeries(charts.basis, activeBasisSeries.value?.color ?? '#dc2626', 2) : null
+    basisMonthSeries =
+      charts.basis && props.showBasisMonthLine
+        ? addLineSeries(charts.basis, quantDataset.value.basis?.month.color ?? '#2563eb', 2)
+        : null
     breadthSeries = charts.breadth ? addLineSeries(charts.breadth, quantDataset.value.breadth?.color ?? '#0ea5e9', 2) : null
     breadthCountSeries = charts.breadth ? addLineSeries(charts.breadth, '#f97316', 2, 'left') : null
-    vixSeries = charts.vix ? addLineSeries(charts.vix, quantDataset.value.vix?.color ?? '#7c3aed', 2) : null
-    usVixSeries = charts.usVix ? addLineSeries(charts.usVix, quantDataset.value.usVix?.color ?? '#b45309', 2) : null
+    vixSeries = charts.vix ? addVixCandles(charts.vix) : null
+    usVixSeries = charts.usVix ? addVixCandles(charts.usVix) : null
     usFearGreedSeries = charts.usFearGreed ? addLineSeries(charts.usFearGreed, quantDataset.value.usFearGreed?.color ?? '#dc2626', 2) : null
     usHedgeSeries = charts.usHedge ? addLineSeries(charts.usHedge, quantDataset.value.usHedgeProxy?.color ?? '#0f766e', 2) : null
+    usPutCallSeries = charts.usPutCall ? addLineSeries(charts.usPutCall, usPutCallMetricConfig[activeUsPutCallKey.value].color, 2) : null
+    usTreasurySpread10y2ySeries = charts.usTreasury
+      ? addLineSeries(charts.usTreasury, quantDataset.value.usTreasuryYield?.spread10y2y.color ?? '#2563eb', 2)
+      : null
+    usTreasurySpread10y3mSeries = charts.usTreasury
+      ? addLineSeries(charts.usTreasury, quantDataset.value.usTreasuryYield?.spread10y3m.color ?? '#f97316', 2)
+      : null
+    usCreditSeries = charts.usCredit ? addLineSeries(charts.usCredit, usCreditMetricConfig[activeUsCreditKey.value].color, 2) : null
 
     primarySeriesMap.set('main', mainCandleSeries)
     if (macdDifSeries) primarySeriesMap.set('macd', macdDifSeries)
@@ -1362,6 +1911,9 @@ function renderCharts() {
     if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
     if (usFearGreedSeries) primarySeriesMap.set('usFearGreed', usFearGreedSeries)
     if (usHedgeSeries) primarySeriesMap.set('usHedge', usHedgeSeries)
+    if (usPutCallSeries) primarySeriesMap.set('usPutCall', usPutCallSeries)
+    if (usTreasurySpread10y2ySeries) primarySeriesMap.set('usTreasury', usTreasurySpread10y2ySeries)
+    if (usCreditSeries) primarySeriesMap.set('usCredit', usCreditSeries)
 
     getActivePanelKeys().forEach((panelKey) => {
       const chart = charts[panelKey]
@@ -1378,8 +1930,10 @@ function renderCharts() {
     attachHighlightPrimitive(rsiSeries)
     if (props.supportsAuxiliaryPanels) {
       attachHighlightPrimitive(emotionSeries)
-      attachHighlightPrimitive(basisMainSeries)
       attachHighlightPrimitive(breadthSeries)
+    }
+    if (props.supportsBasisPanel) {
+      attachHighlightPrimitive(basisMainSeries, () => [...props.highlightBands, ...basisRollHighlights.value])
     }
     if (props.supportsVixPanel) {
       attachHighlightPrimitive(vixSeries)
@@ -1392,6 +1946,15 @@ function renderCharts() {
     }
     if (props.supportsUsHedgeProxyPanel) {
       attachHighlightPrimitive(usHedgeSeries)
+    }
+    if (props.supportsUsPutCallPanel) {
+      attachHighlightPrimitive(usPutCallSeries)
+    }
+    if (props.supportsUsTreasuryYieldPanel) {
+      attachHighlightPrimitive(usTreasurySpread10y2ySeries)
+    }
+    if (props.supportsUsCreditSpreadPanel) {
+      attachHighlightPrimitive(usCreditSeries)
     }
 
     updateAllSeries()
@@ -1437,6 +2000,10 @@ function disposeCharts() {
   usVixSeries = null
   usFearGreedSeries = null
   usHedgeSeries = null
+  usPutCallSeries = null
+  usTreasurySpread10y2ySeries = null
+  usTreasurySpread10y3mSeries = null
+  usCreditSeries = null
 }
 
 watch(mainCandles, (next, previous) => {
@@ -1491,9 +2058,25 @@ watch(usHedgeSeriesData, () => {
   if (props.supportsUsHedgeProxyPanel) updateAllSeries()
 })
 
+watch(usPutCallSeriesData, () => {
+  if (props.supportsUsPutCallPanel) updateAllSeries()
+})
+
+watch(usTreasurySpread10y2ySeriesData, () => {
+  if (props.supportsUsTreasuryYieldPanel) updateAllSeries()
+})
+
+watch(usTreasurySpread10y3mSeriesData, () => {
+  if (props.supportsUsTreasuryYieldPanel) updateAllSeries()
+})
+
+watch(usCreditSeriesData, () => {
+  if (props.supportsUsCreditSpreadPanel) updateAllSeries()
+})
+
 watch(
   () =>
-    `${props.supportsAuxiliaryPanels}:${props.supportsVixPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}`,
+    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}`,
   async () => {
     await rebuildChartsPreservingRange()
   },
@@ -1505,6 +2088,7 @@ watch(
     hoveredTradeDate.value = null
     shouldResetVisibleRange = true
     lastRequestedHistoryBoundary = null
+    activeBasisKey.value = supportsAdjustedBasisSeries.value ? 'adjusted' : 'main'
   },
 )
 
@@ -1520,9 +2104,22 @@ watch(
 watch(
   () => props.futuresBasisPoints,
   () => {
-    if (props.supportsAuxiliaryPanels) updateAllSeries()
+    if (!supportsAdjustedBasisSeries.value) {
+      activeBasisKey.value = 'main'
+    } else if (activeBasisKey.value !== 'main') {
+      activeBasisKey.value = 'adjusted'
+    }
+    if (props.supportsBasisPanel) updateAllSeries()
+    syncHighlightBindings()
   },
   { deep: true },
+)
+
+watch(
+  () => activeBasisKey.value,
+  () => {
+    if (props.supportsBasisPanel) updateAllSeries()
+  },
 )
 
 watch(
@@ -1626,7 +2223,7 @@ onBeforeUnmount(() => {
 
     <div v-if="isSubPanelVisible('emotion')" class="quant-panel"><div class="quant-panel-head"><h3>情绪指标</h3><div class="quant-legend"><span v-for="item in emotionLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="emotionLoading" class="muted">情绪指标加载中...</p><p v-else-if="emotionErrorMessage" class="error">{{ emotionErrorMessage }}</p><div ref="emotionContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
-    <div v-if="isSubPanelVisible('basis')" class="quant-panel"><div class="quant-panel-head"><h3>期现差</h3><div class="quant-legend"><span v-for="item in basisLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="futuresBasisLoading" class="muted">期现差指标加载中...</p><p v-else-if="futuresBasisErrorMessage" class="error">{{ futuresBasisErrorMessage }}</p><div ref="basisContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('basis')" class="quant-panel"><div class="quant-panel-head"><h3>期现差</h3><div class="quant-legend"><button v-for="item in basisLegend" :key="item.label" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectBasisMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="futuresBasisLoading" class="muted">期现差指标加载中...</p><p v-else-if="futuresBasisErrorMessage" class="error">{{ futuresBasisErrorMessage }}</p><div ref="basisContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
     <div v-if="isSubPanelVisible('breadth')" class="quant-panel"><div class="quant-panel-head"><h3>涨跌家数</h3><div class="quant-legend"><span v-for="item in breadthLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="breadthLoading" class="muted">涨跌家数加载中...</p><p v-else-if="breadthErrorMessage" class="error">{{ breadthErrorMessage }}</p><div ref="breadthContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
@@ -1637,6 +2234,9 @@ onBeforeUnmount(() => {
     <div v-if="isSubPanelVisible('usFearGreed')" class="quant-panel"><div class="quant-panel-head"><h3>恐贪指数</h3><div class="quant-legend"><span v-for="item in usFearGreedLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usFearGreedPoints.length" class="muted">当前范围暂无恐贪指数数据</p><div ref="usFearGreedContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
     <div v-if="isSubPanelVisible('usHedge')" class="quant-panel"><div class="quant-panel-head"><h3>对冲基金代理</h3><div class="quant-legend"><span v-for="item in usHedgeLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usHedgeProxyPoints.length" class="muted">当前范围暂无对冲基金代理数据</p><div ref="usHedgeContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('usPutCall')" class="quant-panel"><div class="quant-panel-head"><h3>Put/Call</h3><div class="quant-legend"><button v-for="item in usPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectUsPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!usPutCallPoints.length" class="muted">当前范围暂无 Put/Call 数据</p><div ref="usPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('usTreasury')" class="quant-panel"><div class="quant-panel-head"><h3>美债利差</h3><div class="quant-legend"><span v-for="item in usTreasuryLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usTreasuryYieldPoints.length" class="muted">当前范围暂无美债收益率数据</p><div ref="usTreasuryContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('usCredit')" class="quant-panel"><div class="quant-panel-head"><h3>高收益债利差</h3><div class="quant-legend"><button v-for="item in usCreditLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectUsCreditMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!usCreditSpreadPoints.length" class="muted">当前范围暂无高收益债利差数据</p><div ref="usCreditContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
   </section>
 </template>
 
@@ -1852,6 +2452,23 @@ onBeforeUnmount(() => {
   color: #475569;
   font-size: 12px;
   font-weight: 600;
+}
+
+.quant-legend-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.quant-legend-button.is-muted {
+  color: #94a3b8;
+}
+
+.quant-legend-button:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 3px;
+  border-radius: 999px;
 }
 
 .quant-legend-item i {

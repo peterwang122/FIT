@@ -163,6 +163,25 @@ class Settings(BaseSettings):
     index_us_hedge_proxy_ratio_column: str = "ratio_value"
     index_us_hedge_proxy_release_date_column: str = "release_date"
 
+    index_us_put_call_table_name: str = "index_us_put_call_ratio_daily"
+    index_us_put_call_date_column: str = "trade_date"
+    index_us_put_call_total_column: str = "total_put_call_ratio"
+    index_us_put_call_index_column: str = "index_put_call_ratio"
+    index_us_put_call_equity_column: str = "equity_put_call_ratio"
+    index_us_put_call_etf_column: str = "etf_put_call_ratio"
+
+    index_us_treasury_yield_table_name: str = "index_us_treasury_yield_daily"
+    index_us_treasury_yield_date_column: str = "trade_date"
+    index_us_treasury_yield_3m_column: str = "yield_3m"
+    index_us_treasury_yield_2y_column: str = "yield_2y"
+    index_us_treasury_yield_10y_column: str = "yield_10y"
+    index_us_treasury_yield_spread_10y_2y_column: str = "spread_10y_2y"
+    index_us_treasury_yield_spread_10y_3m_column: str = "spread_10y_3m"
+
+    index_us_credit_spread_table_name: str = "index_us_credit_spread_daily"
+    index_us_credit_spread_date_column: str = "trade_date"
+    index_us_credit_spread_hy_oas_column: str = "high_yield_oas"
+
     forex_basic_info_table_name: str = "forex_basic_info"
     forex_basic_info_code_column: str = "symbol_code"
     forex_basic_info_name_column: str = "symbol_name"
