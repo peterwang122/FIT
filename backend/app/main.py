@@ -381,6 +381,20 @@ def ensure_runtime_tables() -> None:
                     f"`{settings.stock_code_column}`)"
                 )
             )
+    if (
+        inspector.has_table(settings.stock_table_name)
+        and "idx_stock_daily_source_code_date" not in existing_stock_indexes
+    ):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"ALTER TABLE `{settings.stock_table_name}` "
+                    f"ADD INDEX `idx_stock_daily_source_code_date` "
+                    f"(`{settings.stock_data_source_column}`, "
+                    f"`{settings.stock_code_column}`, "
+                    f"`{settings.stock_date_column}`)"
+                )
+            )
     if "ix_scheduled_task_runs_status" not in existing_task_run_indexes:
         with engine.begin() as connection:
             connection.execute(
@@ -397,6 +411,14 @@ def ensure_runtime_tables() -> None:
             db.query(QuantStrategyConfig)
             .filter(QuantStrategyConfig.owner_user_id.is_(None))
             .update({QuantStrategyConfig.owner_user_id: root_user.id}, synchronize_session=False)
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="stock_exchange_official_daily",
+            name="沪深官网股票日更",
+            schedule_time="18:30",
+            market_scope="cn_stock",
         )
         db.commit()
 
@@ -421,9 +443,7 @@ def _ensure_system_user(db, username: str, password: str, role: str) -> User:
         )
         db.add(item)
         db.commit()
-        db.refresh(item)
-        return item
-
+    db.refresh(item)
     mutated = False
     if item.role != role:
         item.role = role
@@ -447,6 +467,51 @@ def _ensure_system_user(db, username: str, password: str, role: str) -> User:
         db.add(item)
         db.commit()
         db.refresh(item)
+    return item
+
+
+def _ensure_default_collection_task(
+    db,
+    owner: User,
+    *,
+    collector_key: str,
+    name: str,
+    schedule_time: str,
+    market_scope: str = "cn_stock",
+) -> ScheduledTask:
+    existing_items = (
+        db.query(ScheduledTask)
+        .filter(
+            ScheduledTask.owner_user_id == owner.id,
+            ScheduledTask.task_type == "collection",
+            ScheduledTask.market_scope == market_scope,
+        )
+        .all()
+    )
+    for item in existing_items:
+        if str((item.config_json or {}).get("collector_key") or "").strip().lower() == collector_key:
+            return item
+
+    item = ScheduledTask(
+        owner_user_id=owner.id,
+        task_type="collection",
+        market_scope=market_scope,
+        name=name,
+        enabled=True,
+        schedule_time=schedule_time,
+        config_json={
+            "collector_key": collector_key,
+            "target_type": None,
+            "target_code": "",
+            "target_name": "",
+        },
+        last_run_status="",
+        last_run_summary="",
+        last_error_message="",
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
     return item
 
 

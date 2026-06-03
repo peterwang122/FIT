@@ -49,6 +49,7 @@ type QuantFormState = {
 
 type QuantFormErrors = Partial<Record<keyof QuantFormState, string>>
 type QuantFilterColor = 'blue' | 'red'
+type RuleHitDisplayFilter = 'all' | `blue:${number}` | `red:${number}`
 
 const FILTER_COLORS: QuantFilterColor[] = ['blue', 'red']
 const DEFAULT_PARAMS: QuantIndicatorParams = {
@@ -347,10 +348,42 @@ const blueRuleValidation = computed(() => normalizeRuleGroups(blueRuleDrafts.val
 const redRuleValidation = computed(() => normalizeRuleGroups(redRuleDrafts.value, STOCK_QUANT_FILTER_FIELD_KEYS))
 const canApplyParams = computed(() => Boolean(validation.value.params) && !loading.value)
 
+const ruleHitDisplayFilter = ref<RuleHitDisplayFilter>('all')
+const ruleHitDisplayOptions = computed<Array<{ value: RuleHitDisplayFilter; label: string }>>(() => [
+  { value: 'all', label: '全部' },
+  ...appliedBlueFilterGroups.value.map((_group, index) => ({
+    value: `blue:${index + 1}` as RuleHitDisplayFilter,
+    label: `蓝 ${index + 1}`,
+  })),
+  ...appliedRedFilterGroups.value.map((_group, index) => ({
+    value: `red:${index + 1}` as RuleHitDisplayFilter,
+    label: `红 ${index + 1}`,
+  })),
+])
+
+function resetRuleHitDisplayFilter() {
+  ruleHitDisplayFilter.value = 'all'
+}
+
+function selectedRuleHitGroup(color: QuantFilterColor) {
+  const [selectedColor, selectedGroup] = ruleHitDisplayFilter.value.split(':')
+  if (selectedColor !== color) return null
+  const parsed = Number(selectedGroup)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function filterHitGroupsByDisplay(color: QuantFilterColor, groups: number[]) {
+  if (ruleHitDisplayFilter.value === 'all') return groups
+  const selectedGroup = selectedRuleHitGroup(color)
+  return selectedGroup !== null && groups.includes(selectedGroup) ? [selectedGroup] : []
+}
+
 const highlightBands = computed<QuantHighlightBand[]>(() => {
   return quantFilterDataset.value.snapshots.reduce<QuantHighlightBand[]>((bands, snapshot) => {
-    const blueHitGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value)
-    const redHitGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value)
+    const matchedBlueGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value)
+    const matchedRedGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value)
+    const blueHitGroups = filterHitGroupsByDisplay('blue', matchedBlueGroups)
+    const redHitGroups = filterHitGroupsByDisplay('red', matchedRedGroups)
     const isBlue = blueHitGroups.length > 0
     const isRed = redHitGroups.length > 0
     const variant = blueHitGroups.length > 1 || redHitGroups.length > 1 ? 'striped' : 'solid'
@@ -364,6 +397,12 @@ const highlightBands = computed<QuantHighlightBand[]>(() => {
     }
     return bands
   }, [])
+})
+
+watch(ruleHitDisplayOptions, (options) => {
+  if (!options.some((option) => option.value === ruleHitDisplayFilter.value)) {
+    resetRuleHitDisplayFilter()
+  }
 })
 
 const highlightSummary = computed(() => ({
@@ -516,6 +555,7 @@ function applyFilters() {
   if (!canApplyFilters.value) return
   appliedBlueFilterGroups.value = blueRuleValidation.value.groups
   appliedRedFilterGroups.value = redRuleValidation.value.groups
+  resetRuleHitDisplayFilter()
 }
 
 function clearFilters() {
@@ -523,6 +563,7 @@ function clearFilters() {
   redRuleDrafts.value = []
   appliedBlueFilterGroups.value = []
   appliedRedFilterGroups.value = []
+  resetRuleHitDisplayFilter()
 }
 
 async function saveStrategy() {
@@ -669,6 +710,7 @@ function applyStrategyConfig(strategy: QuantStrategyConfig) {
   redRuleDrafts.value = deserializeRuleGroups(redGroups)
   appliedBlueFilterGroups.value = blueGroups
   appliedRedFilterGroups.value = redGroups
+  resetRuleHitDisplayFilter()
   saveName.value = strategy.name
   loadedStrategyId.value = strategy.id
   showParamsModal.value = false
@@ -882,6 +924,14 @@ onBeforeUnmount(() => {
         </div>
 
         <p class="quant-filter-hint muted">股票筛选支持 MA、换手率、RSI、BOLL、MACD、KDJ、WR；规则组内全部满足，满足任一规则组即命中颜色。</p>
+        <label class="quant-hit-display-control">
+          <span>命中显示</span>
+          <select v-model="ruleHitDisplayFilter" class="input">
+            <option v-for="option in ruleHitDisplayOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
 
         <div class="quant-filter-sections">
           <QuantRuleGroupBuilder

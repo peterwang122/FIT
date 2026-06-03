@@ -7,6 +7,7 @@ export type TaskMarketScope = 'cn_stock' | 'hk_index' | 'us_index'
 export type CollectionCollectorKey =
   | 'stock_hfq_single'
   | 'stock_daily'
+  | 'stock_exchange_official_daily'
   | 'index_cn_daily'
   | 'index_bj50_daily'
   | 'cffex_daily'
@@ -23,6 +24,7 @@ export type CollectionCollectorKey =
   | 'us_index_futures_official_daily'
   | 'index_qvix_daily'
   | 'index_news_sentiment_daily'
+  | 'excel_emotion_import'
   | 'index_us_vix_daily'
   | 'index_us_fear_greed_daily'
   | 'index_us_hedge_proxy_daily'
@@ -38,6 +40,7 @@ export interface ScheduledTask {
   market_scope: TaskMarketScope
   collector_key: CollectionCollectorKey | null
   collection_label: string | null
+  manual_only: boolean
   name: string
   enabled: boolean
   schedule_time: string

@@ -368,6 +368,7 @@ def test_execute_collection_task_routes_legacy_us_vix_to_daily_endpoint():
         last_error_message="",
     )
     service = TaskService(_FakeSession(tasks=[task]))
+    service._validate_collection_result = lambda *_args, **_kwargs: ""
     calls = []
 
     original_daily = task_service_module.run_daily_collection_request
@@ -401,6 +402,7 @@ def test_execute_collection_task_routes_legacy_us_vix_to_daily_endpoint():
             {
                 "collector_key": "index_us_vix_daily",
                 "endpoint": "/collect-index-us-vix-daily",
+                "payload": None,
             },
         )
     ]
@@ -421,6 +423,7 @@ def test_execute_collection_task_routes_bj50_daily_to_dedicated_endpoint():
         last_error_message="",
     )
     service = TaskService(_FakeSession(tasks=[task]))
+    service._validate_collection_result = lambda *_args, **_kwargs: ""
     calls = []
 
     original_daily = task_service_module.run_daily_collection_request
@@ -454,6 +457,7 @@ def test_execute_collection_task_routes_bj50_daily_to_dedicated_endpoint():
             {
                 "collector_key": "index_bj50_daily",
                 "endpoint": "/collect-index-bj50-daily",
+                "payload": None,
             },
         )
     ]
@@ -474,6 +478,7 @@ def test_execute_collection_task_routes_index_futures_daily_to_dedicated_endpoin
         last_error_message="",
     )
     service = TaskService(_FakeSession(tasks=[task]))
+    service._validate_collection_result = lambda *_args, **_kwargs: ""
     calls = []
 
     original_daily = task_service_module.run_daily_collection_request
@@ -507,6 +512,7 @@ def test_execute_collection_task_routes_index_futures_daily_to_dedicated_endpoin
             {
                 "collector_key": "us_index_futures_daily",
                 "endpoint": "/collect-us-index-futures-daily",
+                "payload": None,
             },
         )
     ]

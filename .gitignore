@@ -7,4 +7,5 @@ frontend/tsconfig.tsbuildinfo
 .env
 backend/.env
 backend/celerybeat-schedule*
+runtime/
 .DS_Store

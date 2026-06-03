@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import {
@@ -18,9 +18,13 @@ import {
 import KlineChart from '../components/KlineChart.vue'
 import QuantSequenceRuleBuilder from '../components/QuantSequenceRuleBuilder.vue'
 import type {
+  QuantChartOverlayLine,
   QuantHighlightBand,
   QuantIndicatorParams,
+  QuantRuleOperator,
+  QuantScanBoardFilter,
   QuantScanEvent,
+  QuantScanSellTriggerTarget,
   QuantScanTradeConfig,
   QuantSequenceGroupDraft,
   QuantSequenceMode,
@@ -35,6 +39,7 @@ import {
   buildSequenceSnapshots,
   createEmptySequenceGroupDraft,
   deserializeSequenceGroups,
+  isMaBiasSequenceSeries,
   normalizeSequenceGroups,
 } from '../utils/quantSequence'
 
@@ -54,6 +59,14 @@ const DEFAULT_SCAN_TRADE_CONFIG: QuantScanTradeConfig = {
   sell_offset_trading_days: 2,
   buy_price_basis: 'open',
   sell_price_basis: 'open',
+  sell_trigger: null,
+  board_filters: [],
+}
+
+const DEFAULT_SCAN_SELL_TRIGGER = {
+  enabled: true,
+  operator: 'lt' as QuantRuleOperator,
+  target: 'ma-1' as QuantScanSellTriggerTarget,
 }
 
 const route = useRoute()
@@ -98,12 +111,14 @@ const scanSymbolCode = ref('')
 const scanSymbolName = ref('')
 const scanCandles = ref<KlineCandle[]>([])
 const scanHitDates = ref<string[]>([])
+const scanSellTriggerDates = ref<string[]>([])
 const suppressTargetReset = ref(false)
 const scanPreviewController = ref<AbortController | null>(null)
 const scanPageController = ref<AbortController | null>(null)
 const scanTargetHitsController = ref<AbortController | null>(null)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 let latestSearchRequestId = 0
+let latestHydrateRequestId = 0
 
 const modeOptions = [
   { value: 'single_target', label: '单标的' },
@@ -121,14 +136,112 @@ const scanTargetTypeOptions = [
   { value: 'etf', label: '全市场 ETF' },
 ] as const
 
+const scanBoardFilterOptions: Array<{ value: QuantScanBoardFilter; label: string }> = [
+  { value: 'main', label: '主板' },
+  { value: 'chinext', label: '创业板' },
+  { value: 'star', label: '科创板' },
+  { value: 'bse', label: '北交所' },
+]
+
+const scanIndicatorParams = ref<QuantIndicatorParams>({
+  ma: { periods: [...DEFAULT_INDICATOR_PARAMS.ma.periods] as [number, number, number, number] },
+  macd: { ...DEFAULT_INDICATOR_PARAMS.macd },
+  kdj: { ...DEFAULT_INDICATOR_PARAMS.kdj },
+  wr: { ...DEFAULT_INDICATOR_PARAMS.wr },
+  rsi: { ...DEFAULT_INDICATOR_PARAMS.rsi },
+  boll: { ...DEFAULT_INDICATOR_PARAMS.boll },
+})
+
+const scanSellTriggerOperatorOptions: Array<{ value: QuantRuleOperator; label: string }> = [
+  { value: 'lt', label: '低于' },
+  { value: 'gt', label: '高于' },
+]
+
+const scanSellTriggerTargetOptions = computed<Array<{ value: QuantScanSellTriggerTarget; label: string }>>(() => [
+  { value: 'ma-1', label: `MA${scanIndicatorParams.value.ma.periods[0]}` },
+  { value: 'ma-2', label: `MA${scanIndicatorParams.value.ma.periods[1]}` },
+  { value: 'ma-3', label: `MA${scanIndicatorParams.value.ma.periods[2]}` },
+  { value: 'ma-4', label: `MA${scanIndicatorParams.value.ma.periods[3]}` },
+  { value: 'boll-upper', label: 'BOLL 上轨' },
+  { value: 'boll-middle', label: 'BOLL 中轨' },
+  { value: 'boll-lower', label: 'BOLL 下轨' },
+])
+
+const scanSellTriggerTargetLabelMap = computed<Record<QuantScanSellTriggerTarget, string>>(
+  () =>
+    scanSellTriggerTargetOptions.value.reduce(
+      (result, option) => ({ ...result, [option.value]: option.label }),
+      {} as Record<QuantScanSellTriggerTarget, string>,
+    ),
+)
+
 const cloneJson = <T,>(value: T) => JSON.parse(JSON.stringify(value)) as T
 const getErrorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : '加载失败')
 const cloneIndicatorParams = (params?: QuantIndicatorParams | null) =>
   params ? cloneJson(params) : cloneJson(DEFAULT_INDICATOR_PARAMS)
-const cloneScanTradeConfig = (config?: Partial<QuantScanTradeConfig> | null): QuantScanTradeConfig => ({
-  ...DEFAULT_SCAN_TRADE_CONFIG,
-  ...(config ?? {}),
-})
+const normalizeScanMaPeriod = (value: unknown, fallback: number) => {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+function updateScanMaPeriod(index: number, value: unknown) {
+  const periods = [...scanIndicatorParams.value.ma.periods] as [number, number, number, number]
+  periods[index] = normalizeScanMaPeriod(value, DEFAULT_INDICATOR_PARAMS.ma.periods[index])
+  scanIndicatorParams.value = {
+    ...scanIndicatorParams.value,
+    ma: { periods },
+  }
+}
+function calculateSma(values: number[], period: number) {
+  const result: Array<number | null> = Array(values.length).fill(null)
+  let rollingSum = 0
+  values.forEach((value, index) => {
+    rollingSum += value
+    if (index >= period) rollingSum -= values[index - period]
+    if (index >= period - 1) result[index] = rollingSum / period
+  })
+  return result
+}
+function calculateStd(values: number[], period: number, means: Array<number | null>) {
+  const result: Array<number | null> = Array(values.length).fill(null)
+  for (let index = period - 1; index < values.length; index += 1) {
+    const mean = means[index]
+    if (mean === null) continue
+    const start = index - period + 1
+    const variance = values.slice(start, index + 1).reduce((sum, value) => sum + (value - mean) ** 2, 0) / period
+    result[index] = Math.sqrt(variance)
+  }
+  return result
+}
+function buildOverlayData(candles: KlineCandle[], values: Array<number | null>) {
+  return candles.map((item, index) => ({
+    time: item.trade_date,
+    value: values[index],
+  }))
+}
+const cloneScanSellTrigger = (trigger?: QuantScanTradeConfig['sell_trigger']) =>
+  trigger?.enabled
+    ? {
+        ...DEFAULT_SCAN_SELL_TRIGGER,
+        ...cloneJson(trigger),
+        enabled: true,
+      }
+    : null
+const cloneScanTradeConfig = (config?: Partial<QuantScanTradeConfig> | null): QuantScanTradeConfig => {
+  const cloned = {
+    ...DEFAULT_SCAN_TRADE_CONFIG,
+    ...(config ?? {}),
+  }
+  const boardFilters = Array.isArray(config?.board_filters)
+    ? config.board_filters.filter((item): item is QuantScanBoardFilter =>
+        scanBoardFilterOptions.some((option) => option.value === item),
+      )
+    : []
+  return {
+    ...cloned,
+    sell_trigger: cloneScanSellTrigger(config?.sell_trigger),
+    board_filters: boardFilters,
+  }
+}
 
 const getStrategyIdFromRoute = () => {
   const raw = Array.isArray(route.query.strategyId) ? route.query.strategyId[0] : route.query.strategyId
@@ -184,7 +297,7 @@ function pickTarget(option: QuantTargetOption) {
 
 async function loadSingleTargetKline() {
   if (!selectedCode.value) {
-    error.value = '璇峰厛閫夋嫨鐩爣'
+    error.value = '请先选择目标'
     return false
   }
   loading.value = true
@@ -221,6 +334,7 @@ function resetScanPreviewState() {
   scanPreviewEvents.value = []
   selectedScanEventId.value = null
   scanHitDates.value = []
+  scanSellTriggerDates.value = []
   scanCandles.value = []
   scanSymbolCode.value = ''
   scanSymbolName.value = ''
@@ -265,6 +379,7 @@ async function loadScanEventChart(event: QuantScanEvent | null) {
 async function loadScanTargetHits(event: QuantScanEvent | null) {
   if (!event || !scanResultId.value) {
     scanHitDates.value = []
+    scanSellTriggerDates.value = []
     return
   }
   scanTargetHitsController.value?.abort()
@@ -273,10 +388,12 @@ async function loadScanTargetHits(event: QuantScanEvent | null) {
   try {
     const result = await fetchQuantSequenceScanTargetHits(scanResultId.value, event.target_code, { signal: controller.signal })
     scanHitDates.value = result.hit_dates
+    scanSellTriggerDates.value = result.sell_trigger_dates ?? []
   } catch (cause) {
     if ((cause as { name?: string }).name !== 'CanceledError') {
       error.value = getErrorMessage(cause)
       scanHitDates.value = []
+      scanSellTriggerDates.value = []
     }
   } finally {
     if (scanTargetHitsController.value === controller) scanTargetHitsController.value = null
@@ -317,20 +434,142 @@ async function loadScanEventsPage(page: number) {
 
 const buyValidation = computed(() => normalizeSequenceGroups(buyRuleDrafts.value))
 const sellValidation = computed(() => normalizeSequenceGroups(sellRuleDrafts.value))
-const singleTargetSnapshots = computed(() => buildSequenceSnapshots(candles.value, breadthPoints.value))
+const activeIndicatorParams = computed(() => cloneIndicatorParams(scanIndicatorParams.value))
+const scanSellTriggerEnabled = computed({
+  get: () => Boolean(scanTradeConfig.value.sell_trigger?.enabled),
+  set: (enabled: boolean) => {
+    scanTradeConfig.value = {
+      ...scanTradeConfig.value,
+      sell_trigger: enabled ? cloneScanSellTrigger(scanTradeConfig.value.sell_trigger) ?? cloneJson(DEFAULT_SCAN_SELL_TRIGGER) : null,
+    }
+  },
+})
+const scanSellTriggerOperator = computed({
+  get: () => scanTradeConfig.value.sell_trigger?.operator ?? DEFAULT_SCAN_SELL_TRIGGER.operator,
+  set: (operator: QuantRuleOperator) => {
+    scanTradeConfig.value = {
+      ...scanTradeConfig.value,
+      sell_trigger: {
+        ...DEFAULT_SCAN_SELL_TRIGGER,
+        ...(scanTradeConfig.value.sell_trigger ?? {}),
+        enabled: true,
+        operator,
+      },
+    }
+  },
+})
+const scanSellTriggerTarget = computed({
+  get: () => scanTradeConfig.value.sell_trigger?.target ?? DEFAULT_SCAN_SELL_TRIGGER.target,
+  set: (target: QuantScanSellTriggerTarget) => {
+    scanTradeConfig.value = {
+      ...scanTradeConfig.value,
+      sell_trigger: {
+        ...DEFAULT_SCAN_SELL_TRIGGER,
+        ...(scanTradeConfig.value.sell_trigger ?? {}),
+        enabled: true,
+        target,
+      },
+    }
+  },
+})
+const scanSellTriggerLabel = computed(() => {
+  const trigger = scanTradeConfig.value.sell_trigger
+  if (!trigger?.enabled) return '未启用卖出触发条件'
+  const operatorLabel = trigger.operator === 'gt' ? '高于' : '低于'
+  return `收盘价${operatorLabel}${scanSellTriggerTargetLabelMap.value[trigger.target] ?? trigger.target}`
+})
+const supportsMaBiasConditions = computed(() => targetType.value === 'stock' || targetType.value === 'etf')
+const singleTargetSnapshots = computed(() =>
+  buildSequenceSnapshots(candles.value, breadthPoints.value, activeIndicatorParams.value.ma.periods),
+)
 const singleTargetHighlightBands = computed<QuantHighlightBand[]>(() =>
   buildSequenceHighlightBands(singleTargetSnapshots.value, buyValidation.value.groups, sellValidation.value.groups),
 )
 const selectedScanEvent = computed(() => scanPreviewEvents.value.find((item) => item.event_id === selectedScanEventId.value) ?? null)
-const scanHighlightBands = computed<QuantHighlightBand[]>(() =>
-  scanHitDates.value.map((tradeDate) => ({
-    tradeDate,
-    color: 'red',
-    variant: selectedScanEvent.value?.signal_date === tradeDate ? 'striped' : 'solid',
-  })),
-)
+const scanHighlightBands = computed<QuantHighlightBand[]>(() => {
+  const dateMap = new Map<string, { buy: boolean; sell: boolean }>()
+  for (const tradeDate of scanHitDates.value) {
+    dateMap.set(tradeDate, { ...(dateMap.get(tradeDate) ?? { buy: false, sell: false }), buy: true })
+  }
+  for (const tradeDate of scanSellTriggerDates.value) {
+    dateMap.set(tradeDate, { ...(dateMap.get(tradeDate) ?? { buy: false, sell: false }), sell: true })
+  }
+  return [...dateMap.entries()]
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([tradeDate, flags]) => ({
+      tradeDate,
+      color: (flags.buy && flags.sell ? 'purple' : flags.sell ? 'red' : 'blue') as QuantHighlightBand['color'],
+      variant:
+        selectedScanEvent.value?.signal_date === tradeDate || selectedScanEvent.value?.sell_trigger_date === tradeDate
+          ? 'striped'
+          : 'solid',
+    }))
+})
 const activeCandles = computed(() => (sequenceMode.value === 'market_scan' ? scanCandles.value : candles.value))
 const activeHighlightBands = computed(() => (sequenceMode.value === 'market_scan' ? scanHighlightBands.value : singleTargetHighlightBands.value))
+function collectMaBiasIndexes(groups: QuantSequenceGroupDraft[]) {
+  const indexes = new Set<number>()
+  for (const group of groups) {
+    for (const condition of group.conditions) {
+      if (!isMaBiasSequenceSeries(condition.series_key)) continue
+      const parts = condition.series_key.split('-')
+      const index = Number(parts[parts.length - 1]) - 1
+      if (Number.isInteger(index) && index >= 0 && index < 4) indexes.add(index)
+    }
+  }
+  return indexes
+}
+
+const activeMaOverlayIndexes = computed(() => {
+  const indexes = collectMaBiasIndexes(buyRuleDrafts.value)
+  if (sequenceMode.value === 'single_target') {
+    collectMaBiasIndexes(sellRuleDrafts.value).forEach((index) => indexes.add(index))
+  }
+  const triggerTarget = scanTradeConfig.value.sell_trigger?.target
+  if (sequenceMode.value === 'market_scan' && scanSellTriggerEnabled.value && triggerTarget?.startsWith('ma-')) {
+    const index = Number(triggerTarget.split('-')[1]) - 1
+    if (Number.isInteger(index) && index >= 0 && index < 4) indexes.add(index)
+  }
+  return [...indexes].sort((left, right) => left - right)
+})
+
+const activeOverlayLines = computed<QuantChartOverlayLine[]>(() => {
+  if (!activeCandles.value.length) return []
+  const sortedCandles = [...activeCandles.value].sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+  const closes = sortedCandles.map((item) => Number(item.close))
+  if (closes.some((value) => !Number.isFinite(value))) return []
+
+  const lines: QuantChartOverlayLine[] = []
+  const maColors = ['#2563eb', '#f97316', '#8b5cf6', '#0f766e']
+  for (const maIndex of activeMaOverlayIndexes.value) {
+    const period = scanIndicatorParams.value.ma.periods[maIndex] ?? DEFAULT_INDICATOR_PARAMS.ma.periods[maIndex]
+    lines.push({
+      key: `condition-ma-${maIndex + 1}-${period}`,
+      label: `MA${period}`,
+      color: maColors[maIndex] ?? '#f59e0b',
+      data: buildOverlayData(sortedCandles, calculateSma(closes, period)),
+    })
+  }
+
+  if (sequenceMode.value !== 'market_scan' || !scanSellTriggerEnabled.value) return lines
+  const target = scanSellTriggerTarget.value
+  if (target.startsWith('ma-')) {
+    return lines
+  }
+
+  const period = scanIndicatorParams.value.boll.period
+  const multiplier = scanIndicatorParams.value.boll.multiplier
+  const middle = calculateSma(closes, period)
+  const std = calculateStd(closes, period, middle)
+  const upper = middle.map((value, index) => (value === null || std[index] === null ? null : value + multiplier * Number(std[index])))
+  const lower = middle.map((value, index) => (value === null || std[index] === null ? null : value - multiplier * Number(std[index])))
+  lines.push(
+    { key: 'sell-trigger-boll-upper', label: 'BOLL 上轨', color: '#8b5cf6', data: buildOverlayData(sortedCandles, upper) },
+    { key: 'sell-trigger-boll-middle', label: 'BOLL 中轨', color: '#64748b', data: buildOverlayData(sortedCandles, middle) },
+    { key: 'sell-trigger-boll-lower', label: 'BOLL 下轨', color: '#14b8a6', data: buildOverlayData(sortedCandles, lower) },
+  )
+  return lines
+})
 const activeSymbolCode = computed(() => (sequenceMode.value === 'market_scan' ? scanSymbolCode.value : selectedCode.value))
 const activeSymbolName = computed(() =>
   sequenceMode.value === 'market_scan' ? scanSymbolName.value || '全市场扫描预览' : selectedName.value || '条件策略',
@@ -418,7 +657,7 @@ function buildPayload(name: string): QuantStrategyPayload {
     notes: base?.notes ?? '',
     strategy_engine: 'sequence' as const,
     strategy_type: targetType.value,
-    indicator_params: cloneIndicatorParams(base?.indicator_params),
+    indicator_params: activeIndicatorParams.value,
     buy_sequence_groups: buyValidation.value.groups,
     blue_filter_groups: [],
     red_filter_groups: [],
@@ -500,6 +739,7 @@ async function saveStrategy(createNew: boolean) {
     scanStartDate.value = result.scan_start_date ?? ''
     scanEndDate.value = result.scan_end_date ?? ''
     scanTradeConfig.value = cloneScanTradeConfig(result.scan_trade_config)
+    scanIndicatorParams.value = cloneIndicatorParams(result.indicator_params)
     saveMessage.value = `${isCreate ? '已保存策略' : '已更新策略'}：${result.name}`
   } catch (cause) {
     saveError.value = getErrorMessage(cause)
@@ -539,6 +779,7 @@ async function executeMarketScan() {
     const result = await previewQuantSequenceScan(
       {
         strategy_type: targetType.value,
+        indicator_params: activeIndicatorParams.value,
         buy_sequence_groups: buyValidation.value.groups,
         scan_trade_config: scanTradeConfig.value,
         scan_start_date: scanStartDate.value,
@@ -555,6 +796,7 @@ async function executeMarketScan() {
       await loadScanEventChart(first)
     } else {
       scanHitDates.value = []
+      scanSellTriggerDates.value = []
       await loadScanEventChart(null)
     }
   } catch (cause) {
@@ -573,7 +815,6 @@ async function executeMarketScan() {
 }
 
 function applyLoadedStrategy(strategy: QuantStrategyConfig) {
-  suppressTargetReset.value = true
   loadedStrategyId.value = strategy.id
   loadedStrategyBase.value = strategy
   saveName.value = strategy.name
@@ -581,6 +822,7 @@ function applyLoadedStrategy(strategy: QuantStrategyConfig) {
   scanStartDate.value = strategy.scan_start_date ?? ''
   scanEndDate.value = strategy.scan_end_date ?? ''
   scanTradeConfig.value = cloneScanTradeConfig(strategy.scan_trade_config)
+  scanIndicatorParams.value = cloneIndicatorParams(strategy.indicator_params)
   sequenceMode.value = strategy.sequence_mode ?? 'single_target'
   targetType.value = strategy.strategy_type
   buyRuleDrafts.value = deserializeSequenceGroups(strategy.buy_sequence_groups)
@@ -594,30 +836,40 @@ function applyLoadedStrategy(strategy: QuantStrategyConfig) {
     selectedName.value = ''
     targetKeyword.value = ''
   }
-  suppressTargetReset.value = false
 }
 
 async function hydrateStrategyFromRoute() {
   const strategyId = getStrategyIdFromRoute()
   if (!strategyId) return
+  const requestId = ++latestHydrateRequestId
+  suppressTargetReset.value = true
   strategyLoadMessage.value = ''
   error.value = ''
   saveError.value = ''
   try {
     const strategy = await fetchQuantStrategy(strategyId)
+    if (requestId !== latestHydrateRequestId) return
     if (strategy.strategy_engine !== 'sequence') {
       error.value = '当前策略不是条件策略，无法加载到条件策略页面'
       return
     }
     applyLoadedStrategy(strategy)
+    await nextTick()
+    if (requestId !== latestHydrateRequestId) return
     if (sequenceMode.value === 'market_scan') await executeMarketScan()
     else {
       const ok = await loadSingleTargetKline()
       if (!ok) return
     }
+    if (requestId !== latestHydrateRequestId) return
     strategyLoadMessage.value = `已加载条件策略：${strategy.name}`
   } catch (cause) {
-    error.value = getErrorMessage(cause)
+    if (requestId === latestHydrateRequestId) error.value = getErrorMessage(cause)
+  } finally {
+    if (requestId === latestHydrateRequestId) {
+      await nextTick()
+      suppressTargetReset.value = false
+    }
   }
 }
 
@@ -652,15 +904,15 @@ watch(targetType, () => {
 })
 
 watch(
-  () => route.query.strategyId,
+  () => route.fullPath,
   (value, previousValue) => {
     if (value !== previousValue) void hydrateStrategyFromRoute()
   },
+  { immediate: true },
 )
 
 onMounted(async () => {
   await ensureBreadthLoaded()
-  await hydrateStrategyFromRoute()
 })
 
 onBeforeUnmount(() => {
@@ -780,6 +1032,7 @@ onBeforeUnmount(() => {
           v-if="activeCandles.length"
           :candles="activeCandles"
           :highlight-bands="activeHighlightBands"
+          :overlay-lines="activeOverlayLines"
           :symbol-name="activeSymbolName"
           :symbol-code="activeSymbolCode"
           :default-visible-days="120"
@@ -800,6 +1053,9 @@ onBeforeUnmount(() => {
           <div class="progress-section-copy">
             <h3>命中事件</h3>
             <p class='muted'>点击事件后，下方图表会切到对应标的，并把该标的的全部命中日期标出来。</p>
+            <p v-if="scanSellTriggerEnabled" class="muted">
+              卖出触发：{{ scanSellTriggerLabel }}；红色标注为卖出条件命中日，结算价格在策略回测页选择。
+            </p>
           </div>
         </div>
 
@@ -814,11 +1070,14 @@ onBeforeUnmount(() => {
           >
             <div class="quant-scan-event-main">
               <strong>{{ event.target_name }}（{{ event.target_code }}）</strong>
-              <span>{{ event.signal_date }} 鍛戒腑</span>
+              <span>{{ event.signal_date }} 命中</span>
             </div>
             <div class="quant-scan-event-meta">
               <span>买入：{{ event.buy_date ?? '-' }}</span>
               <span>卖出：{{ event.sell_date ?? '-' }}</span>
+              <span v-if="scanSellTriggerEnabled">卖出条件：{{ scanSellTriggerLabel }}</span>
+              <span v-if="event.sell_trigger_date">卖出条件命中：{{ event.sell_trigger_date }}</span>
+              <span v-else-if="event.sell_reason === 'fallback_end'">未命中，结束日收盘结算</span>
               <span>{{ event.tradable ? '可回测' : event.disabled_reason || '不可回测' }}</span>
             </div>
           </button>
@@ -842,16 +1101,43 @@ onBeforeUnmount(() => {
             <p class="muted">
               {{
                 sequenceMode === 'market_scan'
-                  ? '这里只定义哪些日期算命中，不在这里配置回测买卖执行参数。'
+                  ? '这里定义扫描入场条件和卖出触发条件；组合资金参数在策略回测页调整。'
                   : '单标的模式支持买卖两套规则，组内 AND，组间 OR。'
               }}
             </p>
           </div>
         </div>
 
+        <section v-if="supportsMaBiasConditions" class="quant-sequence-ma-config">
+          <div class="quant-scan-sell-trigger-head">
+            <strong>MA 周期</strong>
+            <span>用于 MA 乖离条件和图表均线</span>
+          </div>
+          <div class="quant-scan-ma-period-grid">
+            <label
+              v-for="(_period, index) in scanIndicatorParams.ma.periods"
+              :key="`sequence-ma-${index}`"
+              class="quant-field quant-field-compact"
+            >
+              <span class="quant-field-label">MA{{ index + 1 }} 周期</span>
+              <input
+                class="input"
+                type="number"
+                min="1"
+                step="1"
+                :value="scanIndicatorParams.ma.periods[index]"
+                @change="updateScanMaPeriod(index, ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+          </div>
+        </section>
+
         <div class="quant-filter-sections">
           <QuantSequenceRuleBuilder
             side="buy"
+            :mode="sequenceMode"
+            :target-type="targetType"
+            :ma-periods="scanIndicatorParams.ma.periods"
             :groups="buyRuleDrafts"
             :group-errors="buyValidation.groupErrors"
             :condition-errors="buyValidation.conditionErrors"
@@ -864,6 +1150,9 @@ onBeforeUnmount(() => {
           <QuantSequenceRuleBuilder
             v-if="sequenceMode === 'single_target'"
             side="sell"
+            mode="single_target"
+            :target-type="targetType"
+            :ma-periods="scanIndicatorParams.ma.periods"
             :groups="sellRuleDrafts"
             :group-errors="sellValidation.groupErrors"
             :condition-errors="sellValidation.conditionErrors"
@@ -896,7 +1185,47 @@ onBeforeUnmount(() => {
                 <input v-model="scanEndDate" class="input" type="date" />
               </label>
             </div>
-            <p class="muted quant-save-hint">这里仅保存扫描范围和策略名称；组合回测参数请到策略回测页中调整。</p>
+            <div v-if="targetType === 'stock'" class="quant-scan-board-filter">
+              <span class="quant-field-label">扫描板块</span>
+              <label v-for="option in scanBoardFilterOptions" :key="option.value" class="quant-inline-check">
+                <input v-model="scanTradeConfig.board_filters" type="checkbox" :value="option.value" />
+                <span>{{ option.label }}</span>
+              </label>
+              <p class="muted quant-save-hint">不勾选表示扫描全部板块；可用来减少高波动板块带来的命中数量和回撤。</p>
+            </div>
+            <div class="quant-scan-sell-trigger-box" :class="{ active: scanSellTriggerEnabled }">
+              <label class="quant-inline-check">
+                <input v-model="scanSellTriggerEnabled" type="checkbox" />
+                <span>启用收盘价相对指标</span>
+              </label>
+
+              <div v-if="scanSellTriggerEnabled" class="quant-scan-sell-trigger-popover">
+                <div class="quant-scan-sell-trigger-head">
+                  <strong>卖出触发条件</strong>
+                  <span>{{ scanSellTriggerLabel }}</span>
+                </div>
+                <div class="quant-scan-config-grid quant-scan-trigger-grid">
+                  <label class="quant-field">
+                    <span class="quant-field-label">命中规则</span>
+                    <select v-model="scanSellTriggerOperator" class="input">
+                      <option v-for="option in scanSellTriggerOperatorOptions" :key="option.value" :value="option.value">
+                        收盘价{{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="quant-field">
+                    <span class="quant-field-label">参考指标</span>
+                    <select v-model="scanSellTriggerTarget" class="input">
+                      <option v-for="option in scanSellTriggerTargetOptions" :key="option.value" :value="option.value">
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
+                <p class="muted quant-save-hint">这里只有卖出触发条件；命中后按次日开盘价还是收盘价结算，请到策略回测页选择。</p>
+              </div>
+            </div>
+            <p class="muted quant-save-hint">这里保存扫描范围、买入规则和卖出触发条件；组合资金和结算价格请到策略回测页调整。</p>
             <p v-if="scanRangeWarning" class="muted">{{ scanRangeWarning }}</p>
           </template>
 
@@ -932,4 +1261,3 @@ onBeforeUnmount(() => {
     </aside>
   </div>
 </template>
-

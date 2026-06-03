@@ -2,9 +2,14 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import {
+  fetchPhddnsWatchdogStatus,
+  updatePhddnsWatchdogStatus,
+} from '../api/system'
 import AppSidebar from '../components/AppSidebar.vue'
 import { useAuthStore } from '../stores/auth'
 import type { UpdatePreferencesPayload, UpdateProfilePayload } from '../types/auth'
+import type { PhddnsWatchdogStatus } from '../types/system'
 
 type AccountTab = 'profile' | 'security' | 'preferences' | 'privacy'
 
@@ -47,10 +52,29 @@ const profileMessage = ref('')
 const preferencesMessage = ref('')
 const passwordMessage = ref('')
 const error = ref('')
+const phddnsStatus = ref<PhddnsWatchdogStatus | null>(null)
+const phddnsLoading = ref(false)
+const phddnsSaving = ref(false)
+const phddnsMessage = ref('')
 
 const canManagePassword = computed(() => authStore.isAuthenticated && !authStore.isGuest)
 const accountDisplayName = computed(() => authStore.displayName || authStore.user?.username || '用户')
 const accountSecondaryLine = computed(() => authStore.secondaryIdentity || authStore.user?.username || '')
+const phddnsStateLabel = computed(() => {
+  if (phddnsLoading.value && !phddnsStatus.value) return '读取中'
+  if (!phddnsStatus.value?.installed) return '未安装'
+  if (phddnsStatus.value.running) return '运行中'
+  if (phddnsStatus.value.enabled) return '已开启'
+  return '已关闭'
+})
+const phddnsStateDescription = computed(() => {
+  const status = phddnsStatus.value
+  if (!status) return '正在读取本机服务状态'
+  if (!status.installed) return status.message || '未找到 LaunchAgent 配置'
+  if (status.running && status.pid) return `PID ${status.pid}`
+  if (status.enabled && status.last_exit_status !== null) return `最近退出码 ${status.last_exit_status}`
+  return '不会自动检查或重启花生壳'
+})
 
 function syncDrafts() {
   const user = authStore.user
@@ -145,6 +169,34 @@ async function handleSetPassword() {
   }
 }
 
+async function loadPhddnsWatchdogStatus() {
+  if (!authStore.isRoot) return
+  phddnsLoading.value = true
+  try {
+    phddnsStatus.value = await fetchPhddnsWatchdogStatus()
+  } catch (loadError) {
+    error.value = loadError instanceof Error ? loadError.message : '花生壳监控服务状态读取失败'
+  } finally {
+    phddnsLoading.value = false
+  }
+}
+
+async function handleTogglePhddnsWatchdog(event: Event) {
+  const enabled = (event.target as HTMLInputElement).checked
+  error.value = ''
+  phddnsMessage.value = ''
+  phddnsSaving.value = true
+  try {
+    phddnsStatus.value = await updatePhddnsWatchdogStatus({ enabled })
+    phddnsMessage.value = phddnsStatus.value.message || (enabled ? '花生壳监控服务已开启' : '花生壳监控服务已关闭')
+  } catch (toggleError) {
+    error.value = toggleError instanceof Error ? toggleError.message : '花生壳监控服务切换失败'
+    await loadPhddnsWatchdogStatus()
+  } finally {
+    phddnsSaving.value = false
+  }
+}
+
 async function handleRevokeSession(sessionId: number, isCurrent: boolean) {
   if (isCurrent) return
   if (!window.confirm('确定下线这个会话吗？')) return
@@ -184,6 +236,7 @@ watch(
   () => authStore.user,
   () => {
     syncDrafts()
+    void loadPhddnsWatchdogStatus()
   },
   { immediate: true },
 )
@@ -192,6 +245,7 @@ onMounted(async () => {
   await authStore.ensureInitialized()
   syncDrafts()
   await ensureSessionsLoaded()
+  await loadPhddnsWatchdogStatus()
 })
 </script>
 
@@ -393,6 +447,7 @@ onMounted(async () => {
             </div>
 
             <p v-if="preferencesMessage" class="banner-success">{{ preferencesMessage }}</p>
+            <p v-if="phddnsMessage" class="banner-success">{{ phddnsMessage }}</p>
 
             <div class="quant-strategy-form account-form-grid">
               <label class="quant-field">
@@ -435,6 +490,38 @@ onMounted(async () => {
                 {{ preferencesSaving ? '保存中...' : '保存偏好设置' }}
               </button>
             </div>
+
+            <section v-if="authStore.isRoot" class="account-section">
+              <div class="account-section-head">
+                <div>
+                  <h4>本机花生壳监控</h4>
+                  <span class="muted">控制本电脑上的公网穿透监控服务。</span>
+                </div>
+                <button class="btn btn-secondary" :disabled="phddnsLoading" @click="loadPhddnsWatchdogStatus">
+                  {{ phddnsLoading ? '刷新中...' : '刷新状态' }}
+                </button>
+              </div>
+              <label class="account-switch account-switch-service">
+                <input
+                  type="checkbox"
+                  :checked="phddnsStatus?.enabled ?? false"
+                  :disabled="phddnsSaving || phddnsLoading || !phddnsStatus?.installed"
+                  @change="handleTogglePhddnsWatchdog"
+                />
+                <div>
+                  <strong>监控服务：{{ phddnsStateLabel }}</strong>
+                  <span>{{ phddnsStateDescription }}</span>
+                </div>
+              </label>
+              <div class="account-service-meta">
+                <span>服务：{{ phddnsStatus?.label ?? 'com.fit.phddns-watchdog' }}</span>
+                <span>配置：{{ phddnsStatus?.plist_path ?? '-' }}</span>
+              </div>
+              <div v-if="phddnsStatus?.log_lines.length" class="account-service-log">
+                <strong>最近日志</strong>
+                <span v-for="line in phddnsStatus.log_lines" :key="line">{{ line }}</span>
+              </div>
+            </section>
           </template>
 
           <template v-else>

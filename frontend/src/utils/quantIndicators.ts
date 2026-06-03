@@ -12,7 +12,11 @@
 } from '../types/quant'
 import type {
   FuturesBasisPoint,
+  IndexBasisDeltaPoint,
   IndexBreadthPoint,
+  IndexCffexNetShortDeltaPoint,
+  IndexCnOptionFlowPutCallPoint,
+  IndexCnOptionPutCallPoint,
   IndexEmotionPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
@@ -55,6 +59,40 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'vix-high',
   'vix-low',
   'vix-close',
+  'cn-option-put-call-current',
+  'cn-option-put-call-next',
+  'cn-option-put-call-quarter-1',
+  'cn-option-put-call-quarter-2',
+  'cn-option-flow-pc-volume',
+  'cn-option-flow-pc-turnover',
+  'basis-main-delta-5d',
+  'basis-main-delta-7d',
+  'basis-main-delta-14d',
+  'basis-main-delta-20d',
+  'basis-main-delta-30d',
+  'basis-main-delta-60d',
+  'basis-main-delta-120d',
+  'basis-month-delta-5d',
+  'basis-month-delta-7d',
+  'basis-month-delta-14d',
+  'basis-month-delta-20d',
+  'basis-month-delta-30d',
+  'basis-month-delta-60d',
+  'basis-month-delta-120d',
+  'cffex-net-short-top20-delta-5d',
+  'cffex-net-short-top20-delta-7d',
+  'cffex-net-short-top20-delta-14d',
+  'cffex-net-short-top20-delta-20d',
+  'cffex-net-short-top20-delta-30d',
+  'cffex-net-short-top20-delta-60d',
+  'cffex-net-short-top20-delta-120d',
+  'cffex-net-short-citic-delta-5d',
+  'cffex-net-short-citic-delta-7d',
+  'cffex-net-short-citic-delta-14d',
+  'cffex-net-short-citic-delta-20d',
+  'cffex-net-short-citic-delta-30d',
+  'cffex-net-short-citic-delta-60d',
+  'cffex-net-short-citic-delta-120d',
   'rsi',
   'wr',
   'macd-dif',
@@ -126,6 +164,14 @@ export const ALL_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
+}
+
+function toFiniteNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : null
 }
 
 function alignSparseRowsToTradeDates<T>(
@@ -772,6 +818,10 @@ type IndexDatasetOptions = {
   basisAdjustedLabel?: string
   basisMonthLabel?: string
   includeCnVix?: boolean
+  includeCnOptionPutCall?: boolean
+  includeCnOptionFlowPutCall?: boolean
+  includeCffexNetShortDelta?: boolean
+  includeBasisDelta?: boolean
   includeUsVix?: boolean
   includeUsFearGreed?: boolean
   includeUsHedge?: boolean
@@ -782,6 +832,10 @@ type IndexDatasetOptions = {
   usFearGreedPoints?: IndexUsFearGreedPoint[]
   usHedgeProxyPoints?: IndexUsHedgeProxyPoint[]
   usPutCallPoints?: IndexUsPutCallPoint[]
+  cnOptionPutCallPoints?: IndexCnOptionPutCallPoint[]
+  cnOptionFlowPutCallPoints?: IndexCnOptionFlowPutCallPoint[]
+  cffexNetShortDeltaPoints?: IndexCffexNetShortDeltaPoint[]
+  basisDeltaPoints?: IndexBasisDeltaPoint[]
   usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints?: IndexUsCreditSpreadPoint[]
 }
@@ -797,6 +851,10 @@ function buildIndexQuantFilterFields(
     basisAdjustedLabel: string
     basisMonthLabel: string
     includeCnVix: boolean
+    includeCnOptionPutCall: boolean
+    includeCnOptionFlowPutCall: boolean
+    includeCffexNetShortDelta: boolean
+    includeBasisDelta: boolean
     includeUsVix: boolean
     includeUsFearGreed: boolean
     includeUsHedge: boolean
@@ -840,6 +898,56 @@ function buildIndexQuantFilterFields(
       { key: 'vix-high', group: 'vix', label: 'VIX高' },
       { key: 'vix-low', group: 'vix', label: 'VIX低' },
       { key: 'vix-close', group: 'vix', label: 'VIX收' },
+    )
+  }
+  if (options.includeCnOptionPutCall) {
+    fields.unshift(
+      { key: 'cn-option-put-call-current', group: 'put-call', label: 'A股Put/Call 当月' },
+      { key: 'cn-option-put-call-next', group: 'put-call', label: 'A股Put/Call 下月' },
+      { key: 'cn-option-put-call-quarter-1', group: 'put-call', label: 'A股Put/Call 季月1' },
+      { key: 'cn-option-put-call-quarter-2', group: 'put-call', label: 'A股Put/Call 季月2' },
+    )
+  }
+  if (options.includeCnOptionFlowPutCall) {
+    fields.unshift(
+      { key: 'cn-option-flow-pc-volume', group: 'put-call', label: 'A股成交量 Put/Call' },
+      { key: 'cn-option-flow-pc-turnover', group: 'put-call', label: 'A股成交额 Put/Call' },
+    )
+  }
+  if (options.includeBasisDelta) {
+    fields.unshift(
+      { key: 'basis-main-delta-5d', group: 'basis-delta', label: '主连期现差变化 5D' },
+      { key: 'basis-main-delta-7d', group: 'basis-delta', label: '主连期现差变化 7D' },
+      { key: 'basis-main-delta-14d', group: 'basis-delta', label: '主连期现差变化 14D' },
+      { key: 'basis-main-delta-20d', group: 'basis-delta', label: '主连期现差变化 20D' },
+      { key: 'basis-main-delta-30d', group: 'basis-delta', label: '主连期现差变化 30D' },
+      { key: 'basis-main-delta-60d', group: 'basis-delta', label: '主连期现差变化 60D' },
+      { key: 'basis-main-delta-120d', group: 'basis-delta', label: '主连期现差变化 120D' },
+      { key: 'basis-month-delta-5d', group: 'basis-delta', label: '月连期现差变化 5D' },
+      { key: 'basis-month-delta-7d', group: 'basis-delta', label: '月连期现差变化 7D' },
+      { key: 'basis-month-delta-14d', group: 'basis-delta', label: '月连期现差变化 14D' },
+      { key: 'basis-month-delta-20d', group: 'basis-delta', label: '月连期现差变化 20D' },
+      { key: 'basis-month-delta-30d', group: 'basis-delta', label: '月连期现差变化 30D' },
+      { key: 'basis-month-delta-60d', group: 'basis-delta', label: '月连期现差变化 60D' },
+      { key: 'basis-month-delta-120d', group: 'basis-delta', label: '月连期现差变化 120D' },
+    )
+  }
+  if (options.includeCffexNetShortDelta) {
+    fields.unshift(
+      { key: 'cffex-net-short-top20-delta-5d', group: 'net-short', label: '前20净空增量 5D' },
+      { key: 'cffex-net-short-top20-delta-7d', group: 'net-short', label: '前20净空增量 7D' },
+      { key: 'cffex-net-short-top20-delta-14d', group: 'net-short', label: '前20净空增量 14D' },
+      { key: 'cffex-net-short-top20-delta-20d', group: 'net-short', label: '前20净空增量 20D' },
+      { key: 'cffex-net-short-top20-delta-30d', group: 'net-short', label: '前20净空增量 30D' },
+      { key: 'cffex-net-short-top20-delta-60d', group: 'net-short', label: '前20净空增量 60D' },
+      { key: 'cffex-net-short-top20-delta-120d', group: 'net-short', label: '前20净空增量 120D' },
+      { key: 'cffex-net-short-citic-delta-5d', group: 'net-short', label: '中信净空增量 5D' },
+      { key: 'cffex-net-short-citic-delta-7d', group: 'net-short', label: '中信净空增量 7D' },
+      { key: 'cffex-net-short-citic-delta-14d', group: 'net-short', label: '中信净空增量 14D' },
+      { key: 'cffex-net-short-citic-delta-20d', group: 'net-short', label: '中信净空增量 20D' },
+      { key: 'cffex-net-short-citic-delta-30d', group: 'net-short', label: '中信净空增量 30D' },
+      { key: 'cffex-net-short-citic-delta-60d', group: 'net-short', label: '中信净空增量 60D' },
+      { key: 'cffex-net-short-citic-delta-120d', group: 'net-short', label: '中信净空增量 120D' },
     )
   }
   if (options.includeUsVix) {
@@ -958,6 +1066,10 @@ export function buildIndexQuantFilterDataset(
   const basisAdjustedLabel = options.basisAdjustedLabel ?? '换月调整期现差'
   const basisMonthLabel = options.basisMonthLabel ?? '月连期现差'
   const includeCnVix = options.includeCnVix ?? supportsVix
+  const includeCnOptionPutCall = options.includeCnOptionPutCall ?? false
+  const includeCnOptionFlowPutCall = options.includeCnOptionFlowPutCall ?? false
+  const includeCffexNetShortDelta = options.includeCffexNetShortDelta ?? includeCnAuxiliary
+  const includeBasisDelta = options.includeBasisDelta ?? includeCnAuxiliary
   const includeUsVix = options.includeUsVix ?? false
   const includeUsFearGreed = options.includeUsFearGreed ?? false
   const includeUsHedge = options.includeUsHedge ?? false
@@ -968,6 +1080,10 @@ export function buildIndexQuantFilterDataset(
   const usFearGreedPoints = options.usFearGreedPoints ?? []
   const usHedgeProxyPoints = options.usHedgeProxyPoints ?? []
   const usPutCallPoints = options.usPutCallPoints ?? []
+  const cnOptionPutCallPoints = options.cnOptionPutCallPoints ?? []
+  const cnOptionFlowPutCallPoints = options.cnOptionFlowPutCallPoints ?? []
+  const cffexNetShortDeltaPoints = options.cffexNetShortDeltaPoints ?? []
+  const basisDeltaPoints = options.basisDeltaPoints ?? []
   const usTreasuryYieldPoints = options.usTreasuryYieldPoints ?? []
   const usCreditSpreadPoints = options.usCreditSpreadPoints ?? []
 
@@ -1037,6 +1153,68 @@ export function buildIndexQuantFilterDataset(
       },
     ]),
   )
+  const cnOptionPutCallByDate = new Map(
+    cnOptionPutCallPoints.map((item) => [
+      item.trade_date,
+      {
+        'cn-option-put-call-current': toFiniteNullableNumber(item.current_month_put_call_ratio),
+        'cn-option-put-call-next': toFiniteNullableNumber(item.next_month_put_call_ratio),
+        'cn-option-put-call-quarter-1': toFiniteNullableNumber(item.quarter_1_put_call_ratio),
+        'cn-option-put-call-quarter-2': toFiniteNullableNumber(item.quarter_2_put_call_ratio),
+      },
+    ]),
+  )
+  const cnOptionFlowPutCallByDate = new Map(
+    cnOptionFlowPutCallPoints.map((item) => [
+      item.trade_date,
+      {
+        'cn-option-flow-pc-volume': toFiniteNullableNumber(item.volume_put_call_ratio),
+        'cn-option-flow-pc-turnover': toFiniteNullableNumber(item.turnover_put_call_ratio),
+      },
+    ]),
+  )
+  const cffexNetShortDeltaByDate = new Map(
+    cffexNetShortDeltaPoints.map((item) => [
+      item.trade_date,
+      {
+        'cffex-net-short-top20-delta-5d': toFiniteNullableNumber(item.top20_delta_5d),
+        'cffex-net-short-top20-delta-7d': toFiniteNullableNumber(item.top20_delta_7d),
+        'cffex-net-short-top20-delta-14d': toFiniteNullableNumber(item.top20_delta_14d),
+        'cffex-net-short-top20-delta-20d': toFiniteNullableNumber(item.top20_delta_20d),
+        'cffex-net-short-top20-delta-30d': toFiniteNullableNumber(item.top20_delta_30d),
+        'cffex-net-short-top20-delta-60d': toFiniteNullableNumber(item.top20_delta_60d),
+        'cffex-net-short-top20-delta-120d': toFiniteNullableNumber(item.top20_delta_120d),
+        'cffex-net-short-citic-delta-5d': toFiniteNullableNumber(item.citic_delta_5d),
+        'cffex-net-short-citic-delta-7d': toFiniteNullableNumber(item.citic_delta_7d),
+        'cffex-net-short-citic-delta-14d': toFiniteNullableNumber(item.citic_delta_14d),
+        'cffex-net-short-citic-delta-20d': toFiniteNullableNumber(item.citic_delta_20d),
+        'cffex-net-short-citic-delta-30d': toFiniteNullableNumber(item.citic_delta_30d),
+        'cffex-net-short-citic-delta-60d': toFiniteNullableNumber(item.citic_delta_60d),
+        'cffex-net-short-citic-delta-120d': toFiniteNullableNumber(item.citic_delta_120d),
+      },
+    ]),
+  )
+  const basisDeltaByDate = new Map(
+    basisDeltaPoints.map((item) => [
+      item.trade_date,
+      {
+        'basis-main-delta-5d': toFiniteNullableNumber(item.main_delta_5d),
+        'basis-main-delta-7d': toFiniteNullableNumber(item.main_delta_7d),
+        'basis-main-delta-14d': toFiniteNullableNumber(item.main_delta_14d),
+        'basis-main-delta-20d': toFiniteNullableNumber(item.main_delta_20d),
+        'basis-main-delta-30d': toFiniteNullableNumber(item.main_delta_30d),
+        'basis-main-delta-60d': toFiniteNullableNumber(item.main_delta_60d),
+        'basis-main-delta-120d': toFiniteNullableNumber(item.main_delta_120d),
+        'basis-month-delta-5d': toFiniteNullableNumber(item.month_delta_5d),
+        'basis-month-delta-7d': toFiniteNullableNumber(item.month_delta_7d),
+        'basis-month-delta-14d': toFiniteNullableNumber(item.month_delta_14d),
+        'basis-month-delta-20d': toFiniteNullableNumber(item.month_delta_20d),
+        'basis-month-delta-30d': toFiniteNullableNumber(item.month_delta_30d),
+        'basis-month-delta-60d': toFiniteNullableNumber(item.month_delta_60d),
+        'basis-month-delta-120d': toFiniteNullableNumber(item.month_delta_120d),
+      },
+    ]),
+  )
   const usTreasuryByDate = new Map(
     usTreasuryYieldPoints.map((item) => [
       item.trade_date,
@@ -1096,6 +1274,40 @@ export function buildIndexQuantFilterDataset(
       'vix-high': vixByDate.get(snapshot.tradeDate)?.['vix-high'] ?? null,
       'vix-low': vixByDate.get(snapshot.tradeDate)?.['vix-low'] ?? null,
       'vix-close': vixByDate.get(snapshot.tradeDate)?.['vix-close'] ?? null,
+      'cn-option-put-call-current': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-current'] ?? null,
+      'cn-option-put-call-next': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-next'] ?? null,
+      'cn-option-put-call-quarter-1': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-quarter-1'] ?? null,
+      'cn-option-put-call-quarter-2': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-quarter-2'] ?? null,
+      'cn-option-flow-pc-volume': cnOptionFlowPutCallByDate.get(snapshot.tradeDate)?.['cn-option-flow-pc-volume'] ?? null,
+      'cn-option-flow-pc-turnover': cnOptionFlowPutCallByDate.get(snapshot.tradeDate)?.['cn-option-flow-pc-turnover'] ?? null,
+      'cffex-net-short-top20-delta-5d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-5d'] ?? null,
+      'cffex-net-short-top20-delta-7d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-7d'] ?? null,
+      'cffex-net-short-top20-delta-14d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-14d'] ?? null,
+      'cffex-net-short-top20-delta-20d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-20d'] ?? null,
+      'cffex-net-short-top20-delta-30d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-30d'] ?? null,
+      'cffex-net-short-top20-delta-60d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-60d'] ?? null,
+      'cffex-net-short-top20-delta-120d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-120d'] ?? null,
+      'cffex-net-short-citic-delta-5d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-citic-delta-5d'] ?? null,
+      'cffex-net-short-citic-delta-7d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-citic-delta-7d'] ?? null,
+      'cffex-net-short-citic-delta-14d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-citic-delta-14d'] ?? null,
+      'cffex-net-short-citic-delta-20d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-citic-delta-20d'] ?? null,
+      'cffex-net-short-citic-delta-30d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-citic-delta-30d'] ?? null,
+      'cffex-net-short-citic-delta-60d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-citic-delta-60d'] ?? null,
+      'cffex-net-short-citic-delta-120d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-citic-delta-120d'] ?? null,
+      'basis-main-delta-5d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-main-delta-5d'] ?? null,
+      'basis-main-delta-7d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-main-delta-7d'] ?? null,
+      'basis-main-delta-14d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-main-delta-14d'] ?? null,
+      'basis-main-delta-20d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-main-delta-20d'] ?? null,
+      'basis-main-delta-30d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-main-delta-30d'] ?? null,
+      'basis-main-delta-60d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-main-delta-60d'] ?? null,
+      'basis-main-delta-120d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-main-delta-120d'] ?? null,
+      'basis-month-delta-5d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-5d'] ?? null,
+      'basis-month-delta-7d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-7d'] ?? null,
+      'basis-month-delta-14d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-14d'] ?? null,
+      'basis-month-delta-20d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-20d'] ?? null,
+      'basis-month-delta-30d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-30d'] ?? null,
+      'basis-month-delta-60d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-60d'] ?? null,
+      'basis-month-delta-120d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-120d'] ?? null,
       'us-vix-open': usVixByDate.get(snapshot.tradeDate)?.['us-vix-open'] ?? null,
       'us-vix-high': usVixByDate.get(snapshot.tradeDate)?.['us-vix-high'] ?? null,
       'us-vix-low': usVixByDate.get(snapshot.tradeDate)?.['us-vix-low'] ?? null,
@@ -1139,6 +1351,10 @@ export function buildIndexQuantFilterDataset(
       basisAdjustedLabel,
       basisMonthLabel,
       includeCnVix,
+      includeCnOptionPutCall,
+      includeCnOptionFlowPutCall,
+      includeCffexNetShortDelta,
+      includeBasisDelta,
       includeUsVix,
       includeUsFearGreed,
       includeUsHedge,
@@ -1197,4 +1413,3 @@ export function buildQuantFilterDataset(
     options,
   )
 }
-

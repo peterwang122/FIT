@@ -205,6 +205,7 @@ def run_daily_collection_request(
     endpoint: str,
     request_id: str | None = None,
     dedupe_lock_key: str | None = None,
+    payload: dict | None = None,
 ):
     normalized_key = str(collector_key or "").strip().lower()
     normalized_endpoint = str(endpoint or "").strip()
@@ -215,7 +216,11 @@ def run_daily_collection_request(
 
     lock_key = dedupe_lock_key or _daily_temp_lock_key(normalized_key)
     owner_token = request_id or f"manual:{uuid4()}"
-    lock_acquired = redis_client.set(lock_key, owner_token, nx=True, ex=settings.collector_dedupe_lock_ttl_seconds)
+    lock_ttl_seconds = max(
+        int(settings.collector_dedupe_lock_ttl_seconds),
+        int(settings.stock_temp_daily_task_time_limit_seconds) + 300,
+    )
+    lock_acquired = redis_client.set(lock_key, owner_token, nx=True, ex=lock_ttl_seconds)
     if not lock_acquired:
         return {
             "requested_at": date.today().isoformat(),
@@ -230,7 +235,7 @@ def run_daily_collection_request(
         ) as client:
             max_attempts = max(1, int(settings.stock_temp_daily_task_max_retries))
             for attempt in range(1, max_attempts + 1):
-                response = client.post(normalized_endpoint, json={})
+                response = client.post(normalized_endpoint, json=payload or {})
                 if response.is_error:
                     if response.status_code >= 500 and attempt < max_attempts:
                         sleep_seconds = min(

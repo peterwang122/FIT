@@ -1,4 +1,5 @@
 import json
+import re
 from hashlib import sha1
 from bisect import bisect_right
 from collections import defaultdict
@@ -14,7 +15,7 @@ from app.core.redis_client import redis_client
 from app.models.quant_strategy_config import QuantStrategyConfig
 from app.models.user import User
 from app.services.notification_service import NotificationService
-from app.services.stock_service import StockService
+from app.services.stock_service import FUTURES_BASIS_SYMBOL_MAP, StockService
 
 SHANGHAI_INDEX_NAME = "上证指数"
 BEIJING50_INDEX_NAME = "北证50"
@@ -37,6 +38,41 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
     "vix-high",
     "vix-low",
     "vix-close",
+    "cn-option-put-call-current",
+    "cn-option-put-call-next",
+    "cn-option-put-call-quarter-1",
+    "cn-option-put-call-quarter-2",
+    "cn-option-flow-pc-volume",
+    "cn-option-flow-pc-turnover",
+    "basis-main-delta-5d",
+    "basis-main-delta-7d",
+    "basis-main-delta-14d",
+    "basis-main-delta-20d",
+    "basis-main-delta-30d",
+    "basis-main-delta-60d",
+    "basis-main-delta-120d",
+    "basis-month-delta-5d",
+    "basis-month-delta-7d",
+    "basis-month-delta-14d",
+    "basis-month-delta-20d",
+    "basis-month-delta-30d",
+    "basis-month-delta-60d",
+    "basis-month-delta-120d",
+    "cffex-net-short-top20-delta-5d",
+    "cffex-net-short-top20-delta-7d",
+    "cffex-net-short-top20-delta-14d",
+    "cffex-net-short-top20-delta-20d",
+    "cffex-net-short-top20-delta-30d",
+    "cffex-net-short-top20-delta-60d",
+    "cffex-net-short-top20-delta-120d",
+    "cffex-net-short-citic-delta-5d",
+    "cffex-net-short-citic-delta-7d",
+    "cffex-net-short-citic-delta-14d",
+    "cffex-net-short-citic-delta-20d",
+    "cffex-net-short-citic-delta-30d",
+    "cffex-net-short-citic-delta-60d",
+    "cffex-net-short-citic-delta-120d",
+    "rsi",
     "wr",
     "macd-dif",
     "macd-dea",
@@ -47,9 +83,36 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
 ]
 SEQUENCE_STRATEGY_SERIES_KEYS = [
     "market-breadth-up-pct",
+    "market-emotion",
+    "market-qvix",
+    "market-basis-main",
     "target-up-pct",
     "target-down-pct",
+    "target-high-new-high",
+    "target-close-new-high",
+    "target-ma-bias-1",
+    "target-ma-bias-2",
+    "target-ma-bias-3",
+    "target-ma-bias-4",
 ]
+SEQUENCE_STRATEGY_NEW_HIGH_SERIES_KEYS = {
+    "target-high-new-high",
+    "target-close-new-high",
+}
+SEQUENCE_STRATEGY_MA_BIAS_SERIES_KEYS = {
+    "target-ma-bias-1",
+    "target-ma-bias-2",
+    "target-ma-bias-3",
+    "target-ma-bias-4",
+}
+SEQUENCE_STRATEGY_OPERATORS = {"gt", "gte", "lt", "lte"}
+SEQUENCE_STRATEGY_MARKET_MACRO_SERIES_KEYS = {
+    "market-emotion",
+    "market-qvix",
+    "market-basis-main",
+}
+SEQUENCE_MARKET_MACRO_INDEX_NAMES = {"上证指数", "沪深300", "中证500", "中证1000"}
+SCAN_BOARD_FILTER_KEYS = {"main", "chinext", "star", "bse"}
 STOCK_STRATEGY_FILTER_KEYS = [
     "pct-chg",
     "turnover-rate",
@@ -68,8 +131,143 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v8"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v17"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
+CN_OPTION_PUT_CALL_FIELD_MAP = [
+    (
+        "option_pc_current_month",
+        "option_pc_current_month_contract_month",
+        "option_pc_current_month_special_flag",
+        "option_pc_current_month_special_note",
+        "current_month_put_call_ratio",
+        "current_month_contract_month",
+        "current_month_special_calculation",
+        "current_month_special_note",
+    ),
+    (
+        "option_pc_next_month",
+        "option_pc_next_month_contract_month",
+        "option_pc_next_month_special_flag",
+        "option_pc_next_month_special_note",
+        "next_month_put_call_ratio",
+        "next_month_contract_month",
+        "next_month_special_calculation",
+        "next_month_special_note",
+    ),
+    (
+        "option_pc_quarter_1",
+        "option_pc_quarter_1_contract_month",
+        "option_pc_quarter_1_special_flag",
+        "option_pc_quarter_1_special_note",
+        "quarter_1_put_call_ratio",
+        "quarter_1_contract_month",
+        "quarter_1_special_calculation",
+        "quarter_1_special_note",
+    ),
+    (
+        "option_pc_quarter_2",
+        "option_pc_quarter_2_contract_month",
+        "option_pc_quarter_2_special_flag",
+        "option_pc_quarter_2_special_note",
+        "quarter_2_put_call_ratio",
+        "quarter_2_contract_month",
+        "quarter_2_special_calculation",
+        "quarter_2_special_note",
+    ),
+]
+CN_OPTION_PUT_CALL_FILTER_FIELD_MAP = [
+    ("cn-option-put-call-current", "option_pc_current_month"),
+    ("cn-option-put-call-next", "option_pc_next_month"),
+    ("cn-option-put-call-quarter-1", "option_pc_quarter_1"),
+    ("cn-option-put-call-quarter-2", "option_pc_quarter_2"),
+]
+CN_OPTION_PUT_CALL_FILTER_KEYS = [field_key for field_key, _column_name in CN_OPTION_PUT_CALL_FILTER_FIELD_MAP]
+CN_OPTION_FLOW_PUT_CALL_FIELD_MAP = [
+    ("option_volume_pc_ratio", "volume_put_call_ratio"),
+    ("option_turnover_pc_ratio", "turnover_put_call_ratio"),
+]
+CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP = [
+    ("cn-option-flow-pc-volume", "option_volume_pc_ratio"),
+    ("cn-option-flow-pc-turnover", "option_turnover_pc_ratio"),
+]
+CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS = [
+    field_key for field_key, _column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
+]
+CN_OPTION_SUPPORTED_FILTER_KEYS = [
+    *CN_OPTION_PUT_CALL_FILTER_KEYS,
+    *CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS,
+]
+CN_OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES = {
+    SHANGHAI_INDEX_NAME,
+    "上证50",
+    "沪深300",
+    "中证1000",
+}
+CN_OPTION_PUT_CALL_SUPPORTED_INDEX_CODES = {
+    "000001",
+    "sh000001",
+    "000016",
+    "sh000016",
+    "000300",
+    "sh000300",
+    "399300",
+    "sz399300",
+    "000852",
+    "sh000852",
+    "399852",
+    "sz399852",
+}
+CFFEX_NET_SHORT_DELTA_WINDOWS = (5, 7, 14, 20, 30, 60, 120)
+CFFEX_NET_SHORT_DELTA_SOURCES = (
+    ("top20", "top20_institutions", "top20_delta"),
+    ("citic", "citic_customer", "citic_delta"),
+)
+CFFEX_NET_SHORT_DELTA_FIELD_MAP = [
+    (
+        f"cffex-net-short-{field_prefix}-delta-{window}d",
+        f"cffex_{field_prefix}_net_short_delta_{window}d",
+        f"{payload_prefix}_{window}d",
+    )
+    for field_prefix, _source_key, payload_prefix in CFFEX_NET_SHORT_DELTA_SOURCES
+    for window in CFFEX_NET_SHORT_DELTA_WINDOWS
+]
+CFFEX_NET_SHORT_DELTA_FILTER_KEYS = [
+    field_key for field_key, _column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP
+]
+BASIS_DELTA_WINDOWS = CFFEX_NET_SHORT_DELTA_WINDOWS
+BASIS_DELTA_FIELD_MAP = [
+    (
+        f"basis-{basis_prefix}-delta-{window}d",
+        f"basis_{basis_prefix}_delta_{window}d",
+        f"{basis_prefix}_delta_{window}d",
+    )
+    for basis_prefix in ("main", "month")
+    for window in BASIS_DELTA_WINDOWS
+]
+BASIS_DELTA_FILTER_KEYS = [field_key for field_key, _column_name, _payload_key in BASIS_DELTA_FIELD_MAP]
+CFFEX_NET_SHORT_PRODUCT_BY_INDEX_NAME = {
+    "上证50": "IH",
+    "沪深300": "IF",
+    "中证500": "IC",
+    "中证1000": "IM",
+}
+CFFEX_NET_SHORT_PRODUCT_BY_INDEX_CODE = {
+    "000016": "IH",
+    "sh000016": "IH",
+    "000300": "IF",
+    "sh000300": "IF",
+    "399300": "IF",
+    "sz399300": "IF",
+    "000905": "IC",
+    "sh000905": "IC",
+    "399905": "IC",
+    "sz399905": "IC",
+    "000852": "IM",
+    "sh000852": "IM",
+    "399852": "IM",
+    "sz399852": "IM",
+}
+CFFEX_NET_SHORT_CORE_PRODUCTS = ["IH", "IF", "IC", "IM"]
 INDEX_DASHBOARD_RECENT_LIMIT = 750
 BUY_POSITION_SEARCH_RATIOS = [step / 100 for step in range(20, 101, 5)]
 SELL_POSITION_SEARCH_RATIOS = [step / 100 for step in range(5, 101, 5)]
@@ -81,7 +279,16 @@ DEFAULT_SCAN_SELL_OFFSET = 2
 DEFAULT_SCAN_BUY_PRICE_BASIS = "open"
 DEFAULT_SCAN_SELL_PRICE_BASIS = "open"
 SCAN_PRICE_BASES = {"open", "close"}
-SCAN_RESULT_CACHE_KEY_PREFIX = "fit:quant:sequence_scan:v1"
+SCAN_SELL_TRIGGER_TARGETS = {
+    "ma-1",
+    "ma-2",
+    "ma-3",
+    "ma-4",
+    "boll-upper",
+    "boll-middle",
+    "boll-lower",
+}
+SCAN_RESULT_CACHE_KEY_PREFIX = "fit:quant:sequence_scan:v2"
 SCAN_RESULT_CACHE_TTL_SECONDS = 3600
 SCAN_EVENT_PAGE_SIZE = 100
 SCAN_EVENT_PAGE_SIZE_MAX = 500
@@ -153,6 +360,10 @@ HK_INDEX_FUTURES_ROOT_BY_INDEX_NAME = {
 }
 BASIS_FILTER_KEYS = ["basis-main", "basis-month"]
 US_BASIS_FILTER_KEYS = ["basis-main"]
+CN_INDEX_FUTURES_VARIETY_BY_INDEX_NAME = {
+    str(item["index_name"]): str(item["main_symbol"]).removesuffix("M")
+    for item in FUTURES_BASIS_SYMBOL_MAP
+}
 NDX_INDEX_CODES = {".NDX"}
 NDX_INDEX_NAMES = {"纳斯达克100指数"}
 NDX_BASIS_ROLL_DATES = {
@@ -179,6 +390,200 @@ def _date_text(value: object) -> str:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+def _parse_date_value(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    text_value = str(value or "").strip().split(" ")[0]
+    if not text_value:
+        return None
+    try:
+        return date.fromisoformat(text_value)
+    except ValueError:
+        return None
+
+
+def _month_tuple_from_text(value: object) -> tuple[int, int] | None:
+    text_value = str(value or "").strip()
+    match = re.match(r"^(\d{4})-(\d{2})$", text_value)
+    if not match:
+        return None
+    year = int(match.group(1))
+    month = int(match.group(2))
+    if month < 1 or month > 12:
+        return None
+    return year, month
+
+
+def _parse_cn_index_futures_contract_month(symbol: object, variety: object) -> tuple[int, int] | None:
+    normalized_variety = str(variety or "").strip().upper()
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_variety or not normalized_symbol.startswith(normalized_variety):
+        return None
+
+    match = re.match(rf"^{re.escape(normalized_variety)}(\d{{2}})(\d{{2}})$", normalized_symbol)
+    if not match:
+        return None
+
+    year_suffix = int(match.group(1))
+    month = int(match.group(2))
+    if month < 1 or month > 12:
+        return None
+    year = 1900 + year_suffix if year_suffix >= 80 else 2000 + year_suffix
+    return year, month
+
+
+def _contract_month_is_finished(contract_month: tuple[int, int] | None, last_trade_date: object) -> bool:
+    parsed_last_trade_date = _parse_date_value(last_trade_date)
+    if contract_month is None or parsed_last_trade_date is None:
+        return False
+    return contract_month <= (parsed_last_trade_date.year, parsed_last_trade_date.month)
+
+
+def _third_friday(year: int, month: int) -> date:
+    first_day = date(year, month, 1)
+    days_until_friday = (4 - first_day.weekday()) % 7
+    return first_day + timedelta(days=days_until_friday + 14)
+
+
+def _cn_contract_last_trade_is_observed(contract_month: tuple[int, int] | None, last_trade_date: object) -> bool:
+    parsed_last_trade_date = _parse_date_value(last_trade_date)
+    if contract_month is None or parsed_last_trade_date is None:
+        return False
+
+    year, month = contract_month
+    if (year, month) > (parsed_last_trade_date.year, parsed_last_trade_date.month):
+        return False
+
+    return parsed_last_trade_date >= _third_friday(year, month)
+
+
+def _date_in_window(target_date: date, start_date: date | None, end_date: date | None) -> bool:
+    if start_date is not None and target_date < start_date:
+        return False
+    if end_date is not None and target_date > end_date:
+        return False
+    return True
+
+
+def _sorted_contract_marker_map(markers: dict[str, set[str]]) -> dict[str, list[str]]:
+    return {
+        trade_date: sorted(contracts)
+        for trade_date, contracts in sorted(markers.items())
+        if contracts
+    }
+
+
+def _build_cn_basis_contract_roll_markers(
+    rows: list[dict],
+    allowed_varieties: set[str],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, list[str]]:
+    normalized_varieties = {str(item or "").strip().upper() for item in allowed_varieties if str(item or "").strip()}
+    markers: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        variety = str(row.get("variety") or "").strip().upper()
+        contract_code = str(row.get("contract_code") or row.get("symbol") or "").strip().upper()
+        last_trade_date = _parse_date_value(row.get("last_trade_date"))
+        contract_month = _parse_cn_index_futures_contract_month(contract_code, variety)
+        if (
+            not variety
+            or variety not in normalized_varieties
+            or not contract_code
+            or last_trade_date is None
+            or not _cn_contract_last_trade_is_observed(contract_month, last_trade_date)
+            or not _date_in_window(last_trade_date, start_date, end_date)
+        ):
+            continue
+        markers[last_trade_date.isoformat()].add(contract_code)
+    return _sorted_contract_marker_map(markers)
+
+
+def _build_hk_basis_contract_roll_markers(
+    rows: list[dict],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, list[str]]:
+    markers: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        contract_code = str(row.get("contract_code") or row.get("source_contract_code") or "").strip().upper()
+        last_trade_date = _parse_date_value(row.get("last_trade_date"))
+        contract_month = _month_tuple_from_text(row.get("contract_month"))
+        if (
+            not contract_code
+            or last_trade_date is None
+            or not _contract_month_is_finished(contract_month, last_trade_date)
+            or not _date_in_window(last_trade_date, start_date, end_date)
+        ):
+            continue
+        markers[last_trade_date.isoformat()].add(contract_code)
+    return _sorted_contract_marker_map(markers)
+
+
+def _normalize_contract_codes(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip().upper() for item in value if str(item).strip()]
+    return []
+
+
+def _build_sequence_dashboard_macro_values(rows: list[dict]) -> dict[str, dict[str, float]]:
+    grouped: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: {"market-emotion": [], "market-basis-main": []}
+    )
+    for row in rows:
+        index_name = str(row.get("index_name") or "").strip()
+        trade_date = _date_text(row.get("trade_date"))
+        if index_name not in SEQUENCE_MARKET_MACRO_INDEX_NAMES or not trade_date:
+            continue
+        emotion_value = _to_float(row.get("emotion_value"))
+        basis_value = _to_float(row.get("main_basis"))
+        if emotion_value is not None:
+            grouped[trade_date]["market-emotion"].append(emotion_value)
+        if basis_value is not None:
+            grouped[trade_date]["market-basis-main"].append(basis_value)
+
+    return {
+        trade_date: {
+            key: sum(values) / len(values)
+            for key, values in value_groups.items()
+            if values
+        }
+        for trade_date, value_groups in grouped.items()
+    }
+
+
+def _build_sequence_dashboard_breadth_values(rows: list[dict]) -> dict[str, float]:
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        index_name = str(row.get("index_name") or "").strip()
+        trade_date = _date_text(row.get("trade_date"))
+        if index_name not in SEQUENCE_MARKET_MACRO_INDEX_NAMES or not trade_date:
+            continue
+        breadth_value = _to_float(row.get("breadth_up_pct"))
+        if breadth_value is not None:
+            grouped[trade_date].append(breadth_value)
+    return {
+        trade_date: sum(values) / len(values)
+        for trade_date, values in grouped.items()
+        if values
+    }
+
+
+def _build_sequence_qvix_values(rows: list[dict]) -> dict[str, float]:
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        trade_date = _date_text(row.get("trade_date"))
+        close_price = _to_float(row.get("close_price"))
+        if not trade_date or close_price is None or close_price <= 0:
+            continue
+        grouped[trade_date].append(close_price)
+    return {
+        trade_date: sum(values) / len(values)
+        for trade_date, values in grouped.items()
+        if values
+    }
 
 
 def _to_float(value: object) -> float | None:
@@ -223,6 +628,64 @@ def _calc_sma(values: list[float], period: int) -> list[float | None]:
         if index >= period - 1:
             result[index] = rolling_sum / period
     return result
+
+
+def _calc_sma_nullable(values: list[object], period: int) -> list[float | None]:
+    if period <= 0:
+        return [None] * len(values)
+    result: list[float | None] = [None] * len(values)
+    rolling_sum = 0.0
+    valid_count = 0
+    numeric_values = [_to_float(value) for value in values]
+    for index, value in enumerate(numeric_values):
+        if value is not None:
+            rolling_sum += value
+            valid_count += 1
+        if index >= period:
+            dropped = numeric_values[index - period]
+            if dropped is not None:
+                rolling_sum -= dropped
+                valid_count -= 1
+        if index >= period - 1 and valid_count == period:
+            result[index] = rolling_sum / period
+    return result
+
+
+def _normalize_ma_periods(params: dict | None) -> list[int]:
+    defaults = [5, 10, 20, 60]
+    raw_periods = params.get("ma", {}).get("periods", defaults) if isinstance(params, dict) else defaults
+    period_values = raw_periods if isinstance(raw_periods, list) else defaults
+    normalized: list[int] = []
+    for index, fallback in enumerate(defaults):
+        try:
+            value = int(period_values[index])
+        except (IndexError, TypeError, ValueError):
+            value = fallback
+        normalized.append(value if value > 0 else fallback)
+    return normalized
+
+
+def _calc_ma_bias(close_price: object, ma_value: object) -> float | None:
+    close_value = _to_float(close_price)
+    ma_number = _to_float(ma_value)
+    if close_value is None or ma_number is None or ma_number <= 0:
+        return None
+    return (close_value - ma_number) / ma_number * 100
+
+
+def _sequence_operator_matches(value: object, operator: str, threshold: float) -> bool:
+    numeric_value = _to_float(value)
+    if numeric_value is None:
+        return False
+    if operator == "gt":
+        return numeric_value > threshold
+    if operator == "gte":
+        return numeric_value >= threshold
+    if operator == "lt":
+        return numeric_value < threshold
+    if operator == "lte":
+        return numeric_value <= threshold
+    return False
 
 
 def _calc_std(values: list[float], period: int, means: list[float | None]) -> list[float | None]:
@@ -405,11 +868,39 @@ class QuantService:
             "sell_offset_trading_days": DEFAULT_SCAN_SELL_OFFSET,
             "buy_price_basis": DEFAULT_SCAN_BUY_PRICE_BASIS,
             "sell_price_basis": DEFAULT_SCAN_SELL_PRICE_BASIS,
+            "sell_trigger": None,
+            "board_filters": [],
+        }
+
+    def _normalize_scan_sell_trigger(self, raw_trigger: object) -> dict | None:
+        if not isinstance(raw_trigger, dict):
+            return None
+        enabled = bool(raw_trigger.get("enabled"))
+        if not enabled:
+            return None
+
+        operator = str(raw_trigger.get("operator", "")).strip().lower()
+        target = str(raw_trigger.get("target", "")).strip().lower()
+        if operator not in {"gt", "lt"}:
+            raise ValueError("scan sell trigger operator must be gt or lt")
+        if target not in SCAN_SELL_TRIGGER_TARGETS:
+            raise ValueError("scan sell trigger target is not supported")
+        return {
+            "enabled": True,
+            "operator": operator,
+            "target": target,
         }
 
     def _normalize_scan_trade_config(self, raw_config: object) -> dict:
         config = raw_config if isinstance(raw_config, dict) else {}
         default = self._default_scan_trade_config()
+        sell_trigger = self._normalize_scan_sell_trigger(config.get("sell_trigger"))
+        raw_board_filters = config.get("board_filters")
+        board_filters = [
+            str(item).strip().lower()
+            for item in raw_board_filters
+            if str(item).strip().lower() in SCAN_BOARD_FILTER_KEYS
+        ] if isinstance(raw_board_filters, list) else []
 
         initial_capital = _to_float(config.get("initial_capital"))
         if initial_capital is None or initial_capital <= 0:
@@ -442,7 +933,7 @@ class QuantService:
 
         buy_order_key = (buy_offset_trading_days, 0 if buy_price_basis == "open" else 1)
         sell_order_key = (sell_offset_trading_days, 0 if sell_price_basis == "open" else 1)
-        if sell_order_key <= buy_order_key:
+        if sell_trigger is None and sell_order_key <= buy_order_key:
             raise ValueError("scan sell execution must be later than buy execution")
 
         return {
@@ -452,6 +943,8 @@ class QuantService:
             "sell_offset_trading_days": sell_offset_trading_days,
             "buy_price_basis": buy_price_basis,
             "sell_price_basis": sell_price_basis,
+            "sell_trigger": sell_trigger,
+            "board_filters": sorted(set(board_filters)),
         }
 
     def _normalize_target_market(self, raw_value: object) -> str:
@@ -527,6 +1020,20 @@ class QuantService:
     ) -> bool:
         return self._resolve_index_vix_code(target_code, target_name, target_market) is not None
 
+    def _index_supports_cn_option_put_call(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        if self._normalize_target_market(target_market) != "cn":
+            return False
+        normalized_name = str(target_name or "").strip()
+        if normalized_name in CN_OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES:
+            return True
+        normalized_code = str(target_code or "").strip().lower()
+        return normalized_code in CN_OPTION_PUT_CALL_SUPPORTED_INDEX_CODES
+
     def _resolve_us_hedge_proxy_scope(
         self,
         target_code: object = "",
@@ -584,6 +1091,8 @@ class QuantService:
                     "main_basis_adjusted": None,
                     "basis_roll_flag": False,
                     "basis_roll_delta": None,
+                    "basis_roll_type": None,
+                    "basis_roll_contracts": [],
                 }
                 for row in rows
             ]
@@ -634,6 +1143,8 @@ class QuantService:
                     "main_basis_adjusted": main_basis - offset if main_basis is not None else None,
                     "basis_roll_flag": roll_point is not None,
                     "basis_roll_delta": float(roll_point["delta"]) if roll_point is not None else None,
+                    "basis_roll_type": "adjustment" if roll_point is not None else None,
+                    "basis_roll_contracts": [],
                 }
             )
         return adjusted_rows
@@ -647,9 +1158,12 @@ class QuantService:
     ) -> list[str]:
         if strategy_type == "index":
             if self._index_supports_auxiliary_panels(target_market):
-                if self._index_supports_vix(target_code, target_name, target_market):
-                    return CN_INDEX_STRATEGY_FILTER_KEYS
-                return [key for key in CN_INDEX_STRATEGY_FILTER_KEYS if key not in VIX_FILTER_KEYS]
+                keys = list(CN_INDEX_STRATEGY_FILTER_KEYS)
+                if not self._index_supports_vix(target_code, target_name, target_market):
+                    keys = [key for key in keys if key not in VIX_FILTER_KEYS]
+                if not self._index_supports_cn_option_put_call(target_code, target_name, target_market):
+                    keys = [key for key in keys if key not in CN_OPTION_SUPPORTED_FILTER_KEYS]
+                return keys
             if self._normalize_target_market(target_market) == "hk":
                 keys = list(STOCK_STRATEGY_FILTER_KEYS)
                 if self._index_supports_basis(target_code, target_name, target_market):
@@ -698,6 +1212,112 @@ class QuantService:
             return SHANGHAI_INDEX_NAME
         return normalized
 
+    def _resolve_cn_index_futures_varieties(self, target_name: object) -> list[str]:
+        source_name = self._resolve_index_auxiliary_source_name(str(target_name or ""))
+        if source_name == SHANGHAI_INDEX_NAME:
+            return [
+                variety
+                for index_name in CORE_INDEX_NAMES
+                if (variety := CN_INDEX_FUTURES_VARIETY_BY_INDEX_NAME.get(index_name))
+            ]
+        variety = CN_INDEX_FUTURES_VARIETY_BY_INDEX_NAME.get(source_name)
+        return [variety] if variety else []
+
+    def _load_basis_contract_roll_markers(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, list[str]]:
+        normalized_market = self._normalize_target_market(target_market)
+        if normalized_market == "cn":
+            return self._load_cn_basis_contract_roll_markers(target_name, start_date, end_date)
+        if normalized_market == "hk":
+            return self._load_hk_basis_contract_roll_markers(target_code, target_name, start_date, end_date)
+        return {}
+
+    def _load_cn_basis_contract_roll_markers(
+        self,
+        target_name: object,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, list[str]]:
+        varieties = self._resolve_cn_index_futures_varieties(target_name)
+        if not varieties:
+            return {}
+
+        variety_sql = ", ".join(f":variety_{index}" for index, _ in enumerate(varieties))
+        params: dict[str, object] = {
+            f"variety_{index}": variety
+            for index, variety in enumerate(varieties)
+        }
+        params["derived_source"] = settings.futures_daily_primary_source_value
+        sql = text(
+            f"SELECT "
+            f"`variety` AS variety, "
+            f"`{settings.futures_daily_symbol_column}` AS contract_code, "
+            f"MAX(`{settings.futures_daily_trade_date_column}`) AS last_trade_date "
+            f"FROM `{settings.futures_daily_table_name}` "
+            f"WHERE `variety` IN ({variety_sql}) "
+            f"AND `{settings.futures_daily_data_source_column}` <> :derived_source "
+            f"AND `{settings.futures_daily_close_column}` IS NOT NULL "
+            f"GROUP BY `variety`, `{settings.futures_daily_symbol_column}`"
+        )
+        rows = [dict(row) for row in self.db.execute(sql, params).mappings().all()]
+        return _build_cn_basis_contract_roll_markers(rows, set(varieties), start_date, end_date)
+
+    def _load_hk_basis_contract_roll_markers(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, list[str]]:
+        root_symbol = self._resolve_hk_index_futures_root(target_code, target_name, "hk")
+        if not root_symbol:
+            return {}
+
+        sql = text(
+            "SELECT "
+            "source_contract_code AS contract_code, "
+            "contract_month AS contract_month, "
+            "MAX(trade_date) AS last_trade_date "
+            "FROM futures_hk_index_daily_data "
+            "WHERE root_symbol = :root_symbol "
+            "AND close_price IS NOT NULL "
+            "GROUP BY source_contract_code, contract_month"
+        )
+        rows = [dict(row) for row in self.db.execute(sql, {"root_symbol": root_symbol}).mappings().all()]
+        return _build_hk_basis_contract_roll_markers(rows, start_date, end_date)
+
+    def _build_basis_point_payload(
+        self,
+        row: dict,
+        default_index_name: str,
+        contract_roll_markers: dict[str, list[str]] | None = None,
+    ) -> dict:
+        trade_date = row["trade_date"]
+        marker_contracts = (contract_roll_markers or {}).get(_date_text(trade_date), [])
+        basis_roll_type = str(row.get("basis_roll_type") or "").strip() or None
+        basis_roll_contracts = _normalize_contract_codes(row.get("basis_roll_contracts"))
+        if marker_contracts:
+            basis_roll_type = "contract_last_trade"
+            basis_roll_contracts = marker_contracts
+
+        return {
+            "trade_date": trade_date,
+            "index_name": str(row.get("index_name") or default_index_name).strip(),
+            "main_basis": _to_float(row.get("main_basis")) or 0.0,
+            "month_basis": _to_float(row.get("month_basis")) or 0.0,
+            "main_basis_adjusted": _to_float(row.get("main_basis_adjusted")),
+            "basis_roll_flag": bool(row.get("basis_roll_flag")) or bool(marker_contracts),
+            "basis_roll_delta": _to_float(row.get("basis_roll_delta")),
+            "basis_roll_type": basis_roll_type,
+            "basis_roll_contracts": basis_roll_contracts,
+        }
+
     def _ensure_index_dashboard_table_ready(self) -> None:
         bind = self.db.get_bind()
         table_name = settings.quant_index_dashboard_table_name
@@ -705,6 +1325,212 @@ class QuantService:
             raise RuntimeError("database bind is unavailable")
         if not inspect(bind).has_table(table_name):
             raise RuntimeError(f"precomputed table `{table_name}` is not ready")
+
+    def _index_dashboard_column_names(self) -> set[str]:
+        bind = self.db.get_bind()
+        table_name = settings.quant_index_dashboard_table_name
+        if bind is None:
+            return set()
+        try:
+            return {str(column.get("name") or "").strip() for column in inspect(bind).get_columns(table_name)}
+        except SQLAlchemyError:
+            return set()
+
+    def _optional_index_dashboard_selects(self) -> str:
+        existing_columns = self._index_dashboard_column_names()
+        select_parts: list[str] = []
+        for (
+            ratio_column,
+            month_column,
+            special_flag_column,
+            special_note_column,
+            _ratio_alias,
+            _month_alias,
+            _special_flag_alias,
+            _special_note_alias,
+        ) in CN_OPTION_PUT_CALL_FIELD_MAP:
+            if ratio_column in existing_columns:
+                select_parts.append(f"`{ratio_column}` AS {ratio_column}")
+            else:
+                select_parts.append(f"NULL AS {ratio_column}")
+            if month_column in existing_columns:
+                select_parts.append(f"`{month_column}` AS {month_column}")
+            else:
+                select_parts.append(f"NULL AS {month_column}")
+            if special_flag_column in existing_columns:
+                select_parts.append(f"`{special_flag_column}` AS {special_flag_column}")
+            else:
+                select_parts.append(f"0 AS {special_flag_column}")
+            if special_note_column in existing_columns:
+                select_parts.append(f"`{special_note_column}` AS {special_note_column}")
+            else:
+                select_parts.append(f"NULL AS {special_note_column}")
+        for ratio_column, _ratio_alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP:
+            if ratio_column in existing_columns:
+                select_parts.append(f"`{ratio_column}` AS {ratio_column}")
+            else:
+                select_parts.append(f"NULL AS {ratio_column}")
+        for _field_key, column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP:
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
+        for _field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP:
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
+        return ", " + ", ".join(select_parts) if select_parts else ""
+
+    def _build_cn_option_put_call_point_payload(self, row: dict) -> dict:
+        payload = {"trade_date": row["trade_date"]}
+        for (
+            ratio_column,
+            month_column,
+            special_flag_column,
+            special_note_column,
+            ratio_alias,
+            month_alias,
+            special_flag_alias,
+            special_note_alias,
+        ) in CN_OPTION_PUT_CALL_FIELD_MAP:
+            payload[ratio_alias] = _to_float(row.get(ratio_column))
+            payload[month_alias] = str(row.get(month_column) or "").strip() or None
+            payload[special_flag_alias] = bool(row.get(special_flag_column))
+            payload[special_note_alias] = str(row.get(special_note_column) or "").strip() or None
+        return payload
+
+    def _build_cn_option_flow_put_call_point_payload(self, row: dict) -> dict:
+        payload = {"trade_date": row["trade_date"]}
+        for ratio_column, ratio_alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP:
+            payload[ratio_alias] = _to_float(row.get(ratio_column))
+        return payload
+
+    def _resolve_cffex_net_short_products(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> list[str]:
+        if self._normalize_target_market(target_market) != "cn":
+            return []
+        normalized_name = str(target_name or "").strip()
+        if normalized_name in SHARED_INDEX_AUXILIARY_NAMES:
+            return list(CFFEX_NET_SHORT_CORE_PRODUCTS)
+        if normalized_name in CFFEX_NET_SHORT_PRODUCT_BY_INDEX_NAME:
+            return [CFFEX_NET_SHORT_PRODUCT_BY_INDEX_NAME[normalized_name]]
+        normalized_code = str(target_code or "").strip().lower()
+        product_code = CFFEX_NET_SHORT_PRODUCT_BY_INDEX_CODE.get(normalized_code)
+        return [product_code] if product_code else []
+
+    def _calculate_cffex_net_short_delta_points(
+        self,
+        net_position_series: dict,
+        product_codes: list[str],
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        selected_products = [code for code in product_codes if code in CFFEX_NET_SHORT_CORE_PRODUCTS]
+        if not selected_products:
+            return []
+
+        def build_product_delta_map(source_key: str, window: int) -> dict[str, dict[str, float | None]]:
+            source_series = (
+                net_position_series.get(source_key, {}).get("series", {})
+                if isinstance(net_position_series, dict)
+                else {}
+            )
+            result: dict[str, dict[str, float | None]] = {}
+            for product_code in selected_products:
+                points = source_series.get(product_code, [])
+                sorted_points = sorted(
+                    [
+                        {
+                            "trade_date": _date_text(point.get("trade_date")),
+                            "net_position": _to_float(point.get("net_position")),
+                        }
+                        for point in points
+                        if isinstance(point, dict) and _date_text(point.get("trade_date"))
+                    ],
+                    key=lambda item: item["trade_date"],
+                )
+                product_result: dict[str, float | None] = {}
+                for index, point in enumerate(sorted_points):
+                    current_value = point["net_position"]
+                    previous_value = sorted_points[index - window]["net_position"] if index >= window else None
+                    product_result[point["trade_date"]] = (
+                        current_value - previous_value
+                        if current_value is not None and previous_value is not None
+                        else None
+                    )
+                result[product_code] = product_result
+            return result
+
+        delta_sources = {
+            f"{payload_prefix}_{window}d": build_product_delta_map(source_key, window)
+            for _field_prefix, source_key, payload_prefix in CFFEX_NET_SHORT_DELTA_SOURCES
+            for window in CFFEX_NET_SHORT_DELTA_WINDOWS
+        }
+
+        all_dates = sorted(
+            {
+                trade_date
+                for product_maps in delta_sources.values()
+                for product_map in product_maps.values()
+                for trade_date in product_map.keys()
+            }
+        )
+        if start_date is not None:
+            all_dates = [trade_date for trade_date in all_dates if trade_date >= start_date.isoformat()]
+        if end_date is not None:
+            all_dates = [trade_date for trade_date in all_dates if trade_date <= end_date.isoformat()]
+
+        rows: list[dict] = []
+        for trade_date in all_dates:
+            row = {"trade_date": trade_date}
+            for payload_key, product_maps in delta_sources.items():
+                values = [product_maps.get(product_code, {}).get(trade_date) for product_code in selected_products]
+                valid_values = [value for value in values if value is not None]
+                row[payload_key] = sum(valid_values) if valid_values else None
+            rows.append(row)
+        return rows
+
+    def _load_cffex_net_short_delta_rows(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        product_codes = self._resolve_cffex_net_short_products(target_code, target_name, "cn")
+        if not product_codes or not getattr(self, "stock_service", None):
+            return []
+        query_start_date = start_date - timedelta(days=140) if start_date is not None else None
+        try:
+            series = self.stock_service.get_cffex_net_position_series(
+                start_date=query_start_date,
+                end_date=end_date,
+            )
+        except Exception:
+            return []
+        return self._calculate_cffex_net_short_delta_points(
+            series,
+            product_codes,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def _build_cffex_net_short_delta_point_payload(self, row: dict) -> dict:
+        payload = {"trade_date": row["trade_date"]}
+        for _field_key, column_name, payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP:
+            payload[payload_key] = _to_float(row.get(column_name))
+        return payload
+
+    def _build_basis_delta_point_payload(self, row: dict) -> dict:
+        payload = {"trade_date": row["trade_date"]}
+        for _field_key, column_name, payload_key in BASIS_DELTA_FIELD_MAP:
+            payload[payload_key] = _to_float(row.get(column_name))
+        return payload
 
     def _resolve_recent_index_start_date(self, index_code: str, market: str = "cn") -> date | None:
         config = self.stock_service._get_index_market_config(self._normalize_target_market(market))
@@ -992,6 +1818,7 @@ class QuantService:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> list[dict]:
+        optional_selects = self._optional_index_dashboard_selects()
         sql = (
             f"SELECT "
             f"`{settings.quant_index_dashboard_date_column}` AS trade_date, "
@@ -1001,7 +1828,8 @@ class QuantService:
             f"`{settings.quant_index_dashboard_month_basis_column}` AS month_basis, "
             f"`{settings.quant_index_dashboard_breadth_up_count_column}` AS up_count, "
             f"`{settings.quant_index_dashboard_breadth_total_count_column}` AS total_count, "
-            f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct "
+            f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct"
+            f"{optional_selects} "
             f"FROM `{settings.quant_index_dashboard_table_name}` "
             f"WHERE `{settings.quant_index_dashboard_code_column}` = :index_code"
         )
@@ -1080,6 +1908,17 @@ class QuantService:
                 if supports_basis_panel
                 else []
             )
+            contract_roll_markers = (
+                self._load_basis_contract_roll_markers(
+                    option["code"],
+                    option["name"],
+                    normalized_market,
+                    start_date=resolved_start_date,
+                    end_date=end_date,
+                )
+                if supports_basis_panel
+                else {}
+            )
             auxiliary_rows = (
                 self._load_us_auxiliary_rows(
                     option["code"],
@@ -1106,15 +1945,7 @@ class QuantService:
                 "candles": candles,
                 "emotion_points": [],
                 "basis_points": [
-                    {
-                        "trade_date": row["trade_date"],
-                        "index_name": str(row.get("index_name") or option["name"]).strip(),
-                        "main_basis": _to_float(row.get("main_basis")) or 0.0,
-                        "month_basis": _to_float(row.get("month_basis")) or 0.0,
-                        "main_basis_adjusted": _to_float(row.get("main_basis_adjusted")),
-                        "basis_roll_flag": bool(row.get("basis_roll_flag")),
-                        "basis_roll_delta": _to_float(row.get("basis_roll_delta")),
-                    }
+                    self._build_basis_point_payload(row, option["name"], contract_roll_markers)
                     for row in basis_rows
                 ],
                 "breadth_points": [],
@@ -1158,6 +1989,10 @@ class QuantService:
                     }
                     for row in auxiliary_rows["us_put_call_rows"]
                 ],
+                "cn_option_put_call_points": [],
+                "cn_option_flow_put_call_points": [],
+                "cffex_net_short_delta_points": [],
+                "basis_delta_points": [],
                 "us_treasury_yield_points": [
                     {
                         "trade_date": row["trade_date"],
@@ -1198,6 +2033,14 @@ class QuantService:
         if not candles:
             rows = []
 
+        contract_roll_markers = self._load_basis_contract_roll_markers(
+            option["code"],
+            option["name"],
+            normalized_market,
+            start_date=resolved_start_date,
+            end_date=end_date,
+        )
+
         vix_rows: list[dict] = []
         qvix_code = self._resolve_index_vix_code(option["code"], option["name"], normalized_market)
         if qvix_code:
@@ -1206,7 +2049,6 @@ class QuantService:
                 start_date=resolved_start_date,
                 end_date=end_date,
             )
-
         result = {
             "index": {"code": option["code"], "name": option["name"]},
             "market": normalized_market,
@@ -1222,12 +2064,7 @@ class QuantService:
                 for row in rows
             ],
             "basis_points": [
-                {
-                    "trade_date": row["trade_date"],
-                    "index_name": str(row.get("index_name") or auxiliary_source_name).strip(),
-                    "main_basis": _to_float(row.get("main_basis")) or 0.0,
-                    "month_basis": _to_float(row.get("month_basis")) or 0.0,
-                }
+                self._build_basis_point_payload(row, auxiliary_source_name, contract_roll_markers)
                 for row in rows
             ],
             "breadth_points": [
@@ -1253,6 +2090,31 @@ class QuantService:
             "us_fear_greed_points": [],
             "us_hedge_proxy_points": [],
             "us_put_call_points": [],
+            "cn_option_put_call_points": [
+                self._build_cn_option_put_call_point_payload(row)
+                for row in rows
+            ],
+            "cn_option_flow_put_call_points": [
+                self._build_cn_option_flow_put_call_point_payload(row)
+                for row in rows
+                if any(_to_float(row.get(column_name)) is not None for column_name, _alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP)
+            ],
+            "cffex_net_short_delta_points": [
+                self._build_cffex_net_short_delta_point_payload(row)
+                for row in rows
+                if any(
+                    _to_float(row.get(column_name)) is not None
+                    for _field_key, column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP
+                )
+            ],
+            "basis_delta_points": [
+                self._build_basis_delta_point_payload(row)
+                for row in rows
+                if any(
+                    _to_float(row.get(column_name)) is not None
+                    for _field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP
+                )
+            ],
             "us_treasury_yield_points": [],
             "us_credit_spread_points": [],
         }
@@ -1376,6 +2238,7 @@ class QuantService:
         except RuntimeError:
             return []
         source_name = self._resolve_index_auxiliary_source_name(symbol_name)
+        optional_selects = self._optional_index_dashboard_selects()
 
         sql = text(
             f"SELECT "
@@ -1386,7 +2249,8 @@ class QuantService:
             f"`{settings.quant_index_dashboard_month_basis_column}` AS month_basis, "
             f"`{settings.quant_index_dashboard_breadth_up_count_column}` AS up_count, "
             f"`{settings.quant_index_dashboard_breadth_total_count_column}` AS total_count, "
-            f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct "
+            f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct"
+            f"{optional_selects} "
             f"FROM `{settings.quant_index_dashboard_table_name}` "
             f"WHERE `{settings.quant_index_dashboard_name_column}` = :index_name "
             f"ORDER BY `{settings.quant_index_dashboard_date_column}` ASC"
@@ -1434,7 +2298,7 @@ class QuantService:
 
         times = [item["trade_date"] for item in sorted_candles]
         closes = [item["close"] for item in sorted_candles]
-        ma_periods = [int(value) for value in params.get("ma", {}).get("periods", [5, 10, 20, 60])]
+        ma_periods = _normalize_ma_periods(params)
         macd_params = params.get("macd", {})
         kdj_params = params.get("kdj", {})
         wr_params = params.get("wr", {})
@@ -1486,10 +2350,48 @@ class QuantService:
                 _date_text(item["trade_date"]): _to_float(item.get("up_ratio_pct")) or 0.0
                 for item in precomputed_rows
             }
+            option_put_call_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
+                    for item in precomputed_rows
+                }
+                for field_key, column_name in CN_OPTION_PUT_CALL_FILTER_FIELD_MAP
+            }
+            option_flow_put_call_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
+                    for item in precomputed_rows
+                }
+                for field_key, column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
+            }
+            cffex_net_short_delta_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
+                    for item in precomputed_rows
+                }
+                for field_key, column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP
+            }
+            basis_delta_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
+                    for item in precomputed_rows
+                }
+                for field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP
+            }
         else:
             emotion_map = self._build_emotion_value_by_date(symbol_name)
             basis_main_map, basis_month_map = self._build_basis_value_by_date(symbol_name)
             breadth_map = self._build_breadth_value_by_date()
+            option_put_call_maps = {field_key: {} for field_key, _column_name in CN_OPTION_PUT_CALL_FILTER_FIELD_MAP}
+            option_flow_put_call_maps = {
+                field_key: {} for field_key, _column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
+            }
+            cffex_net_short_delta_maps = {
+                field_key: {} for field_key, _column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP
+            }
+            basis_delta_maps = {
+                field_key: {} for field_key, _column_name, _payload_key in BASIS_DELTA_FIELD_MAP
+            }
 
         vix_by_date: dict[str, dict[str, float | None]] = {}
         qvix_code = self._resolve_index_vix_code(target_code, symbol_name, "cn")
@@ -1530,6 +2432,21 @@ class QuantService:
                         "vix-high": vix_values.get("vix-high"),
                         "vix-low": vix_values.get("vix-low"),
                         "vix-close": vix_values.get("vix-close"),
+                        "cn-option-put-call-current": option_put_call_maps["cn-option-put-call-current"].get(trade_date),
+                        "cn-option-put-call-next": option_put_call_maps["cn-option-put-call-next"].get(trade_date),
+                        "cn-option-put-call-quarter-1": option_put_call_maps["cn-option-put-call-quarter-1"].get(trade_date),
+                        "cn-option-put-call-quarter-2": option_put_call_maps["cn-option-put-call-quarter-2"].get(trade_date),
+                        "cn-option-flow-pc-volume": option_flow_put_call_maps["cn-option-flow-pc-volume"].get(trade_date),
+                        "cn-option-flow-pc-turnover": option_flow_put_call_maps["cn-option-flow-pc-turnover"].get(trade_date),
+                        **{
+                            field_key: cffex_net_short_delta_maps[field_key].get(trade_date)
+                            for field_key in CFFEX_NET_SHORT_DELTA_FILTER_KEYS
+                        },
+                        **{
+                            field_key: basis_delta_maps[field_key].get(trade_date)
+                            for field_key in BASIS_DELTA_FILTER_KEYS
+                        },
+                        "rsi": rsi_values[index],
                         "wr": wr_values[index],
                         "macd-dif": macd_dif[index],
                         "macd-dea": macd_dea[index],
@@ -1556,7 +2473,7 @@ class QuantService:
 
         times = [item["trade_date"] for item in sorted_candles]
         closes = [item["close"] for item in sorted_candles]
-        ma_periods = [int(value) for value in params.get("ma", {}).get("periods", [5, 10, 20, 60])]
+        ma_periods = _normalize_ma_periods(params)
         macd_params = params.get("macd", {})
         kdj_params = params.get("kdj", {})
         wr_params = params.get("wr", {})
@@ -1618,6 +2535,10 @@ class QuantService:
                         "ma-2": ma_values[1][index] if len(ma_values) > 1 else None,
                         "ma-3": ma_values[2][index] if len(ma_values) > 2 else None,
                         "ma-4": ma_values[3][index] if len(ma_values) > 3 else None,
+                        "target-ma-bias-1": _calc_ma_bias(closes[index], ma_values[0][index] if len(ma_values) > 0 else None),
+                        "target-ma-bias-2": _calc_ma_bias(closes[index], ma_values[1][index] if len(ma_values) > 1 else None),
+                        "target-ma-bias-3": _calc_ma_bias(closes[index], ma_values[2][index] if len(ma_values) > 2 else None),
+                        "target-ma-bias-4": _calc_ma_bias(closes[index], ma_values[3][index] if len(ma_values) > 3 else None),
                         "boll-upper": boll_upper[index],
                         "boll-middle": boll_middle[index],
                         "boll-lower": boll_lower[index],
@@ -1644,6 +2565,16 @@ class QuantService:
                 if not isinstance(raw_condition, dict):
                     continue
                 series_key = str(raw_condition.get("series_key", "")).strip()
+                if series_key in SEQUENCE_STRATEGY_NEW_HIGH_SERIES_KEYS:
+                    conditions.append(
+                        {
+                            "series_key": series_key,
+                            "operator": "gt",
+                            "threshold": 0.0,
+                            "consecutive_days": 1,
+                        }
+                    )
+                    continue
                 operator = str(raw_condition.get("operator", "")).strip()
                 threshold = _normalize_threshold(raw_condition.get("threshold"))
                 consecutive_days = raw_condition.get("consecutive_days")
@@ -1653,7 +2584,7 @@ class QuantService:
                     consecutive_days_value = 0
                 if (
                     series_key not in allowed_series_keys
-                    or operator not in {"gt", "lt"}
+                    or operator not in SEQUENCE_STRATEGY_OPERATORS
                     or threshold is None
                     or consecutive_days_value <= 0
                 ):
@@ -1700,6 +2631,90 @@ class QuantService:
                     return True
         return False
 
+    def _load_sequence_breadth_values_by_date(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, float]:
+        params: dict[str, object] = {}
+        sql = (
+            "SELECT trade_date, index_name, breadth_up_pct "
+            "FROM quant_index_dashboard_daily "
+            "WHERE breadth_up_pct IS NOT NULL"
+        )
+        if start_date is not None:
+            params["start_date"] = start_date
+            sql += " AND trade_date >= :start_date"
+        if end_date is not None:
+            params["end_date"] = end_date
+            sql += " AND trade_date <= :end_date"
+        rows = [dict(row) for row in self.db.execute(text(sql), params).mappings().all()]
+        return _build_sequence_dashboard_breadth_values(rows)
+
+    def _sequence_groups_require_market_macro(self, groups: list[dict]) -> bool:
+        for group in groups:
+            for condition in group.get("conditions", []):
+                if str(condition.get("series_key", "")).strip() in SEQUENCE_STRATEGY_MARKET_MACRO_SERIES_KEYS:
+                    return True
+        return False
+
+    def _sequence_groups_require_full_price_history(self, groups: list[dict]) -> bool:
+        for group in groups:
+            for condition in group.get("conditions", []):
+                if str(condition.get("series_key", "")).strip() in SEQUENCE_STRATEGY_NEW_HIGH_SERIES_KEYS:
+                    return True
+        return False
+
+    def _sequence_groups_require_ma_bias(self, groups: list[dict]) -> bool:
+        for group in groups:
+            for condition in group.get("conditions", []):
+                if str(condition.get("series_key", "")).strip() in SEQUENCE_STRATEGY_MA_BIAS_SERIES_KEYS:
+                    return True
+        return False
+
+    def _load_sequence_market_macro_values_by_date(
+        self,
+        groups: list[dict],
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, dict[str, float]]:
+        if not self._sequence_groups_require_market_macro(groups):
+            return {}
+
+        dashboard_params: dict[str, object] = {}
+        dashboard_sql = (
+            "SELECT trade_date, index_name, emotion_value, main_basis "
+            "FROM quant_index_dashboard_daily"
+        )
+        dashboard_filters: list[str] = []
+        if start_date is not None:
+            dashboard_params["start_date"] = start_date
+            dashboard_filters.append("trade_date >= :start_date")
+        if end_date is not None:
+            dashboard_params["end_date"] = end_date
+            dashboard_filters.append("trade_date <= :end_date")
+        if dashboard_filters:
+            dashboard_sql += " WHERE " + " AND ".join(dashboard_filters)
+        dashboard_rows = [dict(row) for row in self.db.execute(text(dashboard_sql), dashboard_params).mappings().all()]
+        macro_values = _build_sequence_dashboard_macro_values(dashboard_rows)
+
+        qvix_params: dict[str, object] = {}
+        qvix_sql = "SELECT trade_date, close_price FROM index_qvix_daily_data"
+        qvix_filters = ["close_price > 0"]
+        if start_date is not None:
+            qvix_params["start_date"] = start_date
+            qvix_filters.append("trade_date >= :start_date")
+        if end_date is not None:
+            qvix_params["end_date"] = end_date
+            qvix_filters.append("trade_date <= :end_date")
+        qvix_sql += " WHERE " + " AND ".join(qvix_filters)
+        qvix_values = _build_sequence_qvix_values(
+            [dict(row) for row in self.db.execute(text(qvix_sql), qvix_params).mappings().all()]
+        )
+        for trade_date, qvix_value in qvix_values.items():
+            macro_values.setdefault(trade_date, {})["market-qvix"] = qvix_value
+        return macro_values
+
     def _build_sequence_snapshots(self, strategy: QuantStrategyConfig) -> list[dict]:
         strategy_type = str(strategy.strategy_type or "").strip().lower()
         if strategy_type == "index":
@@ -1721,19 +2736,35 @@ class QuantService:
         buy_groups = self._get_sequence_groups(strategy, "buy")
         sell_groups = self._get_sequence_groups(strategy, "sell")
         requires_breadth = self._sequence_groups_require_breadth(buy_groups) or self._sequence_groups_require_breadth(sell_groups)
+        requires_macro = self._sequence_groups_require_market_macro(buy_groups) or self._sequence_groups_require_market_macro(sell_groups)
         breadth_by_date = (
-            {
-                _date_text(item.get("trade_date")): _to_float(item.get("up_ratio_pct"))
-                for item in self.list_index_breadth()
-                if item.get("trade_date") is not None
-            }
+            self._load_sequence_breadth_values_by_date()
             if requires_breadth
             else {}
         )
+        macro_by_date = (
+            self._load_sequence_market_macro_values_by_date(buy_groups + sell_groups)
+            if requires_macro
+            else {}
+        )
+        ma_values: list[list[float | None]] = []
+        if strategy_type in {"stock", "etf"}:
+            closes = [item["close"] for item in sorted_candles]
+            ma_values = [_calc_sma(closes, period) for period in _normalize_ma_periods(strategy.indicator_params or {})]
 
         snapshots: list[dict] = []
-        for candle in sorted_candles:
+        prior_max_high: float | None = None
+        prior_max_close: float | None = None
+        for index, candle in enumerate(sorted_candles):
             trade_date = candle["trade_date"]
+            high_price = _to_float(candle.get("high"))
+            close_price = _to_float(candle.get("close"))
+            high_is_new_high = (
+                high_price is not None and prior_max_high is not None and high_price > prior_max_high
+            )
+            close_is_new_high = (
+                close_price is not None and prior_max_close is not None and close_price > prior_max_close
+            )
             snapshots.append(
                 {
                     "trade_date": trade_date,
@@ -1741,9 +2772,20 @@ class QuantService:
                         "target-up-pct": candle.get("pct_chg") if _to_float(candle.get("pct_chg")) and _to_float(candle.get("pct_chg")) > 0 else None,
                         "target-down-pct": abs(_to_float(candle.get("pct_chg"))) if _to_float(candle.get("pct_chg")) and _to_float(candle.get("pct_chg")) < 0 else None,
                         "market-breadth-up-pct": breadth_by_date.get(trade_date),
+                        **(macro_by_date.get(_date_text(trade_date), {})),
+                        "target-high-new-high": 1.0 if high_is_new_high else 0.0,
+                        "target-close-new-high": 1.0 if close_is_new_high else 0.0,
+                        "target-ma-bias-1": _calc_ma_bias(close_price, ma_values[0][index] if len(ma_values) > 0 else None),
+                        "target-ma-bias-2": _calc_ma_bias(close_price, ma_values[1][index] if len(ma_values) > 1 else None),
+                        "target-ma-bias-3": _calc_ma_bias(close_price, ma_values[2][index] if len(ma_values) > 2 else None),
+                        "target-ma-bias-4": _calc_ma_bias(close_price, ma_values[3][index] if len(ma_values) > 3 else None),
                     },
                 }
             )
+            if high_price is not None:
+                prior_max_high = high_price if prior_max_high is None else max(prior_max_high, high_price)
+            if close_price is not None:
+                prior_max_close = close_price if prior_max_close is None else max(prior_max_close, close_price)
         return snapshots
 
     def _matches_sequence_condition_at(self, snapshots: list[dict], index: int, condition: dict) -> bool:
@@ -1754,17 +2796,13 @@ class QuantService:
         series_key = str(condition.get("series_key", "")).strip()
         operator = str(condition.get("operator", "")).strip()
         threshold = _normalize_threshold(condition.get("threshold"))
-        if series_key not in SEQUENCE_STRATEGY_SERIES_KEYS or operator not in {"gt", "lt"} or threshold is None:
+        if series_key not in SEQUENCE_STRATEGY_SERIES_KEYS or operator not in SEQUENCE_STRATEGY_OPERATORS or threshold is None:
             return False
 
         start_index = index - consecutive_days + 1
         for cursor in range(start_index, index + 1):
-            value = _to_float(snapshots[cursor].get("values", {}).get(series_key))
-            if value is None:
-                return False
-            if operator == "gt" and value <= threshold:
-                return False
-            if operator == "lt" and value >= threshold:
+            value = snapshots[cursor].get("values", {}).get(series_key)
+            if not _sequence_operator_matches(value, operator, threshold):
                 return False
         return True
 
@@ -1814,15 +2852,70 @@ class QuantService:
             raise ValueError("scan_end_date must be later than or equal to scan_start_date")
         return {
             "strategy_type": strategy_type,
+            "indicator_params": payload.get("indicator_params") if isinstance(payload.get("indicator_params"), dict) else {},
             "buy_sequence_groups": buy_groups,
             "scan_trade_config": self._normalize_scan_trade_config(payload.get("scan_trade_config") or {}),
             "scan_start_date": scan_start_date,
             "scan_end_date": scan_end_date,
         }
 
-    def _resolve_scan_query_start_date(self, start_date: date, buy_groups: list[dict]) -> date:
+    def _resolve_scan_sell_trigger_lookback_days(self, indicator_params: dict, trade_config: dict) -> int:
+        sell_trigger = trade_config.get("sell_trigger")
+        if not isinstance(sell_trigger, dict) or not sell_trigger.get("enabled"):
+            return 0
+        target = str(sell_trigger.get("target") or "")
+        if target.startswith("ma-"):
+            try:
+                period_index = int(target.split("-", 1)[1]) - 1
+            except (IndexError, TypeError, ValueError):
+                period_index = 0
+            raw_periods = indicator_params.get("ma", {}).get("periods", [5, 10, 20, 60])
+            period_values = raw_periods if isinstance(raw_periods, list) else [5, 10, 20, 60]
+            try:
+                period = int(period_values[period_index])
+            except (IndexError, TypeError, ValueError):
+                period = 60
+        else:
+            try:
+                period = int(indicator_params.get("boll", {}).get("period", 20))
+            except (TypeError, ValueError):
+                period = 20
+        return max(60, period * 4)
+
+    def _resolve_sequence_ma_bias_lookback_days(self, groups: list[dict], indicator_params: dict) -> int:
+        period_indexes: set[int] = set()
+        for group in groups:
+            for condition in group.get("conditions", []):
+                series_key = str(condition.get("series_key", "")).strip()
+                if series_key not in SEQUENCE_STRATEGY_MA_BIAS_SERIES_KEYS:
+                    continue
+                try:
+                    period_indexes.add(int(series_key.rsplit("-", 1)[1]) - 1)
+                except (IndexError, TypeError, ValueError):
+                    continue
+        if not period_indexes:
+            return 0
+        ma_periods = _normalize_ma_periods(indicator_params)
+        selected_periods = [ma_periods[index] for index in period_indexes if 0 <= index < len(ma_periods)]
+        if not selected_periods:
+            return 0
+        max_period = max(selected_periods)
+        return max(60, max_period * 4)
+
+    def _resolve_scan_query_start_date(
+        self,
+        start_date: date,
+        buy_groups: list[dict],
+        indicator_params: dict | None = None,
+        trade_config: dict | None = None,
+    ) -> date:
         max_days = self._max_consecutive_days_in_groups(buy_groups)
-        lookback_days = max(60, max_days * 5)
+        sell_trigger_lookback = self._resolve_scan_sell_trigger_lookback_days(
+            indicator_params or {},
+            trade_config or {},
+        )
+        ma_bias_lookback = self._resolve_sequence_ma_bias_lookback_days(buy_groups, indicator_params or {})
+        lookback_days = max(60, max_days * 5, sell_trigger_lookback, ma_bias_lookback)
         return start_date - timedelta(days=lookback_days)
 
     def _normalize_scan_page(self, page: int | None = None, page_size: int | None = None) -> tuple[int, int]:
@@ -1835,6 +2928,7 @@ class QuantService:
     def _serialize_scan_payload_for_cache(self, normalized_payload: dict) -> dict:
         return {
             "strategy_type": normalized_payload["strategy_type"],
+            "indicator_params": normalized_payload["indicator_params"],
             "buy_sequence_groups": normalized_payload["buy_sequence_groups"],
             "scan_trade_config": normalized_payload["scan_trade_config"],
             "scan_start_date": normalized_payload["scan_start_date"].isoformat(),
@@ -1921,11 +3015,67 @@ class QuantService:
             return max(min_qty, int(ceil(raw_quantity)))
         return max(min_qty, int(ceil(raw_quantity / step) * step))
 
-    def _build_scan_snapshots(self, candles: list[dict], breadth_by_date: dict[str, float | None]) -> list[dict]:
+    def _is_valid_scan_lot_quantity(self, quantity: int | None, lot_rule: dict | None) -> bool:
+        if quantity is None or lot_rule is None:
+            return False
+        min_qty = int(lot_rule.get("min_qty") or 0)
+        step = int(lot_rule.get("step") or 1)
+        mode = str(lot_rule.get("mode") or "multiple")
+        if quantity < min_qty or step <= 0:
+            return False
+        if mode == "after_minimum":
+            return (quantity - min_qty) % step == 0
+        return quantity % step == 0
+
+    def _resolve_scan_board_filter_key(self, board: object) -> str | None:
+        normalized_board = str(board or "").strip()
+        if not normalized_board:
+            return None
+        if "科创板" in normalized_board:
+            return "star"
+        if "北交所" in normalized_board or "北证" in normalized_board:
+            return "bse"
+        if "创业板" in normalized_board:
+            return "chinext"
+        if "主板" in normalized_board:
+            return "main"
+        return None
+
+    def _scan_board_is_allowed(self, board: object, board_filters: list[str]) -> bool:
+        if not board_filters:
+            return True
+        board_key = self._resolve_scan_board_filter_key(board)
+        return board_key in set(board_filters)
+
+    def _build_scan_snapshots(
+        self,
+        candles: list[dict],
+        breadth_by_date: dict[str, float | None],
+        *,
+        initial_max_high: object = None,
+        initial_max_close: object = None,
+        macro_by_date: dict[str, dict[str, float]] | None = None,
+        indicator_params: dict | None = None,
+    ) -> list[dict]:
         snapshots: list[dict] = []
-        for candle in candles:
+        prior_max_high = _to_float(initial_max_high)
+        prior_max_close = _to_float(initial_max_close)
+        macro_by_date = macro_by_date or {}
+        ma_values: list[list[float | None]] = []
+        if indicator_params is not None:
+            closes = [candle.get("close") for candle in candles]
+            ma_values = [_calc_sma_nullable(closes, period) for period in _normalize_ma_periods(indicator_params)]
+        for index, candle in enumerate(candles):
             trade_date = _date_text(candle.get("trade_date"))
             pct_chg = _to_float(candle.get("pct_chg"))
+            high_price = _to_float(candle.get("high"))
+            close_price = _to_float(candle.get("close"))
+            high_is_new_high = (
+                high_price is not None and prior_max_high is not None and high_price > prior_max_high
+            )
+            close_is_new_high = (
+                close_price is not None and prior_max_close is not None and close_price > prior_max_close
+            )
             snapshots.append(
                 {
                     "trade_date": trade_date,
@@ -1933,9 +3083,20 @@ class QuantService:
                         "target-up-pct": pct_chg if pct_chg is not None and pct_chg > 0 else None,
                         "target-down-pct": abs(pct_chg) if pct_chg is not None and pct_chg < 0 else None,
                         "market-breadth-up-pct": breadth_by_date.get(trade_date),
+                        **macro_by_date.get(trade_date, {}),
+                        "target-high-new-high": 1.0 if high_is_new_high else 0.0,
+                        "target-close-new-high": 1.0 if close_is_new_high else 0.0,
+                        "target-ma-bias-1": _calc_ma_bias(close_price, ma_values[0][index] if len(ma_values) > 0 else None),
+                        "target-ma-bias-2": _calc_ma_bias(close_price, ma_values[1][index] if len(ma_values) > 1 else None),
+                        "target-ma-bias-3": _calc_ma_bias(close_price, ma_values[2][index] if len(ma_values) > 2 else None),
+                        "target-ma-bias-4": _calc_ma_bias(close_price, ma_values[3][index] if len(ma_values) > 3 else None),
                     },
                 }
             )
+            if high_price is not None:
+                prior_max_high = high_price if prior_max_high is None else max(prior_max_high, high_price)
+            if close_price is not None:
+                prior_max_close = close_price if prior_max_close is None else max(prior_max_close, close_price)
         return snapshots
 
     def _sequence_condition_cache_key(self, condition: dict) -> tuple[str, str, float, int] | None:
@@ -1945,7 +3106,7 @@ class QuantService:
         consecutive_days = int(condition.get("consecutive_days") or 0)
         if (
             series_key not in SEQUENCE_STRATEGY_SERIES_KEYS
-            or operator not in {"gt", "lt"}
+            or operator not in SEQUENCE_STRATEGY_OPERATORS
             or threshold is None
             or consecutive_days <= 0
         ):
@@ -1977,10 +3138,8 @@ class QuantService:
             streak = 0
             matches = [False] * len(snapshots)
             for index, snapshot in enumerate(snapshots):
-                value = _to_float(snapshot.get("values", {}).get(series_key))
-                is_match = value is not None and (
-                    (operator == "gt" and value > threshold) or (operator == "lt" and value < threshold)
-                )
+                value = snapshot.get("values", {}).get(series_key)
+                is_match = _sequence_operator_matches(value, operator, threshold)
                 streak = streak + 1 if is_match else 0
                 matches[index] = streak >= consecutive_days
             condition_matches[condition_key] = matches
@@ -1994,35 +3153,94 @@ class QuantService:
                     hit_indexes_by_snapshot[index].append(group_index + 1)
         return hit_indexes_by_snapshot
 
+    def _matches_scan_sell_trigger_at(self, snapshot: dict | None, sell_trigger: dict | None) -> bool:
+        if not snapshot or not isinstance(sell_trigger, dict) or not sell_trigger.get("enabled"):
+            return False
+        close_price = _to_float(snapshot.get("close"))
+        target_value = _to_float(snapshot.get("values", {}).get(str(sell_trigger.get("target") or "")))
+        operator = str(sell_trigger.get("operator") or "")
+        if close_price is None or target_value is None:
+            return False
+        if operator == "gt":
+            return close_price > target_value
+        if operator == "lt":
+            return close_price < target_value
+        return False
+
+    def _last_candle_index_on_or_before(self, candles: list[dict], end_date_text: str) -> int | None:
+        last_index: int | None = None
+        for index, candle in enumerate(candles):
+            if _date_text(candle.get("trade_date")) <= end_date_text:
+                last_index = index
+            else:
+                break
+        return last_index
+
+    def _scan_execution_order(self, basis: object) -> int:
+        return 0 if str(basis or "open").strip().lower() == "open" else 1
+
+    def _scan_event_is_during_open_position(
+        self,
+        *,
+        signal_rank: tuple[object, int],
+        buy_rank: tuple[object, int],
+        active_sell_rank: tuple[object, int] | None,
+    ) -> bool:
+        if active_sell_rank is None:
+            return False
+        if buy_rank <= active_sell_rank:
+            return True
+        return signal_rank < active_sell_rank
+
     def _build_market_scan_events(self, payload: dict) -> tuple[dict, list[dict]]:
         normalized_payload = self._normalize_scan_payload(payload)
+        requires_full_price_history = self._sequence_groups_require_full_price_history(
+            normalized_payload["buy_sequence_groups"]
+        )
+        requires_ma_bias = self._sequence_groups_require_ma_bias(normalized_payload["buy_sequence_groups"])
         query_start_date = self._resolve_scan_query_start_date(
             normalized_payload["scan_start_date"],
             normalized_payload["buy_sequence_groups"],
+            normalized_payload["indicator_params"],
+            normalized_payload["scan_trade_config"],
         )
         strategy_type = normalized_payload["strategy_type"]
+        trade_config = normalized_payload["scan_trade_config"]
+        board_filters = trade_config.get("board_filters") or []
+        sell_trigger = trade_config.get("sell_trigger")
+        uses_dynamic_sell = isinstance(sell_trigger, dict) and bool(sell_trigger.get("enabled"))
+        query_end_date = (
+            normalized_payload["scan_end_date"] + timedelta(days=30)
+            if uses_dynamic_sell
+            else normalized_payload["scan_end_date"]
+        )
         if strategy_type == "stock":
             scan_universe = self.stock_service.list_stock_scan_universe(
                 start_date=query_start_date,
-                end_date=normalized_payload["scan_end_date"],
+                end_date=query_end_date,
+                history_max_before=query_start_date if requires_full_price_history else None,
             )
         else:
             scan_universe = self.stock_service.list_etf_scan_universe(
                 start_date=query_start_date,
-                end_date=normalized_payload["scan_end_date"],
+                end_date=query_end_date,
+                history_max_before=query_start_date if requires_full_price_history else None,
             )
 
         breadth_by_date = (
-            {
-                _date_text(item.get("trade_date")): _to_float(item.get("up_ratio_pct"))
-                for item in self.list_index_breadth()
-                if item.get("trade_date") is not None
-            }
+            self._load_sequence_breadth_values_by_date(
+                start_date=query_start_date,
+                end_date=query_end_date,
+            )
             if self._sequence_groups_require_breadth(normalized_payload["buy_sequence_groups"])
             else {}
         )
+        macro_by_date = self._load_sequence_market_macro_values_by_date(
+            normalized_payload["buy_sequence_groups"],
+            start_date=query_start_date,
+            end_date=query_end_date,
+        )
 
-        trade_config = normalized_payload["scan_trade_config"]
         buy_offset = int(trade_config["buy_offset_trading_days"])
         sell_offset = int(trade_config["sell_offset_trading_days"])
         buy_basis = str(trade_config["buy_price_basis"])
@@ -2033,15 +3251,34 @@ class QuantService:
         matched_events: list[dict] = []
 
         for target_code, target_payload in sorted(scan_universe.items()):
+            if strategy_type == "stock" and not self._scan_board_is_allowed(target_payload.get("board"), board_filters):
+                continue
             target_candles = target_payload.get("candles") or []
             if not target_candles:
                 continue
-            snapshots = self._build_scan_snapshots(target_candles, breadth_by_date)
+            snapshots = self._build_scan_snapshots(
+                target_candles,
+                breadth_by_date,
+                initial_max_high=target_payload.get("history_max_high"),
+                initial_max_close=target_payload.get("history_max_close"),
+                macro_by_date=macro_by_date,
+                indicator_params=normalized_payload["indicator_params"] if requires_ma_bias else None,
+            )
             if not snapshots:
                 continue
             hit_buy_groups_by_index = self._build_scan_group_hits(snapshots, normalized_payload["buy_sequence_groups"])
+            indicator_snapshots_by_date = (
+                {
+                    _date_text(item.get("trade_date")): item
+                    for item in self._build_stock_snapshots(normalized_payload["indicator_params"], target_candles)
+                }
+                if uses_dynamic_sell
+                else {}
+            )
+            fallback_sell_index = self._last_candle_index_on_or_before(target_candles, scan_end_date_text)
             board = target_payload.get("board")
             lot_rule = self._resolve_scan_lot_rule(strategy_type, board)
+            active_sell_rank: tuple[int, int] | None = None
             for index, (snapshot, hit_buy_groups) in enumerate(zip(snapshots, hit_buy_groups_by_index, strict=False)):
                 signal_date = _date_text(snapshot["trade_date"])
                 if signal_date < scan_start_date_text or signal_date > scan_end_date_text:
@@ -2054,11 +3291,15 @@ class QuantService:
                 disabled_reason: str | None = None
                 buy_date: str | None = None
                 sell_date: str | None = None
+                sell_trigger_date: str | None = None
+                sell_reason: str | None = "trigger" if uses_dynamic_sell else "offset"
                 buy_price: float | None = None
                 sell_price: float | None = None
                 planned_quantity: int | None = None
                 planned_buy_amount: float | None = None
                 tradable = True
+                buy_rank: tuple[int, int] | None = None
+                sell_rank: tuple[int, int] | None = None
 
                 if buy_index >= len(target_candles):
                     tradable = False
@@ -2067,19 +3308,76 @@ class QuantService:
                     buy_candle = target_candles[buy_index]
                     buy_date = buy_candle["trade_date"]
                     buy_price = float(buy_candle[buy_basis])
+                    buy_rank = (buy_index, self._scan_execution_order(buy_basis))
 
-                if tradable and sell_index >= len(target_candles):
+                if buy_rank is not None and self._scan_event_is_during_open_position(
+                    signal_rank=(index, 1),
+                    buy_rank=buy_rank,
+                    active_sell_rank=active_sell_rank,
+                ):
+                    continue
+
+                if tradable and uses_dynamic_sell:
+                    if fallback_sell_index is None:
+                        tradable = False
+                        disabled_reason = "扫描结束日前无可用卖出价格"
+                    elif buy_index > fallback_sell_index:
+                        tradable = False
+                        disabled_reason = "买入执行日超过扫描结束日"
+                    else:
+                        trigger_start_index = buy_index if buy_basis == "open" else buy_index + 1
+                        trigger_index: int | None = None
+                        for cursor in range(trigger_start_index, fallback_sell_index + 1):
+                            cursor_date = _date_text(target_candles[cursor].get("trade_date"))
+                            if self._matches_scan_sell_trigger_at(
+                                indicator_snapshots_by_date.get(cursor_date),
+                                sell_trigger,
+                            ):
+                                trigger_index = cursor
+                                break
+
+                        if trigger_index is not None:
+                            sell_trigger_date = _date_text(target_candles[trigger_index].get("trade_date"))
+                            sell_reason = "trigger"
+                            execution_index = trigger_index + 1
+                            if execution_index >= len(target_candles):
+                                tradable = False
+                                disabled_reason = "缺少次日卖出执行价"
+                            else:
+                                sell_candle = target_candles[execution_index]
+                                sell_date = _date_text(sell_candle.get("trade_date"))
+                                sell_price = float(sell_candle[sell_basis])
+                        else:
+                            sell_reason = "fallback_end"
+                            sell_candle = target_candles[fallback_sell_index]
+                            sell_date = _date_text(sell_candle.get("trade_date"))
+                            sell_price = float(sell_candle["close"])
+                elif tradable and sell_index >= len(target_candles):
                     tradable = False
                     disabled_reason = "卖出日期不足"
                 elif tradable:
                     sell_candle = target_candles[sell_index]
-                    sell_date = sell_candle["trade_date"]
+                    sell_date = _date_text(sell_candle.get("trade_date"))
                     sell_price = float(sell_candle[sell_basis])
 
                 if tradable and buy_date and sell_date:
-                    buy_rank = (buy_index, 0 if buy_basis == "open" else 1)
-                    sell_rank = (sell_index, 0 if sell_basis == "open" else 1)
-                    if sell_rank <= buy_rank:
+                    if uses_dynamic_sell and sell_reason == "fallback_end":
+                        sell_rank = (fallback_sell_index if fallback_sell_index is not None else -1, 1)
+                    elif uses_dynamic_sell:
+                        sell_rank = (
+                            next(
+                                (
+                                    cursor
+                                    for cursor, candle in enumerate(target_candles)
+                                    if _date_text(candle.get("trade_date")) == sell_date
+                                ),
+                                -1,
+                            ),
+                            self._scan_execution_order(sell_basis),
+                        )
+                    else:
+                        sell_rank = (sell_index, self._scan_execution_order(sell_basis))
+                    if buy_rank is not None and sell_rank <= buy_rank:
                         tradable = False
                         disabled_reason = "卖出执行时点必须晚于买入"
 
@@ -2097,6 +3395,9 @@ class QuantService:
                     if planned_quantity is None:
                         tradable = False
                         disabled_reason = "无法计算合法买入数量"
+                    elif not self._is_valid_scan_lot_quantity(planned_quantity, lot_rule):
+                        tradable = False
+                        disabled_reason = f"买入数量不符合交易单位：{lot_rule['label']}"
                     else:
                         planned_buy_amount = _round_metric(planned_quantity * buy_price)
 
@@ -2109,6 +3410,8 @@ class QuantService:
                         "signal_date": signal_date,
                         "buy_date": buy_date,
                         "sell_date": sell_date,
+                        "sell_trigger_date": sell_trigger_date,
+                        "sell_reason": sell_reason,
                         "hit_buy_groups": hit_buy_groups,
                         "tradable": tradable,
                         "disabled_reason": disabled_reason,
@@ -2120,6 +3423,8 @@ class QuantService:
                         "planned_buy_amount": planned_buy_amount,
                     }
                 )
+                if tradable and sell_rank is not None:
+                    active_sell_rank = sell_rank
 
         matched_events.sort(key=lambda item: (item["signal_date"], item["target_code"], item["event_id"]))
         return normalized_payload, matched_events
@@ -2193,6 +3498,7 @@ class QuantService:
             if not use_all_events
             else None
         )
+        candidate_execution_events: list[dict] = []
         execution_events: list[dict] = []
         events_by_target: dict[str, list[dict]] = defaultdict(list)
         output_events: list[dict] = []
@@ -2213,18 +3519,42 @@ class QuantService:
             event_copy["return_pct"] = None
             output_events.append(event_copy)
             if is_selected and event_copy.get("tradable"):
-                execution_events.append(event_copy)
-                events_by_target[event_copy["target_code"]].append(event_copy)
+                candidate_execution_events.append(event_copy)
 
-        basis_order = {"open": 0, "close": 1}
-        execution_events.sort(
+        candidate_execution_events.sort(
             key=lambda item: (
                 item["buy_date"],
-                basis_order.get(str(normalized_payload["scan_trade_config"]["buy_price_basis"]), 0),
+                self._scan_execution_order(normalized_payload["scan_trade_config"]["buy_price_basis"]),
                 item["target_code"],
                 item["event_id"],
             )
         )
+        active_sell_rank_by_target: dict[str, tuple[str, int]] = {}
+        for event in candidate_execution_events:
+            target_code = str(event.get("target_code") or "")
+            buy_date = str(event.get("buy_date") or "")
+            sell_date = str(event.get("sell_date") or "")
+            if not target_code or not buy_date or not sell_date:
+                event["skip_reason"] = "invalid_trade_plan"
+                continue
+            buy_rank = (buy_date, self._scan_execution_order(normalized_payload["scan_trade_config"]["buy_price_basis"]))
+            signal_rank = (str(event.get("signal_date") or buy_date), 1)
+            sell_basis = (
+                "close"
+                if str(event.get("sell_reason") or "") == "fallback_end"
+                else str(normalized_payload["scan_trade_config"]["sell_price_basis"])
+            )
+            sell_rank = (sell_date, self._scan_execution_order(sell_basis))
+            if self._scan_event_is_during_open_position(
+                signal_rank=signal_rank,
+                buy_rank=buy_rank,
+                active_sell_rank=active_sell_rank_by_target.get(target_code),
+            ):
+                event["skip_reason"] = "duplicate_open_position"
+                continue
+            execution_events.append(event)
+            events_by_target[target_code].append(event)
+            active_sell_rank_by_target[target_code] = sell_rank
 
         cash = initial_capital
         open_positions: list[dict] = []
@@ -2317,6 +3647,7 @@ class QuantService:
                     "benchmark_nav": None,
                     "signal": None,
                     "close_price": None,
+                    "position_value": _round_metric(position_value),
                     "position_pct": position_pct,
                     "position_bucket": _position_bucket(position_pct),
                 }
@@ -2401,11 +3732,15 @@ class QuantService:
         if not target_events:
             raise ValueError("scan target not found")
         hit_dates = sorted({str(event["signal_date"]) for event in target_events if event.get("signal_date")})
+        sell_trigger_dates = sorted(
+            {str(event["sell_trigger_date"]) for event in target_events if event.get("sell_trigger_date")}
+        )
         return {
             "scan_result_id": scan_result["scan_result_id"],
             "target_code": normalized_target_code,
             "target_name": str(target_events[0].get("target_name") or normalized_target_code),
             "hit_dates": hit_dates,
+            "sell_trigger_dates": sell_trigger_dates,
         }
 
     def backtest_market_scan(self, payload: dict, owner_user_id: int) -> dict:
@@ -2420,6 +3755,7 @@ class QuantService:
         ]
         normalized_payload = {
             "strategy_type": scan_result["normalized_payload"]["strategy_type"],
+            "indicator_params": scan_result["normalized_payload"].get("indicator_params") or {},
             "buy_sequence_groups": scan_result["normalized_payload"]["buy_sequence_groups"],
             "scan_trade_config": self._normalize_scan_trade_config(
                 payload.get("scan_trade_config") or scan_result["normalized_payload"].get("scan_trade_config") or {}
@@ -2684,12 +4020,40 @@ class QuantService:
                         return True
         return False
 
+    def _payload_contains_sequence_series(self, payload: dict, target_series: set[str]) -> bool:
+        if not target_series:
+            return False
+        for side in ("buy", "sell"):
+            raw_groups = payload.get(f"{side}_sequence_groups")
+            if not isinstance(raw_groups, list):
+                continue
+            for raw_group in raw_groups:
+                if not isinstance(raw_group, dict):
+                    continue
+                raw_conditions = raw_group.get("conditions")
+                if not isinstance(raw_conditions, list):
+                    continue
+                for raw_condition in raw_conditions:
+                    if (
+                        isinstance(raw_condition, dict)
+                        and str(raw_condition.get("series_key", "")).strip() in target_series
+                    ):
+                        return True
+        return False
+
     def _validate_strategy_payload(self, payload: dict) -> None:
         strategy_engine = self._normalize_strategy_engine(payload.get("strategy_engine", "snapshot"))
         strategy_type = str(payload.get("strategy_type", "")).strip()
         target_market = self._normalize_target_market(payload.get("target_market", "cn"))
         target_code = str(payload.get("target_code", "")).strip()
         target_name = str(payload.get("target_name", "")).strip()
+
+        if (
+            strategy_engine == "sequence"
+            and strategy_type == "index"
+            and self._payload_contains_sequence_series(payload, SEQUENCE_STRATEGY_MA_BIAS_SERIES_KEYS)
+        ):
+            raise ValueError("指数条件策略不支持 MA 乖离条件，请先移除相关规则。")
 
         if strategy_engine != "snapshot" or strategy_type != "index":
             return
@@ -2701,6 +4065,14 @@ class QuantService:
             target_code, target_name, target_market
         ):
             raise ValueError("当前指数不支持期现差条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(
+            payload, CN_OPTION_SUPPORTED_FILTER_KEYS
+        ) and not self._index_supports_cn_option_put_call(target_code, target_name, target_market):
+            raise ValueError("当前指数不支持 A股 Put/Call 条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(payload, CFFEX_NET_SHORT_DELTA_FILTER_KEYS) and target_market != "cn":
+            raise ValueError("当前市场不支持股指期货净空单增量条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(payload, BASIS_DELTA_FILTER_KEYS) and target_market != "cn":
+            raise ValueError("当前市场不支持期现差变化条件，请先移除相关规则。")
         if target_market == "us" and self._payload_contains_numeric_rules(payload, ["basis-month"]):
             raise ValueError("当前美股指数只支持连续期现差条件，请先移除月连期现差规则。")
         if self._payload_contains_numeric_rules(payload, US_BASIS_ADJUSTED_FILTER_KEYS) and not self._index_supports_adjusted_basis(
@@ -3261,6 +4633,7 @@ class QuantService:
     def _build_market_scan_payload_from_strategy(self, strategy: QuantStrategyConfig) -> dict:
         return {
             "strategy_type": strategy.strategy_type,
+            "indicator_params": strategy.indicator_params or {},
             "buy_sequence_groups": strategy.buy_sequence_groups or [],
             "scan_trade_config": strategy.scan_trade_config or {},
             "scan_start_date": strategy.scan_start_date,
@@ -3436,6 +4809,7 @@ class QuantService:
                     "benchmark_nav": benchmark_nav,
                     "signal": signal_map.get(trade_date) if include_signals else None,
                     "close_price": close_price,
+                    "position_value": position_value,
                     "position_pct": position_pct,
                     "position_bucket": _position_bucket(position_pct),
                 }

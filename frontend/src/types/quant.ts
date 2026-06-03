@@ -85,6 +85,40 @@ export type QuantFilterFieldKey =
   | 'vix-high'
   | 'vix-low'
   | 'vix-close'
+  | 'cn-option-put-call-current'
+  | 'cn-option-put-call-next'
+  | 'cn-option-put-call-quarter-1'
+  | 'cn-option-put-call-quarter-2'
+  | 'cn-option-flow-pc-volume'
+  | 'cn-option-flow-pc-turnover'
+  | 'basis-main-delta-5d'
+  | 'basis-main-delta-7d'
+  | 'basis-main-delta-14d'
+  | 'basis-main-delta-20d'
+  | 'basis-main-delta-30d'
+  | 'basis-main-delta-60d'
+  | 'basis-main-delta-120d'
+  | 'basis-month-delta-5d'
+  | 'basis-month-delta-7d'
+  | 'basis-month-delta-14d'
+  | 'basis-month-delta-20d'
+  | 'basis-month-delta-30d'
+  | 'basis-month-delta-60d'
+  | 'basis-month-delta-120d'
+  | 'cffex-net-short-top20-delta-5d'
+  | 'cffex-net-short-top20-delta-7d'
+  | 'cffex-net-short-top20-delta-14d'
+  | 'cffex-net-short-top20-delta-20d'
+  | 'cffex-net-short-top20-delta-30d'
+  | 'cffex-net-short-top20-delta-60d'
+  | 'cffex-net-short-top20-delta-120d'
+  | 'cffex-net-short-citic-delta-5d'
+  | 'cffex-net-short-citic-delta-7d'
+  | 'cffex-net-short-citic-delta-14d'
+  | 'cffex-net-short-citic-delta-20d'
+  | 'cffex-net-short-citic-delta-30d'
+  | 'cffex-net-short-citic-delta-60d'
+  | 'cffex-net-short-citic-delta-120d'
   | 'us-vix-open'
   | 'us-vix-high'
   | 'us-vix-low'
@@ -125,12 +159,14 @@ export type QuantFilterFieldKey =
 export type QuantFilterGroupKey =
   | 'emotion'
   | 'basis'
+  | 'basis-delta'
   | 'breadth'
   | 'vix'
   | 'us-vix'
   | 'fear-greed'
   | 'hedge'
   | 'put-call'
+  | 'net-short'
   | 'treasury'
   | 'credit'
   | 'change'
@@ -170,7 +206,7 @@ export interface QuantDailyIndicatorSnapshot {
   values: Partial<Record<QuantFilterFieldKey, number | null>>
 }
 
-export type QuantHighlightColor = 'blue' | 'red' | 'purple'
+export type QuantHighlightColor = 'blue' | 'red' | 'purple' | 'amber'
 export type QuantHighlightVariant = 'solid' | 'striped'
 
 export interface QuantHighlightBand {
@@ -179,6 +215,13 @@ export interface QuantHighlightBand {
   variant?: QuantHighlightVariant
   blueHitGroups?: number[]
   redHitGroups?: number[]
+}
+
+export interface QuantChartOverlayLine {
+  key: string
+  label: string
+  color: string
+  data: Array<{ time: string; value: number | null }>
 }
 
 export interface QuantFilterDataset {
@@ -256,10 +299,32 @@ export interface QuantRuleGroup {
 
 export type QuantFilterGroupSet = QuantRuleGroup[]
 
-export type QuantSequenceSeriesKey = 'market-breadth-up-pct' | 'target-up-pct' | 'target-down-pct'
-export type QuantSequenceOperator = 'gt' | 'lt'
+export type QuantSequenceSeriesKey =
+  | 'market-breadth-up-pct'
+  | 'market-emotion'
+  | 'market-qvix'
+  | 'market-basis-main'
+  | 'target-up-pct'
+  | 'target-down-pct'
+  | 'target-high-new-high'
+  | 'target-close-new-high'
+  | 'target-ma-bias-1'
+  | 'target-ma-bias-2'
+  | 'target-ma-bias-3'
+  | 'target-ma-bias-4'
+export type QuantSequenceOperator = 'gt' | 'gte' | 'lt' | 'lte'
 export type QuantSequenceMode = 'single_target' | 'market_scan'
+export type QuantScanBoardFilter = 'main' | 'chinext' | 'star' | 'bse'
 export type QuantScanPriceBasis = 'open' | 'close'
+export type QuantScanSellTriggerTarget =
+  | 'ma-1'
+  | 'ma-2'
+  | 'ma-3'
+  | 'ma-4'
+  | 'boll-upper'
+  | 'boll-middle'
+  | 'boll-lower'
+export type QuantScanSellReason = 'offset' | 'trigger' | 'fallback_end'
 
 export interface QuantSequenceConditionDraft {
   id: string
@@ -287,6 +352,12 @@ export interface QuantSequenceGroup {
 
 export type QuantSequenceGroupSet = QuantSequenceGroup[]
 
+export interface QuantScanSellTriggerConfig {
+  enabled: boolean
+  operator: QuantSequenceOperator
+  target: QuantScanSellTriggerTarget
+}
+
 export interface QuantScanTradeConfig {
   initial_capital: number
   buy_amount_per_event: number
@@ -294,6 +365,8 @@ export interface QuantScanTradeConfig {
   sell_offset_trading_days: number
   buy_price_basis: QuantScanPriceBasis
   sell_price_basis: QuantScanPriceBasis
+  sell_trigger?: QuantScanSellTriggerConfig | null
+  board_filters?: QuantScanBoardFilter[]
 }
 
 export interface QuantScanEvent {
@@ -304,6 +377,8 @@ export interface QuantScanEvent {
   signal_date: string
   buy_date: string | null
   sell_date: string | null
+  sell_trigger_date?: string | null
+  sell_reason?: QuantScanSellReason | null
   hit_buy_groups: number[]
   tradable: boolean
   disabled_reason: string | null
@@ -397,6 +472,7 @@ export interface QuantEquityCurvePoint {
   benchmark_nav: number | null
   signal: string | null
   close_price: number | null
+  position_value?: number | null
   position_pct: number
   position_bucket: 'flat' | 'light' | 'medium' | 'heavy' | 'full' | null
 }
@@ -458,6 +534,7 @@ export interface QuantScanTargetHits {
   target_code: string
   target_name: string
   hit_dates: string[]
+  sell_trigger_dates: string[]
 }
 
 export interface QuantScanBacktestSelection {

@@ -44,6 +44,7 @@ type CollectionTargetOption = {
   targetType: 'stock' | 'index' | null
   requiresTargetSelection: boolean
   description: string
+  manualOnly?: boolean
   fixedTargetCode?: string
   fixedTargetName?: string
 }
@@ -66,6 +67,15 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     targetType: null,
     requiresTargetSelection: false,
     description: '执行文档定义的股票日更整批采集，无需选择具体标的。',
+  },
+  {
+    value: 'stock_exchange_official_daily',
+    label: '沪深官网股票日更',
+    group: '独立日更',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '从上交所、深交所官网接口采集独立股票日线与指标数据，不影响原股票日更。',
   },
   {
     value: 'index_cn_daily',
@@ -146,7 +156,7 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     marketScope: 'cn_stock',
     targetType: null,
     requiresTargetSelection: false,
-    description: '执行量化指数看板日更整批采集。',
+    description: '执行量化指数看板日更计算刷新。',
   },
   {
     value: 'index_hk_daily',
@@ -214,6 +224,16 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     targetType: null,
     requiresTargetSelection: false,
     description: '执行新闻情绪日更整批采集，按 A 股交易日自动调度。',
+  },
+  {
+    value: 'excel_emotion_import',
+    label: '情绪指标 Excel 导入',
+    group: '手动任务',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    manualOnly: true,
+    description: '执行 python run.py emotion-excel import 情绪指标.xlsx，只能手动立即执行，不进入自动调度。',
   },
   {
     value: 'index_us_vix_daily',
@@ -418,6 +438,9 @@ function applyCollectionOptionDefaults(collectorKey: CollectionCollectorKey) {
   draft.collector_key = option.value
   draft.market_scope = option.marketScope
   draft.target_type = option.targetType
+  if (option.manualOnly) {
+    draft.enabled = false
+  }
   if (option.requiresTargetSelection) {
     clearCollectionTarget()
     return
@@ -439,12 +462,13 @@ function applyDraftTask(taskType: ScheduledTaskType) {
 }
 
 function toPayload(): TaskPayload {
+  const manualOnly = draft.task_type === 'collection' && currentCollectionTargetOption.value.manualOnly
   return {
     name: draft.name.trim(),
     task_type: draft.task_type,
     market_scope: draft.market_scope,
     schedule_time: draft.schedule_time,
-    enabled: draft.enabled,
+    enabled: manualOnly ? false : draft.enabled,
     collector_key: draft.task_type === 'collection' ? draft.collector_key : null,
     target_type: draft.task_type === 'collection' ? draft.target_type : null,
     target_code: draft.task_type === 'collection' ? draft.target_code.trim() || null : null,
@@ -803,13 +827,16 @@ onUnmounted(() => {
           @click="selectTask(item.id)"
         >
           <strong>{{ item.name }}</strong>
-          <span>{{ item.task_type === 'collection' ? (item.collection_label || '采集任务') : '通知任务' }} / {{ item.schedule_time }}</span>
+          <span>
+            {{ item.task_type === 'collection' ? (item.collection_label || '采集任务') : '通知任务' }} /
+            {{ item.manual_only ? '仅手动' : item.schedule_time }}
+          </span>
           <span v-if="item.task_type === 'collection'">
             {{ formatMarketScope(item.market_scope) }}
             <template v-if="item.target_code && item.target_name"> / {{ item.target_code }} / {{ item.target_name }}</template>
           </span>
           <span v-else>{{ item.strategy_names.length }} 条策略 / {{ item.target_email || '未设置邮箱' }}</span>
-          <span>{{ item.enabled ? '启用中' : '已停用' }} / {{ item.last_run_status || '尚未执行' }}</span>
+          <span>{{ item.manual_only ? '仅手动' : item.enabled ? '启用中' : '已停用' }} / {{ item.last_run_status || '尚未执行' }}</span>
         </button>
       </div>
       <p v-else class="muted">
@@ -824,7 +851,11 @@ onUnmounted(() => {
             <h3>{{ formTitle }}</h3>
             <p class="muted">
               <template v-if="draft.task_type === 'collection'">
-                采集任务会在对应市场的自动调度时间运行；手动“立即执行”会直接触发，不受休市日跳过规则影响。
+                {{
+                  currentCollectionTargetOption.manualOnly
+                    ? '这条采集任务只支持手动“立即执行”，不会进入自动调度。'
+                    : '采集任务会在对应市场的自动调度时间运行；手动“立即执行”会直接触发，不受休市日跳过规则影响。'
+                }}
               </template>
               <template v-else>
                 通知任务会按当前账户邮箱发送策略汇总邮件，即使当天没有信号也会写明“无操作”。
@@ -832,7 +863,7 @@ onUnmounted(() => {
             </p>
           </div>
           <span v-if="currentTask && !isCreating" class="account-readonly-tag">
-            {{ currentTask.enabled ? '启用中' : '已停用' }}
+            {{ currentTask.manual_only ? '仅手动' : currentTask.enabled ? '启用中' : '已停用' }}
           </span>
         </div>
 
@@ -854,13 +885,13 @@ onUnmounted(() => {
           </label>
           <label class="quant-field">
             <span class="quant-field-label">执行时间</span>
-            <input v-model="draft.schedule_time" class="input" type="time" />
+            <input v-model="draft.schedule_time" class="input" type="time" :disabled="currentCollectionTargetOption.manualOnly" />
           </label>
           <label class="quant-field">
             <span class="quant-field-label">启用状态</span>
-            <select v-model="draft.enabled" class="input">
+            <select v-model="draft.enabled" class="input" :disabled="currentCollectionTargetOption.manualOnly">
               <option :value="true">启用</option>
-              <option :value="false">停用</option>
+              <option :value="false">{{ currentCollectionTargetOption.manualOnly ? '仅手动' : '停用' }}</option>
             </select>
           </label>
         </div>
@@ -952,7 +983,7 @@ onUnmounted(() => {
           <button class="btn primary" :disabled="saving || !canSave" @click="saveTask()">
             {{ saving ? '保存中...' : isCreating ? '创建任务' : '保存修改' }}
           </button>
-          <button v-if="currentTask && !isCreating" class="btn" :disabled="actionLoading" @click="toggleCurrentTask()">
+          <button v-if="currentTask && !isCreating && !currentTask.manual_only" class="btn" :disabled="actionLoading" @click="toggleCurrentTask()">
             {{ currentTask.enabled ? '停用任务' : '启用任务' }}
           </button>
           <button v-if="currentTask && !isCreating" class="btn" :disabled="actionLoading" @click="runCurrentTask()">
