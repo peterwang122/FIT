@@ -16,6 +16,10 @@ import type {
 import type {
   FuturesBasisPoint,
   IndexBreadthPoint,
+  IndexBasisDeltaPoint,
+  IndexCffexNetShortDeltaPoint,
+  IndexCnOptionFlowPutCallPoint,
+  IndexCnOptionPutCallPoint,
   IndexDashboardBasisPoint,
   IndexDashboardEmotionPoint,
   IndexDashboardResponse,
@@ -64,6 +68,7 @@ type QuantFormState = {
 
 type QuantFormErrors = Partial<Record<keyof QuantFormState, string>>
 type QuantFilterColor = 'blue' | 'red'
+type RuleHitDisplayFilter = 'all' | `blue:${number}` | `red:${number}`
 type IndexDashboardChunkState = {
   market: QuantTargetMarket
   supportsAuxiliaryPanels: boolean
@@ -77,6 +82,10 @@ type IndexDashboardChunkState = {
   usFearGreedPoints: IndexUsFearGreedPoint[]
   usHedgeProxyPoints: IndexUsHedgeProxyPoint[]
   usPutCallPoints: IndexUsPutCallPoint[]
+  cnOptionPutCallPoints: IndexCnOptionPutCallPoint[]
+  cnOptionFlowPutCallPoints: IndexCnOptionFlowPutCallPoint[]
+  cffexNetShortDeltaPoints: IndexCffexNetShortDeltaPoint[]
+  basisDeltaPoints: IndexBasisDeltaPoint[]
   usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints: IndexUsCreditSpreadPoint[]
   earliestLoadedDate: string | null
@@ -88,6 +97,47 @@ const DEFAULT_INDEX_NAME = '上证指数'
 const BEIJING50_INDEX_NAME = '北证50'
 const CORE_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
 const SHARED_AUXILIARY_INDEX_NAMES = [DEFAULT_INDEX_NAME, BEIJING50_INDEX_NAME] as const
+const OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES = [DEFAULT_INDEX_NAME, '上证50', '沪深300', '中证1000'] as const
+const CN_OPTION_PUT_CALL_FILTER_FIELDS = [
+  'cn-option-put-call-current',
+  'cn-option-put-call-next',
+  'cn-option-put-call-quarter-1',
+  'cn-option-put-call-quarter-2',
+  'cn-option-flow-pc-volume',
+  'cn-option-flow-pc-turnover',
+] as const
+const CFFEX_NET_SHORT_DELTA_FILTER_FIELDS = [
+  'cffex-net-short-top20-delta-5d',
+  'cffex-net-short-top20-delta-7d',
+  'cffex-net-short-top20-delta-14d',
+  'cffex-net-short-top20-delta-20d',
+  'cffex-net-short-top20-delta-30d',
+  'cffex-net-short-top20-delta-60d',
+  'cffex-net-short-top20-delta-120d',
+  'cffex-net-short-citic-delta-5d',
+  'cffex-net-short-citic-delta-7d',
+  'cffex-net-short-citic-delta-14d',
+  'cffex-net-short-citic-delta-20d',
+  'cffex-net-short-citic-delta-30d',
+  'cffex-net-short-citic-delta-60d',
+  'cffex-net-short-citic-delta-120d',
+] as const
+const BASIS_DELTA_FILTER_FIELDS = [
+  'basis-main-delta-5d',
+  'basis-main-delta-7d',
+  'basis-main-delta-14d',
+  'basis-main-delta-20d',
+  'basis-main-delta-30d',
+  'basis-main-delta-60d',
+  'basis-main-delta-120d',
+  'basis-month-delta-5d',
+  'basis-month-delta-7d',
+  'basis-month-delta-14d',
+  'basis-month-delta-20d',
+  'basis-month-delta-30d',
+  'basis-month-delta-60d',
+  'basis-month-delta-120d',
+] as const
 const VIX_SUPPORTED_INDEX_NAMES = ['上证50', '沪深300', '中证500'] as const
 const VIX_SUPPORTED_INDEX_CODES = [
   '000016',
@@ -206,6 +256,10 @@ function buildDashboardChunkState(
     | 'us_fear_greed_points'
     | 'us_hedge_proxy_points'
     | 'us_put_call_points'
+    | 'cn_option_put_call_points'
+    | 'cn_option_flow_put_call_points'
+    | 'cffex_net_short_delta_points'
+    | 'basis_delta_points'
     | 'us_treasury_yield_points'
     | 'us_credit_spread_points'
   >,
@@ -225,6 +279,10 @@ function buildDashboardChunkState(
     usFearGreedPoints: payload.us_fear_greed_points ?? [],
     usHedgeProxyPoints: payload.us_hedge_proxy_points ?? [],
     usPutCallPoints: payload.us_put_call_points ?? [],
+    cnOptionPutCallPoints: payload.cn_option_put_call_points ?? [],
+    cnOptionFlowPutCallPoints: payload.cn_option_flow_put_call_points ?? [],
+    cffexNetShortDeltaPoints: payload.cffex_net_short_delta_points ?? [],
+    basisDeltaPoints: payload.basis_delta_points ?? [],
     usTreasuryYieldPoints: payload.us_treasury_yield_points ?? [],
     usCreditSpreadPoints: payload.us_credit_spread_points ?? [],
     earliestLoadedDate: payload.candles[0]?.trade_date ?? null,
@@ -397,6 +455,10 @@ const usVixPoints = ref<IndexUsVixPoint[]>([])
 const usFearGreedPoints = ref<IndexUsFearGreedPoint[]>([])
 const usHedgeProxyPoints = ref<IndexUsHedgeProxyPoint[]>([])
 const usPutCallPoints = ref<IndexUsPutCallPoint[]>([])
+const cnOptionPutCallPoints = ref<IndexCnOptionPutCallPoint[]>([])
+const cnOptionFlowPutCallPoints = ref<IndexCnOptionFlowPutCallPoint[]>([])
+const cffexNetShortDeltaPoints = ref<IndexCffexNetShortDeltaPoint[]>([])
+const basisDeltaPoints = ref<IndexBasisDeltaPoint[]>([])
 const usTreasuryYieldPoints = ref<IndexUsTreasuryYieldPoint[]>([])
 const usCreditSpreadPoints = ref<IndexUsCreditSpreadPoint[]>([])
 const loading = ref(false)
@@ -441,6 +503,11 @@ const supportsUsVixPanel = computed(() => isUsMarket.value)
 const supportsUsFearGreedPanel = computed(() => isUsMarket.value)
 const supportsUsHedgeProxyPanel = computed(() => isUsMarket.value && Boolean(usHedgeProxyScope.value))
 const supportsUsPutCallPanel = computed(() => isUsMarket.value)
+const supportsCnOptionPutCallPanel = computed(
+  () =>
+    isCnMarket.value &&
+    OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES.some((item) => item === selectedIndexName.value),
+)
 const supportsUsTreasuryYieldPanel = computed(() => isUsMarket.value)
 const supportsUsCreditSpreadPanel = computed(() => isUsMarket.value)
 const supportsAdjustedBasisPanel = computed(() => isUsMarket.value && indexSupportsAdjustedBasis(selectedIndexName.value, indexCode.value))
@@ -455,6 +522,16 @@ const quantFilterDataset = computed(() => {
       breadthPoints.value,
       vixPoints.value,
       supportsVixPanel.value,
+      {
+        includeCnOptionPutCall: supportsCnOptionPutCallPanel.value,
+        includeCnOptionFlowPutCall: supportsCnOptionPutCallPanel.value,
+        includeCffexNetShortDelta: true,
+        includeBasisDelta: true,
+        cnOptionPutCallPoints: cnOptionPutCallPoints.value,
+        cnOptionFlowPutCallPoints: cnOptionFlowPutCallPoints.value,
+        cffexNetShortDeltaPoints: cffexNetShortDeltaPoints.value,
+        basisDeltaPoints: basisDeltaPoints.value,
+      },
     )
   }
   if (isUsMarket.value) {
@@ -626,6 +703,36 @@ const unsupportedAuxiliaryRuleMessage = computed(() => {
     }
   }
 
+  if (
+    hasNumericFieldRules(blueGroups, [...CN_OPTION_PUT_CALL_FILTER_FIELDS]) ||
+    hasNumericFieldRules(redGroups, [...CN_OPTION_PUT_CALL_FILTER_FIELDS])
+  ) {
+    if (!isCnMarket.value) {
+      return '当前市场不支持 A股 Put/Call 条件，请先移除相关规则后再保存。'
+    }
+    if (!supportsCnOptionPutCallPanel.value) {
+      return '当前指数不支持 A股 Put/Call 条件，请先移除相关规则后再保存。'
+    }
+  }
+
+  if (
+    hasNumericFieldRules(blueGroups, [...CFFEX_NET_SHORT_DELTA_FILTER_FIELDS]) ||
+    hasNumericFieldRules(redGroups, [...CFFEX_NET_SHORT_DELTA_FILTER_FIELDS])
+  ) {
+    if (!isCnMarket.value) {
+      return '当前市场不支持股指期货净空单增量条件，请先移除相关规则后再保存。'
+    }
+  }
+
+  if (
+    hasNumericFieldRules(blueGroups, [...BASIS_DELTA_FILTER_FIELDS]) ||
+    hasNumericFieldRules(redGroups, [...BASIS_DELTA_FILTER_FIELDS])
+  ) {
+    if (!isCnMarket.value) {
+      return '当前市场不支持期现差变化条件，请先移除相关规则后再保存。'
+    }
+  }
+
   const usMarketAuxiliaryFields = [
     'us-vix-open',
     'us-vix-high',
@@ -679,10 +786,42 @@ const canApplyFilters = computed(() => {
   )
 })
 
+const ruleHitDisplayFilter = ref<RuleHitDisplayFilter>('all')
+const ruleHitDisplayOptions = computed<Array<{ value: RuleHitDisplayFilter; label: string }>>(() => [
+  { value: 'all', label: '全部' },
+  ...appliedBlueFilterGroups.value.map((_group, index) => ({
+    value: `blue:${index + 1}` as RuleHitDisplayFilter,
+    label: `蓝 ${index + 1}`,
+  })),
+  ...appliedRedFilterGroups.value.map((_group, index) => ({
+    value: `red:${index + 1}` as RuleHitDisplayFilter,
+    label: `红 ${index + 1}`,
+  })),
+])
+
+function resetRuleHitDisplayFilter() {
+  ruleHitDisplayFilter.value = 'all'
+}
+
+function selectedRuleHitGroup(color: QuantFilterColor) {
+  const [selectedColor, selectedGroup] = ruleHitDisplayFilter.value.split(':')
+  if (selectedColor !== color) return null
+  const parsed = Number(selectedGroup)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function filterHitGroupsByDisplay(color: QuantFilterColor, groups: number[]) {
+  if (ruleHitDisplayFilter.value === 'all') return groups
+  const selectedGroup = selectedRuleHitGroup(color)
+  return selectedGroup !== null && groups.includes(selectedGroup) ? [selectedGroup] : []
+}
+
 const highlightBands = computed<QuantHighlightBand[]>(() => {
   return quantFilterDataset.value.snapshots.reduce<QuantHighlightBand[]>((bands, snapshot) => {
-    const blueHitGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value)
-    const redHitGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value)
+    const matchedBlueGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value)
+    const matchedRedGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value)
+    const blueHitGroups = filterHitGroupsByDisplay('blue', matchedBlueGroups)
+    const redHitGroups = filterHitGroupsByDisplay('red', matchedRedGroups)
     const isBlue = blueHitGroups.length > 0
     const isRed = redHitGroups.length > 0
     const variant = blueHitGroups.length > 1 || redHitGroups.length > 1 ? 'striped' : 'solid'
@@ -696,6 +835,12 @@ const highlightBands = computed<QuantHighlightBand[]>(() => {
     }
     return bands
   }, [])
+})
+
+watch(ruleHitDisplayOptions, (options) => {
+  if (!options.some((option) => option.value === ruleHitDisplayFilter.value)) {
+    resetRuleHitDisplayFilter()
+  }
 })
 
 const highlightSummary = computed(() => ({
@@ -776,6 +921,8 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
           main_basis_adjusted: item.main_basis_adjusted,
           basis_roll_flag: item.basis_roll_flag,
           basis_roll_delta: item.basis_roll_delta,
+          basis_roll_type: item.basis_roll_type,
+          basis_roll_contracts: item.basis_roll_contracts,
         })),
       ) ?? []
     : []
@@ -786,6 +933,18 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
   usHedgeProxyPoints.value =
     targetMarket.value === 'us' && nextUsHedgeScope ? state?.usHedgeProxyPoints ?? [] : []
   usPutCallPoints.value = targetMarket.value === 'us' ? state?.usPutCallPoints ?? [] : []
+  cnOptionPutCallPoints.value =
+    targetMarket.value === 'cn' &&
+    OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES.some((item) => item === targetName)
+      ? state?.cnOptionPutCallPoints ?? []
+      : []
+  cnOptionFlowPutCallPoints.value =
+    targetMarket.value === 'cn' &&
+    OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES.some((item) => item === targetName)
+      ? state?.cnOptionFlowPutCallPoints ?? []
+      : []
+  cffexNetShortDeltaPoints.value = targetMarket.value === 'cn' ? state?.cffexNetShortDeltaPoints ?? [] : []
+  basisDeltaPoints.value = targetMarket.value === 'cn' ? state?.basisDeltaPoints ?? [] : []
   usTreasuryYieldPoints.value = targetMarket.value === 'us' ? state?.usTreasuryYieldPoints ?? [] : []
   usCreditSpreadPoints.value = targetMarket.value === 'us' ? state?.usCreditSpreadPoints ?? [] : []
   hasMoreHistory.value = state?.hasMoreHistory ?? false
@@ -822,6 +981,22 @@ function mergeDashboardState(
       (item) => String(item.release_date || ''),
     ),
     usPutCallPoints: mergeByTradeDate(currentState.usPutCallPoints, payload.us_put_call_points ?? []),
+    cnOptionPutCallPoints: mergeByTradeDate(
+      currentState.cnOptionPutCallPoints,
+      payload.cn_option_put_call_points ?? [],
+    ),
+    cnOptionFlowPutCallPoints: mergeByTradeDate(
+      currentState.cnOptionFlowPutCallPoints,
+      payload.cn_option_flow_put_call_points ?? [],
+    ),
+    cffexNetShortDeltaPoints: mergeByTradeDate(
+      currentState.cffexNetShortDeltaPoints,
+      payload.cffex_net_short_delta_points ?? [],
+    ),
+    basisDeltaPoints: mergeByTradeDate(
+      currentState.basisDeltaPoints,
+      payload.basis_delta_points ?? [],
+    ),
     usTreasuryYieldPoints: mergeByTradeDate(currentState.usTreasuryYieldPoints, payload.us_treasury_yield_points ?? []),
     usCreditSpreadPoints: mergeByTradeDate(currentState.usCreditSpreadPoints, payload.us_credit_spread_points ?? []),
     earliestLoadedDate: mergedCandles[0]?.trade_date ?? null,
@@ -934,6 +1109,7 @@ function applyFilters() {
   if (!canApplyFilters.value) return
   appliedBlueFilterGroups.value = blueRuleValidation.value.groups
   appliedRedFilterGroups.value = redRuleValidation.value.groups
+  resetRuleHitDisplayFilter()
 }
 
 function clearFilters() {
@@ -941,6 +1117,7 @@ function clearFilters() {
   redRuleDrafts.value = []
   appliedBlueFilterGroups.value = []
   appliedRedFilterGroups.value = []
+  resetRuleHitDisplayFilter()
 }
 
 function buildStrategyPayload() {
@@ -1064,6 +1241,7 @@ function applyStrategyConfig(strategy: QuantStrategyConfig) {
   redRuleDrafts.value = deserializeRuleGroups(redGroups)
   appliedBlueFilterGroups.value = blueGroups
   appliedRedFilterGroups.value = redGroups
+  resetRuleHitDisplayFilter()
   saveName.value = strategy.name
   loadedStrategyId.value = strategy.id
   showParamsModal.value = false
@@ -1105,6 +1283,10 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     usFearGreedPoints.value = []
     usHedgeProxyPoints.value = []
     usPutCallPoints.value = []
+    cnOptionPutCallPoints.value = []
+    cnOptionFlowPutCallPoints.value = []
+    cffexNetShortDeltaPoints.value = []
+    basisDeltaPoints.value = []
     usTreasuryYieldPoints.value = []
     usCreditSpreadPoints.value = []
     supportsAuxiliaryPanels.value = nextMarket === 'cn'
@@ -1261,12 +1443,17 @@ watch(
           :us-fear-greed-points="usFearGreedPoints"
           :us-hedge-proxy-points="usHedgeProxyPoints"
           :us-put-call-points="usPutCallPoints"
+          :cn-option-put-call-points="cnOptionPutCallPoints"
+          :cn-option-flow-put-call-points="cnOptionFlowPutCallPoints"
+          :cffex-net-short-delta-points="cffexNetShortDeltaPoints"
+          :basis-delta-points="basisDeltaPoints"
           :us-treasury-yield-points="usTreasuryYieldPoints"
           :us-credit-spread-points="usCreditSpreadPoints"
           :supports-us-vix-panel="supportsUsVixPanel"
           :supports-us-fear-greed-panel="supportsUsFearGreedPanel"
           :supports-us-hedge-proxy-panel="supportsUsHedgeProxyPanel"
           :supports-us-put-call-panel="supportsUsPutCallPanel"
+          :supports-cn-option-put-call-panel="supportsCnOptionPutCallPanel"
           :supports-us-treasury-yield-panel="supportsUsTreasuryYieldPanel"
           :supports-us-credit-spread-panel="supportsUsCreditSpreadPanel"
           :highlight-bands="highlightBands"
@@ -1302,6 +1489,14 @@ watch(
           </div>
         </div>
         <p class="quant-filter-hint muted">规则组内全部满足，命中任一规则组即触发对应颜色；同日蓝红同时命中会显示为紫色。</p>
+        <label class="quant-hit-display-control">
+          <span>命中显示</span>
+          <select v-model="ruleHitDisplayFilter" class="input">
+            <option v-for="option in ruleHitDisplayOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
 
         <div class="quant-filter-sections">
           <QuantRuleGroupBuilder
@@ -1343,4 +1538,3 @@ watch(
     </aside>
   </div>
 </template>
-

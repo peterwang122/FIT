@@ -131,6 +131,8 @@ class IndexDashboardBasisPointResponse(BaseModel):
     main_basis_adjusted: float | None = None
     basis_roll_flag: bool = False
     basis_roll_delta: float | None = None
+    basis_roll_type: str | None = None
+    basis_roll_contracts: list[str] = Field(default_factory=list)
 
 
 class IndexDashboardVixPointResponse(BaseModel):
@@ -172,6 +174,68 @@ class IndexDashboardUsPutCallPointResponse(BaseModel):
     etf_put_call_ratio: float | None = None
 
 
+class IndexDashboardCnOptionPutCallPointResponse(BaseModel):
+    trade_date: date
+    current_month_put_call_ratio: float | None = None
+    current_month_contract_month: str | None = None
+    current_month_special_calculation: bool = False
+    current_month_special_note: str | None = None
+    next_month_put_call_ratio: float | None = None
+    next_month_contract_month: str | None = None
+    next_month_special_calculation: bool = False
+    next_month_special_note: str | None = None
+    quarter_1_put_call_ratio: float | None = None
+    quarter_1_contract_month: str | None = None
+    quarter_1_special_calculation: bool = False
+    quarter_1_special_note: str | None = None
+    quarter_2_put_call_ratio: float | None = None
+    quarter_2_contract_month: str | None = None
+    quarter_2_special_calculation: bool = False
+    quarter_2_special_note: str | None = None
+
+
+class IndexDashboardCnOptionFlowPutCallPointResponse(BaseModel):
+    trade_date: date
+    volume_put_call_ratio: float | None = None
+    turnover_put_call_ratio: float | None = None
+
+
+class IndexDashboardCffexNetShortDeltaPointResponse(BaseModel):
+    trade_date: date
+    top20_delta_5d: float | None = None
+    top20_delta_7d: float | None = None
+    top20_delta_14d: float | None = None
+    top20_delta_20d: float | None = None
+    top20_delta_30d: float | None = None
+    top20_delta_60d: float | None = None
+    top20_delta_120d: float | None = None
+    citic_delta_5d: float | None = None
+    citic_delta_7d: float | None = None
+    citic_delta_14d: float | None = None
+    citic_delta_20d: float | None = None
+    citic_delta_30d: float | None = None
+    citic_delta_60d: float | None = None
+    citic_delta_120d: float | None = None
+
+
+class IndexDashboardBasisDeltaPointResponse(BaseModel):
+    trade_date: date
+    main_delta_5d: float | None = None
+    main_delta_7d: float | None = None
+    main_delta_14d: float | None = None
+    main_delta_20d: float | None = None
+    main_delta_30d: float | None = None
+    main_delta_60d: float | None = None
+    main_delta_120d: float | None = None
+    month_delta_5d: float | None = None
+    month_delta_7d: float | None = None
+    month_delta_14d: float | None = None
+    month_delta_20d: float | None = None
+    month_delta_30d: float | None = None
+    month_delta_60d: float | None = None
+    month_delta_120d: float | None = None
+
+
 class IndexDashboardUsTreasuryYieldPointResponse(BaseModel):
     trade_date: date
     yield_3m: float | None = None
@@ -201,6 +265,10 @@ class IndexDashboardResponse(BaseModel):
     us_fear_greed_points: list[IndexDashboardUsFearGreedPointResponse] = Field(default_factory=list)
     us_hedge_proxy_points: list[IndexDashboardUsHedgeProxyPointResponse] = Field(default_factory=list)
     us_put_call_points: list[IndexDashboardUsPutCallPointResponse] = Field(default_factory=list)
+    cn_option_put_call_points: list[IndexDashboardCnOptionPutCallPointResponse] = Field(default_factory=list)
+    cn_option_flow_put_call_points: list[IndexDashboardCnOptionFlowPutCallPointResponse] = Field(default_factory=list)
+    cffex_net_short_delta_points: list[IndexDashboardCffexNetShortDeltaPointResponse] = Field(default_factory=list)
+    basis_delta_points: list[IndexDashboardBasisDeltaPointResponse] = Field(default_factory=list)
     us_treasury_yield_points: list[IndexDashboardUsTreasuryYieldPointResponse] = Field(default_factory=list)
     us_credit_spread_points: list[IndexDashboardUsCreditSpreadPointResponse] = Field(default_factory=list)
 
@@ -211,6 +279,12 @@ class HfqCollectTaskPayload(BaseModel):
     end_date: date | None = None
 
 
+class QuantScanSellTriggerConfig(BaseModel):
+    enabled: bool = False
+    operator: str = "lt"
+    target: str = "ma-1"
+
+
 class QuantScanTradeConfig(BaseModel):
     initial_capital: float = 1_000_000
     buy_amount_per_event: float = 10_000
@@ -218,6 +292,8 @@ class QuantScanTradeConfig(BaseModel):
     sell_offset_trading_days: int = 2
     buy_price_basis: str = "open"
     sell_price_basis: str = "open"
+    sell_trigger: QuantScanSellTriggerConfig | None = None
+    board_filters: list[str] = Field(default_factory=list)
 
 
 class QuantStrategySavePayload(BaseModel):
@@ -293,6 +369,7 @@ class QuantEquityCurvePointResponse(BaseModel):
     benchmark_nav: float | None = None
     signal: str | None = None
     close_price: float | None = None
+    position_value: float | None = None
     position_pct: float = 0.0
     position_bucket: str | None = None
 
@@ -321,6 +398,8 @@ class QuantScanEventResponse(BaseModel):
     signal_date: date
     buy_date: date | None = None
     sell_date: date | None = None
+    sell_trigger_date: date | None = None
+    sell_reason: str | None = None
     hit_buy_groups: list[int] = Field(default_factory=list)
     tradable: bool
     disabled_reason: str | None = None
@@ -342,6 +421,7 @@ class QuantScanEventResponse(BaseModel):
 
 class QuantSequenceScanPreviewPayload(BaseModel):
     strategy_type: str
+    indicator_params: dict = Field(default_factory=dict)
     buy_sequence_groups: list[dict] = Field(default_factory=list)
     scan_trade_config: QuantScanTradeConfig = Field(default_factory=QuantScanTradeConfig)
     scan_start_date: date
@@ -364,6 +444,7 @@ class QuantSequenceScanTargetHitsResponse(BaseModel):
     target_code: str
     target_name: str
     hit_dates: list[date] = Field(default_factory=list)
+    sell_trigger_dates: list[date] = Field(default_factory=list)
 
 
 class QuantSequenceScanPreviewResponse(QuantSequenceScanEventPageResponse):

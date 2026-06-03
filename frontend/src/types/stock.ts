@@ -45,6 +45,8 @@ export interface FuturesBasisPoint {
   main_basis_adjusted?: number | null
   basis_roll_flag?: boolean
   basis_roll_delta?: number | null
+  basis_roll_type?: string | null
+  basis_roll_contracts?: string[]
 }
 
 export interface IndexDashboardBasisPoint {
@@ -55,6 +57,8 @@ export interface IndexDashboardBasisPoint {
   main_basis_adjusted?: number | null
   basis_roll_flag?: boolean
   basis_roll_delta?: number | null
+  basis_roll_type?: string | null
+  basis_roll_contracts?: string[]
 }
 
 export interface IndexBreadthPoint {
@@ -103,6 +107,68 @@ export interface IndexUsPutCallPoint {
   etf_put_call_ratio: number | null
 }
 
+export interface IndexCnOptionPutCallPoint {
+  trade_date: string
+  current_month_put_call_ratio: number | null
+  current_month_contract_month: string | null
+  current_month_special_calculation: boolean
+  current_month_special_note: string | null
+  next_month_put_call_ratio: number | null
+  next_month_contract_month: string | null
+  next_month_special_calculation: boolean
+  next_month_special_note: string | null
+  quarter_1_put_call_ratio: number | null
+  quarter_1_contract_month: string | null
+  quarter_1_special_calculation: boolean
+  quarter_1_special_note: string | null
+  quarter_2_put_call_ratio: number | null
+  quarter_2_contract_month: string | null
+  quarter_2_special_calculation: boolean
+  quarter_2_special_note: string | null
+}
+
+export interface IndexCnOptionFlowPutCallPoint {
+  trade_date: string
+  volume_put_call_ratio: number | null
+  turnover_put_call_ratio: number | null
+}
+
+export interface IndexCffexNetShortDeltaPoint {
+  trade_date: string
+  top20_delta_5d: number | null
+  top20_delta_7d: number | null
+  top20_delta_14d: number | null
+  top20_delta_20d: number | null
+  top20_delta_30d: number | null
+  top20_delta_60d: number | null
+  top20_delta_120d: number | null
+  citic_delta_5d: number | null
+  citic_delta_7d: number | null
+  citic_delta_14d: number | null
+  citic_delta_20d: number | null
+  citic_delta_30d: number | null
+  citic_delta_60d: number | null
+  citic_delta_120d: number | null
+}
+
+export interface IndexBasisDeltaPoint {
+  trade_date: string
+  main_delta_5d: number | null
+  main_delta_7d: number | null
+  main_delta_14d: number | null
+  main_delta_20d: number | null
+  main_delta_30d: number | null
+  main_delta_60d: number | null
+  main_delta_120d: number | null
+  month_delta_5d: number | null
+  month_delta_7d: number | null
+  month_delta_14d: number | null
+  month_delta_20d: number | null
+  month_delta_30d: number | null
+  month_delta_60d: number | null
+  month_delta_120d: number | null
+}
+
 export interface IndexUsTreasuryYieldPoint {
   trade_date: string
   yield_3m: number | null
@@ -135,6 +201,10 @@ export interface IndexDashboardResponse {
   us_fear_greed_points: IndexUsFearGreedPoint[]
   us_hedge_proxy_points: IndexUsHedgeProxyPoint[]
   us_put_call_points: IndexUsPutCallPoint[]
+  cn_option_put_call_points: IndexCnOptionPutCallPoint[]
+  cn_option_flow_put_call_points: IndexCnOptionFlowPutCallPoint[]
+  cffex_net_short_delta_points: IndexCffexNetShortDeltaPoint[]
+  basis_delta_points: IndexBasisDeltaPoint[]
   us_treasury_yield_points: IndexUsTreasuryYieldPoint[]
   us_credit_spread_points: IndexUsCreditSpreadPoint[]
 }

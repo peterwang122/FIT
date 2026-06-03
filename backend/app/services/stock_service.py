@@ -67,8 +67,8 @@ CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE = date(2024, 4, 29)
 INDEX_OPTIONS_CACHE_KEY_PREFIX = "fit:stock:index_options:v5"
 FOREX_OPTIONS_CACHE_KEY = "fit:stock:forex_options:v2"
 INDEX_EMOTIONS_CACHE_KEY_PREFIX = "fit:stock:index_emotions:v2"
-CFFEX_NET_POSITION_TABLES_CACHE_KEY_PREFIX = "fit:stock:cffex:tables:v1"
-CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX = "fit:stock:cffex:series:v1"
+CFFEX_NET_POSITION_TABLES_CACHE_KEY_PREFIX = "fit:stock:cffex:tables:v2"
+CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX = "fit:stock:cffex:series:v2"
 INDEX_KLINE_CACHE_KEY_PREFIX = "fit:stock:index_kline:v1"
 FOREX_KLINE_CACHE_KEY_PREFIX = "fit:stock:forex_kline:v1"
 CACHE_TTL_SECONDS = 600
@@ -315,6 +315,7 @@ class StockService:
         start_date: date | None = None,
         end_date: date | None = None,
         target_codes: list[str] | None = None,
+        history_max_before: date | None = None,
     ) -> dict[str, dict]:
         basics_by_code = self.get_stock_basic_map()
         if not basics_by_code:
@@ -344,6 +345,40 @@ class StockService:
             date_filter_sql += f" AND `{settings.stock_date_column}` <= :end_date"
         if target_codes is not None:
             date_filter_sql += self._build_in_filter_sql(settings.stock_code_column, "stock_code", list(basics_by_code.keys()), params)
+
+        history_max_by_code: dict[str, dict[str, float | None]] = {}
+        if history_max_before is not None:
+            history_params: dict[str, object] = {
+                "history_max_before": history_max_before,
+                "hist_source": settings.stock_hist_source_value,
+            }
+            history_filter_sql = ""
+            if target_codes is not None:
+                history_filter_sql += self._build_in_filter_sql(
+                    settings.stock_code_column,
+                    "history_stock_code",
+                    list(basics_by_code.keys()),
+                    history_params,
+                )
+            history_sql = text(
+                f"SELECT "
+                f"`{settings.stock_code_column}` AS stock_code, "
+                f"MAX(`{settings.stock_high_column}`) AS history_max_high, "
+                f"MAX(`{settings.stock_close_column}`) AS history_max_close "
+                f"FROM `{settings.stock_table_name}` "
+                f"WHERE `{settings.stock_data_source_column}` = :hist_source "
+                f"AND `{settings.stock_date_column}` < :history_max_before"
+                f"{history_filter_sql} "
+                f"GROUP BY `{settings.stock_code_column}`"
+            )
+            for row in self.db.execute(history_sql, history_params).mappings().all():
+                stock_code = str(row.get("stock_code", "")).strip()
+                if not stock_code or stock_code not in basics_by_code:
+                    continue
+                history_max_by_code[stock_code] = {
+                    "high": _to_float(row.get("history_max_high")),
+                    "close": _to_float(row.get("history_max_close")),
+                }
 
         base_select = (
             f"SELECT "
@@ -425,6 +460,8 @@ class StockService:
                 "target_name": str(basic.get("stock_name", "")).strip() or stock_code,
                 "board": str(basic.get("board", "")).strip() or None,
                 "candles": candles,
+                "history_max_high": history_max_by_code.get(stock_code, {}).get("high"),
+                "history_max_close": history_max_by_code.get(stock_code, {}).get("close"),
             }
         return result
 
@@ -433,6 +470,7 @@ class StockService:
         start_date: date | None = None,
         end_date: date | None = None,
         target_codes: list[str] | None = None,
+        history_max_before: date | None = None,
     ) -> dict[str, dict]:
         basics_by_code = self.get_etf_basic_map()
         if not basics_by_code:
@@ -461,6 +499,41 @@ class StockService:
                 list(basics_by_code.keys()),
                 params,
             )
+
+        history_max_by_code: dict[str, dict[str, float | None]] = {}
+        if history_max_before is not None:
+            history_params: dict[str, object] = {
+                "history_max_before": history_max_before,
+                "hist_source": settings.etf_daily_hist_source_value,
+                "spot_source": settings.etf_daily_spot_source_value,
+            }
+            history_filter_sql = ""
+            if target_codes is not None:
+                history_filter_sql += self._build_in_filter_sql(
+                    settings.etf_daily_code_column,
+                    "history_etf_code",
+                    list(basics_by_code.keys()),
+                    history_params,
+                )
+            history_sql = text(
+                f"SELECT "
+                f"`{settings.etf_daily_code_column}` AS etf_code, "
+                f"MAX(`{settings.etf_daily_high_column}`) AS history_max_high, "
+                f"MAX(`{settings.etf_daily_close_column}`) AS history_max_close "
+                f"FROM `{settings.etf_daily_table_name}` "
+                f"WHERE `{settings.etf_daily_data_source_column}` IN (:hist_source, :spot_source) "
+                f"AND `{settings.etf_daily_date_column}` < :history_max_before"
+                f"{history_filter_sql} "
+                f"GROUP BY `{settings.etf_daily_code_column}`"
+            )
+            for row in self.db.execute(history_sql, history_params).mappings().all():
+                etf_code = str(row.get("etf_code", "")).strip()
+                if not etf_code or etf_code not in basics_by_code:
+                    continue
+                history_max_by_code[etf_code] = {
+                    "high": _to_float(row.get("history_max_high")),
+                    "close": _to_float(row.get("history_max_close")),
+                }
 
         hist_sql = text(
             f"SELECT "
@@ -545,6 +618,8 @@ class StockService:
                 "target_name": str(basic.get("name", "")).strip() or etf_code,
                 "board": "ETF",
                 "candles": candles,
+                "history_max_high": history_max_by_code.get(etf_code, {}).get("high"),
+                "history_max_close": history_max_by_code.get(etf_code, {}).get("close"),
             }
         return result
 
@@ -857,9 +932,10 @@ class StockService:
         )
 
     def _latest_cffex_trade_date(self) -> date | None:
+        complete_dates_sql = self._cffex_complete_trade_dates_sql()
         sql = text(
-            f"SELECT MAX(`{settings.cffex_trade_date_column}`) AS trade_date "
-            f"FROM `{settings.cffex_member_rankings_table_name}`"
+            f"SELECT MAX(trade_date) AS trade_date "
+            f"FROM ({complete_dates_sql}) complete_trade_dates"
         )
         row = self.db.execute(sql).mappings().first()
         if not row:
@@ -870,14 +946,20 @@ class StockService:
         if trade_date is None:
             return self._latest_cffex_trade_date()
 
-        sql = text(
-            f"SELECT 1 "
-            f"FROM `{settings.cffex_member_rankings_table_name}` "
-            f"WHERE `{settings.cffex_trade_date_column}` = :trade_date "
-            f"LIMIT 1"
-        )
+        complete_dates_sql = self._cffex_complete_trade_dates_sql()
+        sql = text(f"SELECT 1 FROM ({complete_dates_sql}) complete_trade_dates WHERE trade_date = :trade_date LIMIT 1")
         row = self.db.execute(sql, {"trade_date": trade_date}).first()
         if row is None:
+            coverage_sql = text(
+                f"SELECT GROUP_CONCAT(DISTINCT `{settings.cffex_product_code_column}` ORDER BY `{settings.cffex_product_code_column}`) AS products "
+                f"FROM `{settings.cffex_member_rankings_table_name}` "
+                f"WHERE `{settings.cffex_trade_date_column}` = :trade_date "
+                f"AND `{settings.cffex_product_code_column}` IN ({self._cffex_product_codes_sql()})"
+            )
+            coverage_row = self.db.execute(coverage_sql, {"trade_date": trade_date}).mappings().first()
+            products = str(coverage_row.get("products") or "").strip() if coverage_row else ""
+            if products:
+                raise ValueError(f"{trade_date.isoformat()} 中金所会员排名数据不完整，当前仅有 {products}")
             raise ValueError(f"{trade_date.isoformat()} 暂无中金所会员排名数据")
         return trade_date
 
@@ -1019,6 +1101,16 @@ class StockService:
     def _cffex_product_codes_sql(self) -> str:
         return ", ".join([f"'{item['product_code']}'" for item in CFFEX_PRODUCT_INDEX_MAP])
 
+    def _cffex_complete_trade_dates_sql(self) -> str:
+        product_codes_sql = self._cffex_product_codes_sql()
+        return (
+            f"SELECT `{settings.cffex_trade_date_column}` AS trade_date "
+            f"FROM `{settings.cffex_member_rankings_table_name}` "
+            f"WHERE `{settings.cffex_product_code_column}` IN ({product_codes_sql}) "
+            f"GROUP BY `{settings.cffex_trade_date_column}` "
+            f"HAVING COUNT(DISTINCT `{settings.cffex_product_code_column}`) = {len(CFFEX_PRODUCT_INDEX_MAP)}"
+        )
+
     def _resolve_member_name_for_trade_date(self, member_name: str, trade_date: date | None) -> str:
         if member_name != CITIC_CUSTOMER_MEMBER_NAME or trade_date is None:
             return member_name
@@ -1097,6 +1189,7 @@ class StockService:
             f"ELSE 0 END) AS long_position "
             f"FROM `{settings.cffex_member_rankings_table_name}` "
             f"WHERE `{settings.cffex_product_code_column}` IN ({product_codes_sql}) "
+            f"AND {trade_date_column_sql} IN ({self._cffex_complete_trade_dates_sql()}) "
             f"{date_filter_sql} "
             f"GROUP BY `{settings.cffex_trade_date_column}`, `{settings.cffex_product_code_column}` "
             f"ORDER BY `{settings.cffex_trade_date_column}` ASC, `{settings.cffex_product_code_column}` ASC"
@@ -1125,6 +1218,7 @@ class StockService:
             f"SUM(COALESCE(`{settings.cffex_long_open_interest_column}`, 0)) AS long_position "
             f"FROM `{settings.cffex_member_rankings_table_name}` "
             f"WHERE `{settings.cffex_product_code_column}` IN ({product_codes_sql}) "
+            f"AND `{settings.cffex_trade_date_column}` IN ({self._cffex_complete_trade_dates_sql()}) "
             f"AND `{settings.cffex_rank_no_column}` <= 20 "
             f"AND `{settings.cffex_volume_member_column}` IS NOT NULL "
             f"{date_filter_sql} "
@@ -1905,4 +1999,3 @@ class StockService:
         result = self._normalize_rows(rows, numeric_fields, {"change_value": "change"})
         self._cache_set_json(cache_key, result)
         return result
-

@@ -56,6 +56,7 @@ class ScheduledTaskResponse(BaseModel):
     market_scope: str
     collector_key: str | None = None
     collection_label: str | None = None
+    manual_only: bool = False
     name: str
     enabled: bool
     schedule_time: str

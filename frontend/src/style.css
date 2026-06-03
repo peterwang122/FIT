@@ -278,6 +278,99 @@ body::before {
   margin-bottom: 14px;
 }
 
+.quant-scan-board-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.quant-scan-board-filter {
+  padding: 12px;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.quant-scan-board-filter .quant-save-hint {
+  flex-basis: 100%;
+}
+
+.quant-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.quant-scan-sell-trigger-box {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.quant-scan-sell-trigger-box.active {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(254, 242, 242, 0.55);
+}
+
+.quant-sequence-ma-config {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: rgba(239, 246, 255, 0.55);
+}
+
+.quant-sequence-ma-config .quant-scan-sell-trigger-head span {
+  color: #2563eb;
+}
+
+.quant-scan-sell-trigger-popover {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+
+.quant-scan-sell-trigger-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: #334155;
+  font-size: 13px;
+}
+
+.quant-scan-sell-trigger-head span {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.quant-scan-ma-period-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quant-scan-trigger-grid {
+  margin-bottom: 0;
+}
+
 .quant-scan-events {
   display: grid;
   gap: 10px;
@@ -1470,10 +1563,14 @@ button.quant-scan-event-item {
 }
 
 .quant-kpi-value {
+  min-width: 0;
+  max-width: min(52vw, 220px);
+  overflow: hidden;
   color: #14213d;
   font-size: 14px;
   font-weight: 800;
   text-align: right;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -1648,6 +1745,20 @@ button.quant-scan-event-item {
   color: #7c3aed;
 }
 
+.quant-hit-display-control {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.quant-hit-display-control .input {
+  min-height: 36px;
+}
+
 .quant-filter-sections {
   display: grid;
   gap: 16px;
@@ -1796,6 +1907,10 @@ button.quant-scan-event-item {
   grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
   gap: 10px;
   align-items: end;
+}
+
+.quant-sequence-condition-grid-boolean {
+  grid-template-columns: minmax(220px, 1fr) auto;
 }
 
 .quant-sequence-condition-field {
@@ -2376,6 +2491,29 @@ button.quant-scan-event-item {
   color: #64748b;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.account-switch-service {
+  align-items: center;
+}
+
+.account-service-meta,
+.account-service-log {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(20, 33, 61, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.account-service-log strong {
+  color: #14213d;
+  font-size: 13px;
 }
 
 .account-session-list {

@@ -42,6 +42,7 @@ const sequenceScanPageSize = ref(100)
 
 const loading = ref(false)
 const curveLoading = ref(false)
+const scanPageLoading = ref(false)
 const curveRequested = ref(false)
 const error = ref('')
 const saveMessage = ref('')
@@ -59,6 +60,7 @@ const showRecipientSuggestions = ref(false)
 let recipientSearchTimer: number | null = null
 
 const isRoot = computed(() => authStore.isRoot)
+const scanEventBusy = computed(() => curveLoading.value || scanPageLoading.value)
 
 const signalColorOptions: Array<{ value: QuantSignalColor; label: string }> = [
   { value: 'blue', label: '蓝色' },
@@ -89,6 +91,8 @@ const DEFAULT_SCAN_TRADE_CONFIG = {
   sell_offset_trading_days: 2,
   buy_price_basis: 'open' as const,
   sell_price_basis: 'open' as const,
+  sell_trigger: null,
+  board_filters: [],
 }
 
 function cloneJson<T>(value: T): T {
@@ -97,6 +101,81 @@ function cloneJson<T>(value: T): T {
 
 function isMarketScanStrategy(strategy: QuantStrategyConfig | null | undefined) {
   return strategy?.strategy_engine === 'sequence' && strategy.sequence_mode === 'market_scan'
+}
+
+function hasScanSellTrigger(strategy: QuantStrategyConfig | null | undefined) {
+  return Boolean(strategy?.scan_trade_config?.sell_trigger?.enabled)
+}
+
+function scanSellTriggerLabel(strategy: QuantStrategyConfig | null | undefined) {
+  const trigger = strategy?.scan_trade_config?.sell_trigger
+  if (!trigger?.enabled) return '未启用动态卖出条件'
+  const operatorLabel = trigger.operator === 'gt' ? '高于' : '低于'
+  const maPeriods = strategy?.indicator_params?.ma?.periods ?? [5, 10, 20, 60]
+  const targetLabelMap: Record<string, string> = {
+    'ma-1': `MA${maPeriods[0] ?? 5}`,
+    'ma-2': `MA${maPeriods[1] ?? 10}`,
+    'ma-3': `MA${maPeriods[2] ?? 20}`,
+    'ma-4': `MA${maPeriods[3] ?? 60}`,
+    'boll-upper': 'BOLL 上轨',
+    'boll-middle': 'BOLL 中轨',
+    'boll-lower': 'BOLL 下轨',
+  }
+  return `收盘价${operatorLabel}${targetLabelMap[trigger.target] ?? trigger.target}`
+}
+
+const sequenceSeriesLabelMap: Record<string, string> = {
+  'market-breadth-up-pct': '涨跌家数百分比',
+  'market-emotion': '市场情绪指标',
+  'market-qvix': '市场QVIX均值',
+  'market-basis-main': '主连期现差均值',
+  'target-up-pct': '目标上涨幅度',
+  'target-down-pct': '目标下跌幅度',
+  'target-high-new-high': '最高价创历史新高',
+  'target-close-new-high': '收盘价创历史新高',
+}
+const sequenceOperatorLabelMap: Record<string, string> = {
+  gt: '大于',
+  gte: '大于等于',
+  lt: '小于',
+  lte: '小于等于',
+}
+
+const boardFilterLabelMap: Record<string, string> = {
+  main: '主板',
+  chinext: '创业板',
+  star: '科创板',
+  bse: '北交所',
+}
+
+function sequenceBuyRuleSummary(strategy: QuantStrategyConfig | null | undefined) {
+  const groups = strategy?.buy_sequence_groups ?? []
+  if (!groups.length) return '未配置买入条件'
+  const maPeriods = strategy?.indicator_params?.ma?.periods ?? [5, 10, 20, 60]
+  return groups
+    .map((group) =>
+      (group.conditions ?? [])
+        .map((condition) => {
+          if (condition.series_key === 'target-high-new-high') return '当日最高价创历史新高'
+          if (condition.series_key === 'target-close-new-high') return '当日收盘价创历史新高'
+          const maBiasMatch = /^target-ma-bias-(\d)$/.exec(condition.series_key)
+          const seriesLabel = maBiasMatch
+            ? `收盘价相对 MA${maPeriods[Number(maBiasMatch[1]) - 1] ?? condition.series_key} 乖离`
+            : sequenceSeriesLabelMap[condition.series_key] ?? condition.series_key
+          const operatorLabel = sequenceOperatorLabelMap[condition.operator] ?? condition.operator
+          const unitLabel = condition.series_key.startsWith('target-ma-bias-') ? '%' : ''
+          return `${seriesLabel}${operatorLabel}${condition.threshold}${unitLabel}`
+        })
+        .join(' 且 '),
+    )
+    .filter(Boolean)
+    .join('；或 ')
+}
+
+function scanBoardFilterSummary(strategy: QuantStrategyConfig | null | undefined) {
+  const filters = strategy?.scan_trade_config?.board_filters ?? []
+  if (!filters.length) return '全部板块'
+  return filters.map((item) => boardFilterLabelMap[item] ?? item).join('、')
 }
 
 function strategyTypeLabel(strategyType: QuantStrategyConfig['strategy_type']) {
@@ -195,6 +274,7 @@ function toPayload(strategy: QuantStrategyConfig): QuantStrategyPayload {
 function buildScanPreviewPayload(strategy: QuantStrategyConfig) {
   return {
     strategy_type: strategy.strategy_type,
+    indicator_params: strategy.indicator_params,
     buy_sequence_groups: strategy.buy_sequence_groups,
     scan_trade_config: {
       ...DEFAULT_SCAN_TRADE_CONFIG,
@@ -247,8 +327,15 @@ async function loadEquityCurve(strategyId: number) {
   }
 }
 
-async function loadSequenceScanBacktest(strategy: QuantStrategyConfig, page = sequenceScanPage.value, resetScanResult = false) {
-  curveLoading.value = true
+async function loadSequenceScanBacktest(
+  strategy: QuantStrategyConfig,
+  page = sequenceScanPage.value,
+  resetScanResult = false,
+  loadingMode: 'curve' | 'page' = 'curve',
+) {
+  const hasPreviousBacktest = Boolean(sequenceScanBacktest.value)
+  if (loadingMode === 'page' && hasPreviousBacktest) scanPageLoading.value = true
+  else curveLoading.value = true
   error.value = ''
   try {
     if (resetScanResult || !sequenceScanResultId.value) {
@@ -272,9 +359,10 @@ async function loadSequenceScanBacktest(strategy: QuantStrategyConfig, page = se
     sequenceScanPageSize.value = response.page_size
   } catch (loadError) {
     error.value = loadError instanceof Error ? loadError.message : '扫描回测加载失败'
-    sequenceScanBacktest.value = null
+    if (!hasPreviousBacktest || resetScanResult) sequenceScanBacktest.value = null
   } finally {
-    curveLoading.value = false
+    if (loadingMode === 'page' && hasPreviousBacktest) scanPageLoading.value = false
+    else curveLoading.value = false
   }
 }
 
@@ -287,6 +375,7 @@ function selectStrategy(strategyId: number) {
   resetSequenceScanState()
   curveRequested.value = false
   curveLoading.value = false
+  scanPageLoading.value = false
   saveMessage.value = ''
   error.value = ''
 }
@@ -341,13 +430,13 @@ async function toggleSequenceScanEvent(eventId: string, checked: boolean) {
     use_all_events: true,
     excluded_event_ids: [...excluded],
   }
-  await loadSequenceScanBacktest(editingStrategy.value, sequenceScanPage.value, false)
+  await loadSequenceScanBacktest(editingStrategy.value, sequenceScanPage.value, false, 'curve')
 }
 
 async function changeSequenceScanPage(page: number) {
   if (!editingStrategy.value || !isMarketScanStrategy(editingStrategy.value)) return
   if (page < 1 || page > sequenceScanTotalPages.value) return
-  await loadSequenceScanBacktest(editingStrategy.value, page, false)
+  await loadSequenceScanBacktest(editingStrategy.value, page, false, 'page')
 }
 
 async function removeStrategy() {
@@ -370,7 +459,10 @@ function loadStrategyToAnalysis() {
   if (!editingStrategy.value) return
   void router.push({
     path: analysisPathForStrategy(editingStrategy.value),
-    query: { strategyId: String(editingStrategy.value.id) },
+    query: {
+      strategyId: String(editingStrategy.value.id),
+      loadAt: String(Date.now()),
+    },
   })
 }
 
@@ -494,6 +586,23 @@ function formatPrice(value: number | null | undefined) {
   return value.toFixed(2)
 }
 
+function formatSellPlanSub(event: QuantScanEvent, strategy: QuantStrategyConfig) {
+  const priceText = formatPrice(event.sell_price)
+  if (event.sell_reason === 'trigger') {
+    return `${priceText} / 命中后次日${strategy.scan_trade_config.sell_price_basis === 'open' ? '开盘价' : '收盘价'}`
+  }
+  if (event.sell_reason === 'fallback_end') {
+    return `${priceText} / 未命中，结束日收盘价`
+  }
+  return `${priceText} / ${strategy.scan_trade_config.sell_price_basis === 'open' ? '开盘价' : '收盘价'}`
+}
+
+function formatSellReasonLabel(event: QuantScanEvent) {
+  if (event.sell_reason === 'trigger') return event.sell_trigger_date ? `卖出条件命中：${event.sell_trigger_date}` : '卖出条件命中'
+  if (event.sell_reason === 'fallback_end') return '未命中卖出条件'
+  return '固定偏移卖出'
+}
+
 function formatBoardLabel(event: QuantScanEvent) {
   if (event.target_type === 'etf') return 'ETF'
   return event.board || '-'
@@ -509,8 +618,15 @@ function formatLotRuleLabel(event: QuantScanEvent) {
   return event.lot_rule || '-'
 }
 
+function formatPlannedOrderRule(event: QuantScanEvent) {
+  const rule = formatLotRuleLabel(event)
+  if (rule === '-') return formatBoardLabel(event)
+  return `${formatBoardLabel(event)}：${rule}`
+}
+
 function formatDisabledReason(event: QuantScanEvent) {
   if (event.tradable) return '-'
+  if (event.disabled_reason) return event.disabled_reason
   if (!event.buy_date) return '买入执行日超出行情范围'
   if (!event.sell_date) return '卖出执行日超出行情范围'
   if (event.target_type === 'stock' && !event.board) return '无法根据 board 判断最小交易单位'
@@ -523,6 +639,7 @@ function formatSkipReason(reason: string | null | undefined) {
   if (!reason) return '-'
   if (reason === 'insufficient_cash') return '资金不足，未开仓'
   if (reason === 'invalid_trade_plan') return '交易计划无效'
+  if (reason === 'duplicate_open_position') return '同标的仍在持仓中，未重复买入'
   return reason
 }
 
@@ -543,6 +660,15 @@ function scanEventStatus(event: QuantScanEvent) {
 const curvePoints = computed(() => {
   if (sequenceScanBacktest.value) return sequenceScanBacktest.value.points
   return equityCurve.value?.points ?? []
+})
+
+const curveDisplayMode = computed(() =>
+  editingStrategy.value && isMarketScanStrategy(editingStrategy.value) && sequenceScanBacktest.value ? 'capital' : 'nav',
+)
+
+const curveInitialCapital = computed(() => {
+  const value = Number(editingStrategy.value?.scan_trade_config?.initial_capital)
+  return Number.isFinite(value) && value > 0 ? value : 1
 })
 
 const scanEvents = computed<QuantScanEvent[]>(() => sequenceScanBacktest.value?.matched_events ?? [])
@@ -614,19 +740,19 @@ onUnmounted(() => {
             <span class="quant-field-label">策略备注</span>
             <textarea v-model="editingStrategy.notes" class="input progress-textarea progress-textarea-compact" />
           </label>
-          <label class="quant-field">
+          <label v-if="editingStrategy.strategy_engine !== 'sequence'" class="quant-field">
             <span class="quant-field-label">买入信号颜色</span>
             <select v-model="editingStrategy.signal_buy_color" class="input">
               <option v-for="option in signalColorOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
-          <label class="quant-field">
+          <label v-if="editingStrategy.strategy_engine !== 'sequence'" class="quant-field">
             <span class="quant-field-label">卖出信号颜色</span>
             <select v-model="editingStrategy.signal_sell_color" class="input">
               <option v-for="option in signalColorOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
-          <label class="quant-field">
+          <label v-if="editingStrategy.strategy_engine !== 'sequence'" class="quant-field">
             <span class="quant-field-label">紫色冲突处理</span>
             <select v-model="editingStrategy.purple_conflict_mode" class="input">
               <option v-for="option in conflictModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -636,6 +762,9 @@ onUnmounted(() => {
             <div class="quant-scan-backtest-note quant-field-full">
               <strong>扫描模式组合回测参数</strong>
               <p class="muted">以下参数只影响扫描模式策略的组合回测，不影响扫描命中事件本身。</p>
+              <p class="muted">买入条件：{{ sequenceBuyRuleSummary(editingStrategy) }}</p>
+              <p class="muted">扫描板块：{{ scanBoardFilterSummary(editingStrategy) }}</p>
+              <p class="muted">卖出条件：{{ scanSellTriggerLabel(editingStrategy) }}</p>
             </div>
             <label class="quant-field">
               <span class="quant-field-label">扫描开始日期</span>
@@ -657,7 +786,7 @@ onUnmounted(() => {
               <span class="quant-field-label">买入偏移交易日</span>
               <input v-model.number="editingStrategy.scan_trade_config.buy_offset_trading_days" class="input" type="number" min="1" step="1" />
             </label>
-            <label class="quant-field">
+            <label v-if="!hasScanSellTrigger(editingStrategy)" class="quant-field">
               <span class="quant-field-label">卖出偏移交易日</span>
               <input v-model.number="editingStrategy.scan_trade_config.sell_offset_trading_days" class="input" type="number" min="1" step="1" />
             </label>
@@ -668,9 +797,11 @@ onUnmounted(() => {
               </select>
             </label>
             <label class="quant-field">
-              <span class="quant-field-label">卖出价格</span>
+              <span class="quant-field-label">{{ hasScanSellTrigger(editingStrategy) ? '命中后卖出价格' : '卖出价格' }}</span>
               <select v-model="editingStrategy.scan_trade_config.sell_price_basis" class="input">
-                <option v-for="option in priceBasisOptions" :key="`sell-${option.value}`" :value="option.value">{{ option.label }}</option>
+                <option v-for="option in priceBasisOptions" :key="`sell-${option.value}`" :value="option.value">
+                  {{ hasScanSellTrigger(editingStrategy) ? `次日${option.label}` : option.label }}
+                </option>
               </select>
             </label>
           </template>
@@ -782,6 +913,7 @@ onUnmounted(() => {
               <p class="muted">默认全选全部可回测事件。取消勾选后，会重新按当前事件集合生成组合收益曲线。</p>
             </div>
           </div>
+          <p v-if="scanPageLoading" class="muted">正在加载事件页...</p>
 
           <div class="quant-scan-event-table-wrap">
             <table class="quant-scan-event-table">
@@ -808,7 +940,7 @@ onUnmounted(() => {
                     <input
                       type="checkbox"
                       :checked="Boolean(event.selected)"
-                      :disabled="curveLoading || !event.tradable"
+                      :disabled="scanEventBusy || !event.tradable"
                       @change="toggleSequenceScanEvent(event.event_id, ($event.target as HTMLInputElement).checked)"
                     />
                   </td>
@@ -830,10 +962,12 @@ onUnmounted(() => {
                   </td>
                   <td>
                     <div class="quant-scan-cell-main">{{ event.sell_date ?? '-' }}</div>
-                    <div class="quant-scan-cell-sub">{{ formatPrice(event.sell_price) }} / {{ editingStrategy.scan_trade_config.sell_price_basis === 'open' ? '开盘价' : '收盘价' }}</div>
+                    <div class="quant-scan-cell-sub">{{ formatSellPlanSub(event, editingStrategy) }}</div>
+                    <div class="quant-scan-cell-sub">{{ formatSellReasonLabel(event) }}</div>
                   </td>
                   <td>
                     <div class="quant-scan-cell-main">{{ formatQuantity(event.planned_quantity, event.target_type) }}</div>
+                    <div class="quant-scan-cell-sub">{{ formatPlannedOrderRule(event) }}</div>
                     <div class="quant-scan-cell-sub">{{ formatMoney(event.planned_buy_amount) }}</div>
                   </td>
                   <td>
@@ -854,9 +988,9 @@ onUnmounted(() => {
           </div>
 
           <div v-if="sequenceScanBacktest.total_event_count > sequenceScanBacktest.page_size" class="progress-hero-actions">
-            <button class="btn" :disabled="curveLoading || sequenceScanBacktest.page <= 1" @click="changeSequenceScanPage(sequenceScanBacktest.page - 1)">上一页</button>
+            <button class="btn" :disabled="scanEventBusy || sequenceScanBacktest.page <= 1" @click="changeSequenceScanPage(sequenceScanBacktest.page - 1)">上一页</button>
             <span class="muted">第 {{ sequenceScanBacktest.page }} / {{ sequenceScanTotalPages }} 页，共 {{ sequenceScanBacktest.total_event_count }} 条事件</span>
-            <button class="btn" :disabled="curveLoading || sequenceScanBacktest.page >= sequenceScanTotalPages" @click="changeSequenceScanPage(sequenceScanBacktest.page + 1)">下一页</button>
+            <button class="btn" :disabled="scanEventBusy || sequenceScanBacktest.page >= sequenceScanTotalPages" @click="changeSequenceScanPage(sequenceScanBacktest.page + 1)">下一页</button>
           </div>
 
           <div v-if="false" class="quant-scan-events">
@@ -890,7 +1024,13 @@ onUnmounted(() => {
         <p v-if="!curveRequested && !curveLoading" class="muted">
           当前只加载了策略配置。调整好选项后，点击“确定并加载收益曲线”再开始回测。
         </p>
-        <StrategyEquityCurveChart v-else :points="curvePoints" :loading="curveLoading" />
+        <StrategyEquityCurveChart
+          v-else
+          :points="curvePoints"
+          :loading="curveLoading"
+          :display-mode="curveDisplayMode"
+          :initial-capital="curveInitialCapital"
+        />
       </template>
 
       <template v-else>

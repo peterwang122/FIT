@@ -5,6 +5,7 @@ import {
   LineSeries,
   createChart,
   type HistogramData,
+  type AutoscaleInfo,
   type IChartApi,
   type ISeriesApi,
   type LogicalRange,
@@ -17,6 +18,7 @@ import type { QuantEquityCurvePoint } from '../types/quant'
 
 type PanelKey = 'nav' | 'position'
 type PositionBucket = 'flat' | 'light' | 'medium' | 'heavy' | 'full'
+type CurveDisplayMode = 'nav' | 'capital'
 type SummaryItem = { label: string; value: string }
 
 const POSITION_BUCKET_COLORS: Record<PositionBucket, string> = {
@@ -45,9 +47,13 @@ const props = withDefaults(
   defineProps<{
     points: QuantEquityCurvePoint[]
     loading?: boolean
+    displayMode?: CurveDisplayMode
+    initialCapital?: number
   }>(),
   {
     loading: false,
+    displayMode: 'nav',
+    initialCapital: 1,
   },
 )
 
@@ -100,40 +106,72 @@ function formatNumber(value: number | null | undefined, digits = 4) {
   return Number(value).toFixed(digits)
 }
 
+function formatMoney(value: number | null | undefined, digits = 2) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  return `¥${Number(value).toLocaleString('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}`
+}
+
 function formatPercent(value: number | null | undefined, digits = 2) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
   return `${(Number(value) * 100).toFixed(digits)}%`
 }
 
+const isCapitalMode = computed(() => props.displayMode === 'capital')
+
+const initialCapitalValue = computed(() => {
+  const value = Number(props.initialCapital)
+  return Number.isFinite(value) && value > 0 ? value : 1
+})
+
 const lastPoint = computed(() => (props.points.length ? props.points[props.points.length - 1] : null))
 
 const pointMap = computed(() => new Map(props.points.map((item) => [item.trade_date, item])))
+
+function curveValueForPoint(point: QuantEquityCurvePoint | null | undefined) {
+  if (!point || !Number.isFinite(point.nav)) return null
+  return isCapitalMode.value ? Number(point.nav) * initialCapitalValue.value : Number(point.nav)
+}
+
+function positionValueForPoint(point: QuantEquityCurvePoint | null | undefined) {
+  if (isCapitalMode.value && Number.isFinite(point?.position_value)) {
+    return Number(point?.position_value)
+  }
+  const curveValue = curveValueForPoint(point)
+  if (curveValue === null) return null
+  return curveValue * clampPositionPct(point?.position_pct)
+}
 
 const navData = computed(() =>
   props.points
     .filter((item) => Number.isFinite(item.nav))
     .map((item) => ({
       time: item.trade_date as Time,
-      value: item.nav,
+      value: curveValueForPoint(item) ?? 0,
     })),
 )
 
 const benchmarkData = computed(() =>
-  props.points
-    .filter((item) => item.benchmark_nav !== null && Number.isFinite(item.benchmark_nav))
-    .map((item) => ({
-      time: item.trade_date as Time,
-      value: item.benchmark_nav as number,
-    })),
+  isCapitalMode.value
+    ? []
+    : props.points
+        .filter((item) => item.benchmark_nav !== null && Number.isFinite(item.benchmark_nav))
+        .map((item) => ({
+          time: item.trade_date as Time,
+          value: item.benchmark_nav as number,
+        })),
 )
 
 const positionData = computed<HistogramData<Time>[]>(() =>
   props.points.map((item) => {
     const positionPct = clampPositionPct(item.position_pct)
     const bucket = normalizeBucket(item.position_bucket, positionPct)
+    const value = isCapitalMode.value ? positionValueForPoint(item) ?? 0 : positionPct * 100
     return {
       time: item.trade_date as Time,
-      value: Number((positionPct * 100).toFixed(4)),
+      value: Number(value.toFixed(4)),
       color: POSITION_BUCKET_COLORS[bucket],
     }
   }),
@@ -151,6 +189,17 @@ const activePositionBucket = computed<PositionBucket>(() => {
 
 const summaryItems = computed<SummaryItem[]>(() => {
   const point = activePoint.value
+  if (isCapitalMode.value) {
+    return [
+      { label: '日期', value: point?.trade_date ?? '-' },
+      { label: '策略资金', value: formatMoney(curveValueForPoint(point), 2) },
+      { label: '持仓市值', value: formatMoney(positionValueForPoint(point), 2) },
+      { label: '累计收益', value: point?.nav === null || point?.nav === undefined ? '-' : formatPercent(Number(point.nav) - 1, 2) },
+      { label: '仓位', value: formatPercent(point?.position_pct, 2) },
+      { label: '仓位档位', value: POSITION_BUCKET_LABELS[activePositionBucket.value] },
+      { label: '信号', value: point?.signal ? SIGNAL_LABELS[point.signal] ?? point.signal : '-' },
+    ]
+  }
   return [
     { label: '日期', value: point?.trade_date ?? '-' },
     { label: '策略净值', value: formatNumber(point?.nav, 4) },
@@ -173,7 +222,26 @@ function buildHistogramValueMap(data: HistogramData<Time>[]) {
   )
 }
 
-function createBaseChart(container: HTMLDivElement, options?: { hideTimeScale?: boolean }) {
+function formatCurveAxisValue(value: number) {
+  return isCapitalMode.value ? formatMoney(value, 0) : formatNumber(value, 4)
+}
+
+function formatPositionAxisValue(value: number) {
+  return isCapitalMode.value ? formatMoney(value, 0) : `${Number(value).toFixed(0)}%`
+}
+
+const curvePanelTitle = computed(() => (isCapitalMode.value ? '资金曲线' : '收益曲线'))
+const curvePanelDescription = computed(() => (isCapitalMode.value ? '按初始资金折算的组合资金' : '策略净值与基准净值'))
+const positionPanelTitle = computed(() => (isCapitalMode.value ? '持仓市值' : '仓位面板'))
+const positionPanelDescription = computed(() => (isCapitalMode.value ? '每日收盘后的持有市值' : '分档颜色展示每日收盘后的持仓比例'))
+const curveLoadingText = computed(() => (isCapitalMode.value ? '资金曲线加载中...' : '收益曲线加载中...'))
+const curveEmptyText = computed(() => (isCapitalMode.value ? '当前策略暂无可展示的资金曲线。' : '当前策略暂无可展示的收益曲线。'))
+const curveRefreshingText = computed(() => (isCapitalMode.value ? '资金曲线刷新中...' : '收益曲线刷新中...'))
+
+function createBaseChart(
+  container: HTMLDivElement,
+  options?: { hideTimeScale?: boolean; priceFormatter?: (price: number) => string },
+) {
   return createChart(container, {
     autoSize: true,
     layout: {
@@ -196,6 +264,7 @@ function createBaseChart(container: HTMLDivElement, options?: { hideTimeScale?: 
     },
     localization: {
       locale: 'zh-CN',
+      priceFormatter: options?.priceFormatter,
     },
     crosshair: {
       vertLine: {
@@ -280,8 +349,13 @@ function renderCharts() {
   disposeCharts()
   if (!navContainerRef.value || !positionContainerRef.value) return
 
-  const navChart = createBaseChart(navContainerRef.value, { hideTimeScale: true })
-  const positionChart = createBaseChart(positionContainerRef.value)
+  const navChart = createBaseChart(navContainerRef.value, {
+    hideTimeScale: true,
+    priceFormatter: formatCurveAxisValue,
+  })
+  const positionChart = createBaseChart(positionContainerRef.value, {
+    priceFormatter: formatPositionAxisValue,
+  })
 
   charts.nav = navChart
   charts.position = positionChart
@@ -301,12 +375,15 @@ function renderCharts() {
   positionSeries = positionChart.addSeries(HistogramSeries, {
     priceLineVisible: false,
     lastValueVisible: false,
-    autoscaleInfoProvider: () => ({
-      priceRange: {
-        minValue: 0,
-        maxValue: 100,
-      },
-    }),
+    autoscaleInfoProvider: (baseImplementation: () => AutoscaleInfo | null) => {
+      if (isCapitalMode.value) return baseImplementation()
+      return {
+        priceRange: {
+          minValue: 0,
+          maxValue: 100,
+        },
+      }
+    },
   })
 
   primarySeriesMap.set('nav', navSeries)
@@ -318,7 +395,7 @@ function renderCharts() {
 }
 
 async function ensureChartsReady() {
-  if (props.loading || !props.points.length) return
+  if (!props.points.length) return
   await nextTick()
   if (!navContainerRef.value || !positionContainerRef.value) return
   if (!charts.nav || !charts.position) {
@@ -358,9 +435,10 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="strategy-curve-chart">
-    <p v-if="loading" class="muted">收益曲线加载中...</p>
-    <p v-else-if="!points.length" class="muted">当前策略暂无可展示的收益曲线。</p>
+    <p v-if="loading && !points.length" class="muted">{{ curveLoadingText }}</p>
+    <p v-else-if="!points.length" class="muted">{{ curveEmptyText }}</p>
     <template v-else>
+      <p v-if="loading" class="strategy-curve-refreshing">{{ curveRefreshingText }}</p>
       <div class="strategy-curve-hoverbar">
         <article v-for="item in summaryItems" :key="item.label" class="strategy-curve-hoveritem">
           <span class="strategy-curve-hoverlabel">{{ item.label }}</span>
@@ -370,16 +448,16 @@ onBeforeUnmount(() => {
 
       <div class="strategy-curve-panel">
         <div class="strategy-curve-panel-head">
-          <h4>收益曲线</h4>
-          <p>策略净值与基准净值</p>
+          <h4>{{ curvePanelTitle }}</h4>
+          <p>{{ curvePanelDescription }}</p>
         </div>
         <div ref="navContainerRef" class="strategy-curve-canvas strategy-curve-canvas-main"></div>
       </div>
 
       <div class="strategy-curve-panel">
         <div class="strategy-curve-panel-head">
-          <h4>仓位面板</h4>
-          <p>分档颜色展示每日收盘后的持仓比例</p>
+          <h4>{{ positionPanelTitle }}</h4>
+          <p>{{ positionPanelDescription }}</p>
         </div>
         <div ref="positionContainerRef" class="strategy-curve-canvas strategy-curve-canvas-position"></div>
       </div>
@@ -391,6 +469,12 @@ onBeforeUnmount(() => {
 .strategy-curve-chart {
   display: grid;
   gap: 14px;
+}
+
+.strategy-curve-refreshing {
+  margin: 0;
+  color: #2563eb;
+  font-size: 13px;
 }
 
 .strategy-curve-hoverbar {

@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     app_debug: bool = True
     api_prefix: str = "/api/v1"
 
-    database_url: str = "mysql+pymysql://root:865418267@127.0.0.1:3306/stock_info"
+    database_url: str = "mysql+pymysql://fit:fitpass@127.0.0.1:3306/stock_info"
     redis_url: str = "redis://127.0.0.1:6379/0"
     auth_session_cookie_name: str = "fit_session"
     auth_session_ttl_seconds: int = 604800
@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     stock_data_source_column: str = "data_source"
     stock_hist_source_value: str = "stock_zh_a_hist_tx"
     stock_spot_source_value: str = "stock_zh_a_spot"
+    stock_exchange_official_daily_table_name: str = "stock_exchange_official_daily_data"
+    stock_exchange_official_daily_date_column: str = "trade_date"
 
     stock_basic_info_table_name: str = "stock_info_all"
     stock_basic_info_code_column: str = "stock_code"
@@ -258,9 +260,9 @@ class Settings(BaseSettings):
     stock_temp_task_soft_time_limit_seconds: int = 1800
     stock_temp_task_time_limit_seconds: int = 2100
     stock_temp_task_max_retries: int = 5
-    stock_temp_daily_service_timeout_seconds: int = 7200
-    stock_temp_daily_task_soft_time_limit_seconds: int = 7200
-    stock_temp_daily_task_time_limit_seconds: int = 7500
+    stock_temp_daily_service_timeout_seconds: int = 14400
+    stock_temp_daily_task_soft_time_limit_seconds: int = 14400
+    stock_temp_daily_task_time_limit_seconds: int = 15000
     stock_temp_daily_task_max_retries: int = 3
 
     task_idempotency_ttl_seconds: int = 3600

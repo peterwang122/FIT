@@ -31,18 +31,32 @@ FIT 是一个基于 `Vue 3 + FastAPI + Celery + Redis + MySQL` 的股票量化�
 
 ## 2. 目录说明
 
-- [frontend](C:\Users\Administrator\PycharmProjects\FIT\frontend)：前端工程
-- [backend](C:\Users\Administrator\PycharmProjects\FIT\backend)：后端工程
-- [docs](C:\Users\Administrator\PycharmProjects\FIT\docs)：补充文档
+- `frontend/`：前端工程
+- `backend/`：后端工程
+- `docs/`：补充文档
+- `docker-compose.yml`：本机 MySQL、Redis、Flower 基础设施
 
 ## 3. 运行前准备
 
 你至少需要准备：
 
-- MySQL
-- Redis
-- Python 环境
-- Node.js
+- Docker Desktop
+- Miniconda / conda
+
+创建或更新开发环境：
+
+```bash
+conda env create -f environment.yml
+conda env update -f environment.yml --prune
+conda activate FIT
+```
+
+`environment.yml` 同时安装 Python 后端依赖和 Node.js/npm。首次运行前端仍需安装 npm 依赖：
+
+```bash
+cd frontend
+npm install
+```
 
 如果你要用到这些功能，还需要额外准备：
 
@@ -54,11 +68,12 @@ FIT 是一个基于 `Vue 3 + FastAPI + Celery + Redis + MySQL` 的股票量化�
 
 先复制环境变量模板：
 
-```powershell
-Copy-Item backend\.env.example backend\.env
+```bash
+cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
-然后按你自己的环境修改 [backend/.env](C:\Users\Administrator\PycharmProjects\FIT\backend\.env)。
+然后按你自己的环境修改 `backend/.env`。
 
 最关键的配置通常是：
 
@@ -75,28 +90,32 @@ Copy-Item backend\.env.example backend\.env
 
 说明：
 
-- `docker-compose.yml` 只会帮你启动 `Redis + Flower`
+- `DATABASE_URL` 默认指向本机 Docker MySQL：`mysql+pymysql://fit:fitpass@127.0.0.1:3306/stock_info`
+- FIT 前端不直接连接 MySQL，只通过 FIT 后端 API 读取数据。
+- `docker-compose.yml` 会启动持久化 MySQL、Redis、Flower。
 - **不会**帮你启动 FastAPI、Celery worker、Celery beat、前端 dev server
 
 ## 5. 启动顺序
 
-### 5.1 启动 Redis 和 Flower
+### 5.1 启动 MySQL、Redis 和 Flower
 
-```powershell
+```bash
 docker compose up -d
 ```
 
 默认端口：
 
+- MySQL：`127.0.0.1:3306`
 - Redis：`6379`
 - Flower：`5555`
 
+MySQL 数据写入 Docker 命名 volume `mysql_data`，容器重启不会丢数据。
+
 ### 5.2 启动后端 API
 
-```powershell
-cd backend
-C:\Users\Administrator\miniconda3\envs\FIT\python.exe -m pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+```bash
+conda activate FIT
+python scripts/dev.py api
 ```
 
 默认地址：
@@ -105,16 +124,16 @@ uvicorn app.main:app --reload --port 8000
 
 ### 5.3 启动 Celery Worker
 
-```powershell
-cd backend
-celery -A app.workers.celery_app worker --loglevel=info -P solo
+```bash
+conda activate FIT
+python scripts/dev.py worker
 ```
 
 ### 5.4 启动 Celery Beat
 
-```powershell
-cd backend
-celery -A app.workers.celery_app beat --loglevel=info
+```bash
+conda activate FIT
+python scripts/dev.py beat
 ```
 
 这一步很重要：
@@ -127,10 +146,9 @@ celery -A app.workers.celery_app beat --loglevel=info
 
 ### 5.5 启动前端
 
-```powershell
-cd frontend
-npm install
-npm run dev
+```bash
+conda activate FIT
+python scripts/dev.py frontend
 ```
 
 默认地址：
@@ -148,7 +166,7 @@ npm run dev
 
 再加上：
 
-- `docker compose up -d` 提供的 `Redis + Flower`
+- `docker compose up -d` 提供的 `MySQL + Redis + Flower`
 
 ## 7. 登录说明
 
@@ -158,7 +176,7 @@ npm run dev
 - 账号密码登录
 - 游客一键进入
 
-内置账号来自 [backend/.env](C:\Users\Administrator\PycharmProjects\FIT\backend\.env)：
+内置账号来自 `backend/.env`：
 
 - `root`
 - `guest`
@@ -193,7 +211,7 @@ npm run dev
 ### 股票量化 / 股票策略回测
 
 - 当前使用后复权链路
-- 对接采集端时请参考 [docs/STOCK_HFQ_COLLECTION_MIGRATION.md](C:\Users\Administrator\PycharmProjects\FIT\docs\STOCK_HFQ_COLLECTION_MIGRATION.md)
+- 对接采集端时请参考 `docs/STOCK_HFQ_COLLECTION_MIGRATION.md`
 
 ### 条件策略
 
@@ -219,9 +237,9 @@ npm run dev
 
 请确认下面两个进程都在跑：
 
-```powershell
-celery -A app.workers.celery_app worker --loglevel=info -P solo
-celery -A app.workers.celery_app beat --loglevel=info
+```bash
+python scripts/dev.py worker
+python scripts/dev.py beat
 ```
 
 ### 11.2 Flower 打得开，但任务还是不自动跑
@@ -260,7 +278,7 @@ Flower 只是监控，不是调度器。
 
 请确认：
 
-- 采集端已经按 [docs/STOCK_HFQ_COLLECTION_MIGRATION.md](C:\Users\Administrator\PycharmProjects\FIT\docs\STOCK_HFQ_COLLECTION_MIGRATION.md) 切到 `hfq`
+- 采集端已经按 `docs/STOCK_HFQ_COLLECTION_MIGRATION.md` 切到 `hfq`
 - `COLLECTOR_BASE_URL` 正确
 - Celery worker 正常运行
 
@@ -268,49 +286,50 @@ Flower 只是监控，不是调度器。
 
 ### 基础依赖
 
-```powershell
+```bash
 docker compose up -d
 ```
 
 ### 后端
 
-```powershell
-cd backend
-uvicorn app.main:app --reload --port 8000
+```bash
+conda activate FIT
+python scripts/dev.py api
 ```
 
 ### Celery Worker
 
-```powershell
-cd backend
-celery -A app.workers.celery_app worker --loglevel=info -P solo
+```bash
+conda activate FIT
+python scripts/dev.py worker
 ```
 
 ### Celery Beat
 
-```powershell
-cd backend
-celery -A app.workers.celery_app beat --loglevel=info
+```bash
+conda activate FIT
+python scripts/dev.py beat
 ```
 
 ### 前端
 
-```powershell
-cd frontend
-npm run dev
+```bash
+conda activate FIT
+python scripts/dev.py frontend
 ```
 
 ## 13. 构建检查
 
 前端：
 
-```powershell
-cd frontend
-npm run build
+```bash
+conda activate FIT
+python scripts/dev.py frontend-build
 ```
 
 后端语法检查：
 
-```powershell
-C:\Users\Administrator\miniconda3\envs\FIT\python.exe -m compileall backend/app
+```bash
+conda activate FIT
+python scripts/dev.py backend-check
 ```

@@ -17,6 +17,7 @@ import type {
 } from '../types/stock'
 import type {
   QuantEquityCurveResponse,
+  QuantIndicatorParams,
   QuantScanEventPage,
   QuantScanTargetHits,
   QuantSequenceGroupSet,
@@ -273,6 +274,7 @@ export async function fetchQuantStrategyEquityCurve(strategyId: number) {
 
 export async function previewQuantSequenceScan(payload: {
   strategy_type: QuantStrategyType
+  indicator_params?: QuantIndicatorParams
   buy_sequence_groups: QuantSequenceGroupSet
   scan_trade_config: QuantScanTradeConfig
   scan_start_date: string

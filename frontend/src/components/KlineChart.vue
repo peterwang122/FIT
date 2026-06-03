@@ -3,6 +3,7 @@ import {
   CandlestickSeries,
   ColorType,
   createChart,
+  LineSeries,
   type IChartApi,
   type ISeriesApi,
   type LogicalRange,
@@ -12,7 +13,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { KlineCandle } from '../types/stock'
-import type { QuantHighlightBand } from '../types/quant'
+import type { QuantChartOverlayLine, QuantHighlightBand } from '../types/quant'
 import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 
 const HISTORY_REQUEST_THRESHOLD = 15
@@ -27,11 +28,13 @@ const props = withDefaults(
     hasMoreHistory?: boolean
     loadingMoreHistory?: boolean
     highlightBands?: QuantHighlightBand[]
+    overlayLines?: QuantChartOverlayLine[]
   }>(),
   {
     hasMoreHistory: false,
     loadingMoreHistory: false,
     highlightBands: () => [],
+    overlayLines: () => [],
   },
 )
 
@@ -49,6 +52,7 @@ let shouldResetVisibleRange = true
 let lastRequestedHistoryBoundary: string | null = null
 let visibleRangeUnsubscribe: (() => void) | null = null
 let highlightPrimitive: DateHighlightPrimitive | null = null
+const overlaySeries = new Map<string, ISeriesApi<'Line'>>()
 
 function parseDateText(value: string): number {
   return new Date(`${value}T00:00:00`).getTime()
@@ -144,6 +148,52 @@ function buildSeries(targetChart: IChartApi): ISeriesApi<'Candlestick'> {
   })
 }
 
+function buildOverlaySeries(targetChart: IChartApi, line: QuantChartOverlayLine): ISeriesApi<'Line'> {
+  const options = {
+    color: line.color,
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: true,
+    title: line.label,
+  }
+  const anyChart = targetChart as any
+  if (typeof anyChart.addLineSeries === 'function') {
+    return anyChart.addLineSeries(options)
+  }
+  return anyChart.addSeries(LineSeries, options)
+}
+
+function updateOverlayLines() {
+  if (!chart) return
+  const nextKeys = new Set(props.overlayLines.map((line) => line.key))
+  for (const [key, series] of overlaySeries.entries()) {
+    if (!nextKeys.has(key)) {
+      chart.removeSeries(series)
+      overlaySeries.delete(key)
+    }
+  }
+
+  for (const line of props.overlayLines) {
+    let series = overlaySeries.get(line.key)
+    if (!series) {
+      series = buildOverlaySeries(chart, line)
+      overlaySeries.set(line.key, series)
+    }
+    series.applyOptions({
+      color: line.color,
+      title: line.label,
+    })
+    series.setData(
+      line.data
+        .filter((point) => point.value !== null && Number.isFinite(Number(point.value)))
+        .map((point) => ({
+          time: point.time as Time,
+          value: Number(point.value),
+        })),
+    )
+  }
+}
+
 function maybeRequestMoreHistory(range: LogicalRange | null) {
   if (!range || !props.hasMoreHistory || props.loadingMoreHistory || !klineData.value.length) {
     return
@@ -224,6 +274,7 @@ function renderChart() {
     highlightPrimitive = new DateHighlightPrimitive(props.highlightBands)
     candleSeries.attachPrimitive(highlightPrimitive)
     candleSeries.setData(klineData.value as (WhitespaceData<Time> | any)[])
+    updateOverlayLines()
     applyVisibleRange()
     if (klineData.value.length) {
       shouldResetVisibleRange = false
@@ -287,6 +338,14 @@ watch(
 )
 
 watch(
+  () => props.overlayLines,
+  () => {
+    updateOverlayLines()
+  },
+  { deep: true },
+)
+
+watch(
   () => props.candles[0]?.trade_date ?? null,
   (nextEarliest, previousEarliest) => {
     if (nextEarliest && nextEarliest !== previousEarliest) {
@@ -306,6 +365,7 @@ onBeforeUnmount(() => {
   chart = null
   candleSeries = null
   highlightPrimitive = null
+  overlaySeries.clear()
 })
 </script>
 

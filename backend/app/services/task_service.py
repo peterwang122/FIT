@@ -1,10 +1,11 @@
 import re
 import smtplib
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -39,6 +40,13 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-stock-daily",
+    },
+    "stock_exchange_official_daily": {
+        "label": "沪深官网股票日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-stock-exchange-official-daily",
     },
     "index_cn_daily": {
         "label": "A股指数日更",
@@ -152,6 +160,14 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "requires_target": False,
         "endpoint": "/collect-index-news-sentiment-daily",
     },
+    "excel_emotion_import": {
+        "label": "情绪指标 Excel 导入",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/import-emotion-excel",
+        "manual_only": True,
+    },
     "index_us_vix_daily": {
         "label": "美股 VIX 日更",
         "market_scope": "us_index",
@@ -199,6 +215,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
 COLLECTION_TASK_LABEL_OVERRIDES = {
     "stock_hfq_single": "A股股票单只 HFQ 采集",
     "stock_daily": "股票日更",
+    "stock_exchange_official_daily": "沪深官网股票日更",
     "index_cn_daily": "A股指数日更",
     "index_bj50_daily": "北证50日更",
     "cffex_daily": "中金所会员持仓日更",
@@ -215,6 +232,7 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "us_index_futures_official_daily": "美股股指期货官方合约日更",
     "index_qvix_daily": "QVIX 日更",
     "index_news_sentiment_daily": "新闻情绪日更",
+    "excel_emotion_import": "情绪指标 Excel 导入",
     "index_us_vix_daily": "美股 VIX 日更",
     "index_us_fear_greed_daily": "美股恐贪指数日更",
     "index_us_hedge_proxy_daily": "美股对冲基金代理日更",
@@ -225,6 +243,250 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
 for _collector_key, _label in COLLECTION_TASK_LABEL_OVERRIDES.items():
     if _collector_key in COLLECTION_TASK_DEFINITIONS:
         COLLECTION_TASK_DEFINITIONS[_collector_key]["label"] = _label
+
+
+@dataclass(frozen=True)
+class CollectionDataProbe:
+    table_name: str
+    date_column: str
+    label: str
+    where_sql: str = ""
+    params: dict[str, object] = field(default_factory=dict)
+    minimum_rows: int = 1
+
+
+def _quoted_identifier(value: str) -> str:
+    return f"`{str(value).replace('`', '``')}`"
+
+
+COLLECTION_VALIDATION_MARKET_SCOPE_OVERRIDES: dict[str, str] = {
+    "forex_daily": "us_index",
+    "usd_index_daily": "us_index",
+}
+
+COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
+    "stock_daily": [
+        CollectionDataProbe(settings.stock_table_name, settings.stock_date_column, "股票日线"),
+    ],
+    "stock_exchange_official_daily": [
+        CollectionDataProbe(
+            settings.stock_exchange_official_daily_table_name,
+            settings.stock_exchange_official_daily_date_column,
+            "上交所官网股票日线",
+            where_sql="AND exchange = :exchange",
+            params={"exchange": "SH"},
+        ),
+        CollectionDataProbe(
+            settings.stock_exchange_official_daily_table_name,
+            settings.stock_exchange_official_daily_date_column,
+            "深交所官网股票日线",
+            where_sql="AND exchange = :exchange",
+            params={"exchange": "SZ"},
+        ),
+    ],
+    "index_cn_daily": [
+        CollectionDataProbe(settings.index_daily_table_name, settings.index_daily_date_column, "A股指数日线"),
+    ],
+    "index_bj50_daily": [
+        CollectionDataProbe(
+            settings.index_daily_table_name,
+            settings.index_daily_date_column,
+            "北证50指数日线",
+            where_sql=f"AND {_quoted_identifier(settings.index_daily_code_column)} IN (:bj50_code, :bj50_prefixed_code)",
+            params={"bj50_code": "899050", "bj50_prefixed_code": "BJ899050"},
+        ),
+    ],
+    "cffex_daily": [
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-IF",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_if",
+            params={"cffex_product_if": "IF"},
+            minimum_rows=20,
+        ),
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-IH",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_ih",
+            params={"cffex_product_ih": "IH"},
+            minimum_rows=20,
+        ),
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-IC",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_ic",
+            params={"cffex_product_ic": "IC"},
+            minimum_rows=20,
+        ),
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-IM",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_im",
+            params={"cffex_product_im": "IM"},
+            minimum_rows=20,
+        ),
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-TS",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_ts",
+            params={"cffex_product_ts": "TS"},
+            minimum_rows=20,
+        ),
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-TF",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_tf",
+            params={"cffex_product_tf": "TF"},
+            minimum_rows=20,
+        ),
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-T",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_t",
+            params={"cffex_product_t": "T"},
+            minimum_rows=20,
+        ),
+        CollectionDataProbe(
+            settings.cffex_member_rankings_table_name,
+            settings.cffex_trade_date_column,
+            "中金所会员持仓-TL",
+            where_sql=f"AND {_quoted_identifier(settings.cffex_product_code_column)} = :cffex_product_tl",
+            params={"cffex_product_tl": "TL"},
+            minimum_rows=20,
+        ),
+    ],
+    "forex_daily": [
+        CollectionDataProbe(settings.forex_daily_table_name, settings.forex_daily_date_column, "汇率日线"),
+    ],
+    "usd_index_daily": [
+        CollectionDataProbe(
+            settings.forex_daily_table_name,
+            settings.forex_daily_date_column,
+            "美元指数日线",
+            where_sql=f"AND {_quoted_identifier(settings.forex_daily_code_column)} = :usd_index_code",
+            params={"usd_index_code": "UDI"},
+        ),
+    ],
+    "futures_daily": [
+        CollectionDataProbe(
+            settings.futures_daily_table_name,
+            settings.futures_daily_trade_date_column,
+            "中金所期货原始合约",
+            where_sql=(
+                f"AND ({_quoted_identifier(settings.futures_daily_data_source_column)} IS NULL "
+                f"OR {_quoted_identifier(settings.futures_daily_data_source_column)} <> :derived_source)"
+            ),
+            params={"derived_source": settings.futures_daily_primary_source_value},
+        ),
+        CollectionDataProbe(
+            settings.futures_daily_table_name,
+            settings.futures_daily_trade_date_column,
+            "中金所期货衍生合约",
+            where_sql=f"AND {_quoted_identifier(settings.futures_daily_data_source_column)} = :derived_source",
+            params={"derived_source": settings.futures_daily_primary_source_value},
+        ),
+    ],
+    "etf_daily": [
+        CollectionDataProbe(settings.etf_daily_table_name, settings.etf_daily_date_column, "ETF日线"),
+    ],
+    "option_daily": [
+        CollectionDataProbe("option_cffex_rtj_daily_data", "trade_date", "中金所期权日线"),
+    ],
+    "quant_index_daily": [
+        CollectionDataProbe(
+            settings.quant_index_dashboard_table_name,
+            settings.quant_index_dashboard_date_column,
+            "量化指数看板",
+        ),
+    ],
+    "index_hk_daily": [
+        CollectionDataProbe(settings.index_hk_daily_table_name, settings.index_hk_daily_date_column, "港股指数日线"),
+    ],
+    "index_us_daily": [
+        CollectionDataProbe(settings.index_us_daily_table_name, settings.index_us_daily_date_column, "美股指数日线"),
+    ],
+    "hk_index_futures_daily": [
+        CollectionDataProbe(
+            "futures_hk_index_daily_data",
+            "trade_date",
+            "港股股指期货",
+            where_sql="AND root_symbol IN (:hsi_root, :hhi_root, :hti_root)",
+            params={"hsi_root": "HSI", "hhi_root": "HHI", "hti_root": "HTI"},
+            minimum_rows=3,
+        ),
+    ],
+    "us_index_futures_daily": [
+        CollectionDataProbe(
+            "futures_us_index_daily_data",
+            "trade_date",
+            "美股股指期货",
+            where_sql="AND root_symbol IN (:es_root, :nq_root)",
+            params={"es_root": "ES", "nq_root": "NQ"},
+            minimum_rows=2,
+        ),
+    ],
+    "us_index_futures_official_daily": [
+        CollectionDataProbe(
+            "futures_us_index_official_daily_data",
+            "trade_date",
+            "美股股指期货官方合约",
+            where_sql="AND root_symbol IN (:es_root, :nq_root)",
+            params={"es_root": "ES", "nq_root": "NQ"},
+            minimum_rows=2,
+        ),
+    ],
+    "index_qvix_daily": [
+        CollectionDataProbe(settings.index_qvix_daily_table_name, settings.index_qvix_daily_date_column, "QVIX"),
+    ],
+    "index_news_sentiment_daily": [
+        CollectionDataProbe("index_news_sentiment_scope_daily", "trade_date", "新闻情绪"),
+    ],
+    "index_us_vix_daily": [
+        CollectionDataProbe(settings.index_us_vix_daily_table_name, settings.index_us_vix_daily_date_column, "美股VIX"),
+    ],
+    "index_us_fear_greed_daily": [
+        CollectionDataProbe(
+            settings.index_us_fear_greed_daily_table_name,
+            settings.index_us_fear_greed_daily_date_column,
+            "美股恐贪指数",
+        ),
+    ],
+    "index_us_hedge_proxy_daily": [
+        CollectionDataProbe(
+            settings.index_us_hedge_proxy_table_name,
+            settings.index_us_hedge_proxy_release_date_column,
+            "美股持仓代理",
+        ),
+    ],
+    "index_us_put_call_ratio_daily": [
+        CollectionDataProbe(
+            settings.index_us_put_call_table_name,
+            settings.index_us_put_call_date_column,
+            "美股Put/Call Ratio",
+        ),
+    ],
+    "index_us_treasury_yield_daily": [
+        CollectionDataProbe(
+            settings.index_us_treasury_yield_table_name,
+            settings.index_us_treasury_yield_date_column,
+            "美债收益率",
+        ),
+    ],
+    "index_us_credit_spread_daily": [
+        CollectionDataProbe(
+            settings.index_us_credit_spread_table_name,
+            settings.index_us_credit_spread_date_column,
+            "美股高收益债利差",
+        ),
+    ],
+}
 
 
 class TaskService:
@@ -366,6 +628,29 @@ class TaskService:
         definition = self._get_collection_definition(collector_key)
         return self._normalize_market_scope(str(definition["market_scope"]))
 
+    def _is_manual_only_collection(self, collector_key: str | None) -> bool:
+        if not collector_key:
+            return False
+        definition = COLLECTION_TASK_DEFINITIONS.get(str(collector_key).strip().lower())
+        return bool(definition and definition.get("manual_only"))
+
+    def _is_manual_only_task(self, task: ScheduledTask) -> bool:
+        if task.task_type != "collection":
+            return False
+        config = task.config_json or {}
+        try:
+            collector_key = self._normalize_collector_key(
+                config.get("collector_key"),
+                task.market_scope,
+                config.get("target_type"),
+                config.get("target_code") or config.get("stock_code"),
+                config.get("target_name"),
+                task.name,
+            )
+        except ValueError:
+            return False
+        return self._is_manual_only_collection(collector_key)
+
     def _is_single_stock_collection(self, task: ScheduledTask | None = None, config: dict | None = None) -> bool:
         target_config = config if config is not None else (task.config_json if task is not None else {}) or {}
         market_scope = task.market_scope if task is not None else None
@@ -398,6 +683,8 @@ class TaskService:
         return datetime.combine(now.date(), time(hour=hour, minute=minute))
 
     def _due_scheduled_for(self, task: ScheduledTask, now: datetime) -> datetime | None:
+        if self._is_manual_only_task(task):
+            return None
         if not task.enabled:
             return None
 
@@ -519,12 +806,22 @@ class TaskService:
         return run_at.date()
 
     def _compute_next_run_at(self, item: ScheduledTask) -> datetime | None:
+        if self._is_manual_only_task(item):
+            return None
         if not item.enabled:
             return None
         market_scope = self._effective_task_market_scope(item)
         return self._compute_next_run_at_for_scope(market_scope, item.schedule_time)
 
     def _serialize_task(self, item: ScheduledTask) -> dict:
+        def optional_config_text(value: object) -> str | None:
+            if value is None:
+                return None
+            normalized = str(value).strip()
+            if not normalized or normalized.lower() in {"none", "null"}:
+                return None
+            return normalized
+
         config = item.config_json or {}
         collector_key = None
         collection_label = None
@@ -538,10 +835,11 @@ class TaskService:
                 item.name,
             )
             collection_label = str(self._get_collection_definition(collector_key).get("label") or "").strip() or None
-        target_type = str(config.get("target_type", "")).strip() or None
-        target_code = str(config.get("target_code", "")).strip() or None
-        target_name = str(config.get("target_name", "")).strip() or None
-        stock_code = str(config.get("stock_code", "")).strip() or None
+        manual_only = self._is_manual_only_collection(collector_key)
+        target_type = optional_config_text(config.get("target_type"))
+        target_code = optional_config_text(config.get("target_code"))
+        target_name = optional_config_text(config.get("target_name"))
+        stock_code = optional_config_text(config.get("stock_code"))
         if stock_code and not target_code:
             target_code = stock_code
         if stock_code and not target_type:
@@ -562,6 +860,7 @@ class TaskService:
             "market_scope": self._effective_task_market_scope(item, config),
             "collector_key": collector_key,
             "collection_label": collection_label,
+            "manual_only": manual_only,
             "name": item.name,
             "enabled": bool(item.enabled),
             "schedule_time": item.schedule_time,
@@ -736,6 +1035,7 @@ class TaskService:
             resolved_name = target_name or self._resolve_collection_target_name(normalized_target_type, target_code, market_scope)
             return market_scope, {
                 "collector_key": collector_key,
+                "manual_only": bool(definition.get("manual_only")),
                 "target_type": normalized_target_type,
                 "target_code": target_code or None,
                 "target_name": resolved_name,
@@ -769,12 +1069,13 @@ class TaskService:
             {**payload, "market_scope": payload.get("market_scope", DEFAULT_MARKET_SCOPE)},
             current_user,
         )
+        manual_only = bool(config_json.get("manual_only"))
         item = ScheduledTask(
             owner_user_id=current_user.id,
             task_type=str(payload.get("task_type", "")).strip(),
             market_scope=market_scope,
             name=str(payload.get("name", "")).strip(),
-            enabled=bool(payload.get("enabled", True)),
+            enabled=False if manual_only else bool(payload.get("enabled", True)),
             schedule_time=self._format_schedule_time(str(payload.get("schedule_time", "")).strip()),
             config_json=config_json,
             last_run_status="",
@@ -804,7 +1105,6 @@ class TaskService:
         item.task_type = next_task_type
         item.market_scope = self._normalize_market_scope(str(payload.get("market_scope", item.market_scope)).strip())
         item.name = str(payload.get("name", item.name)).strip()
-        item.enabled = bool(payload.get("enabled", item.enabled))
         item.schedule_time = self._format_schedule_time(str(payload.get("schedule_time", item.schedule_time)).strip())
         if not item.name:
             raise ValueError("task name is required")
@@ -823,6 +1123,7 @@ class TaskService:
         )
         item.market_scope = market_scope
         item.config_json = config_json
+        item.enabled = False if bool(config_json.get("manual_only")) else bool(payload.get("enabled", item.enabled))
         self.db.add(item)
         self.db.commit()
         self.db.refresh(item)
@@ -860,6 +1161,12 @@ class TaskService:
 
     def toggle_task(self, task_id: int, enabled: bool, current_user: User) -> dict:
         item = self._get_owned_task(task_id, current_user.id)
+        if self._is_manual_only_task(item):
+            item.enabled = False
+            self.db.add(item)
+            self.db.commit()
+            self.db.refresh(item)
+            return self._serialize_task(item)
         if item.task_type == "notification":
             target_email = str(current_user.email or (item.config_json or {}).get("target_email") or "").strip()
             if enabled and not target_email:
@@ -1094,7 +1401,109 @@ class TaskService:
             f"based on trade date {basis_trade_date.isoformat()}."
         )
 
-    def _execute_collection_task(self, task: ScheduledTask) -> str:
+    def _collection_validation_market_scope(self, collector_key: str) -> str:
+        override_scope = COLLECTION_VALIDATION_MARKET_SCOPE_OVERRIDES.get(collector_key)
+        if override_scope:
+            return self._normalize_market_scope(override_scope)
+        return self._collection_market_scope(collector_key)
+
+    def _collection_target_trade_date(self, collector_key: str, reference_dt: datetime | None = None) -> date:
+        market_scope = self._collection_validation_market_scope(collector_key)
+        market_date = self.market_calendar.current_market_date(market_scope, reference_dt or self._now())
+        if self.market_calendar.is_trading_day(market_scope, market_date):
+            return market_date
+        return self.market_calendar.previous_trading_day(market_scope, market_date)
+
+    def _collection_target_trade_date_for_task(
+        self,
+        collector_key: str,
+        task: ScheduledTask,
+        reference_dt: datetime | None = None,
+    ) -> date:
+        market_scope = self._collection_validation_market_scope(collector_key)
+        reference = reference_dt or self._now()
+        market_date = self.market_calendar.current_market_date(market_scope, reference)
+        if not self.market_calendar.is_trading_day(market_scope, market_date):
+            return self.market_calendar.previous_trading_day(market_scope, market_date)
+
+        reference_local = reference.replace(tzinfo=SHANGHAI_TZ) if reference.tzinfo is None else reference.astimezone(SHANGHAI_TZ)
+        hour, minute = self._parse_schedule_parts(task.schedule_time)
+        if reference_local.time() < time(hour=hour, minute=minute):
+            return self.market_calendar.previous_trading_day(market_scope, market_date)
+        return market_date
+
+    def _collection_probe_snapshot(self, probe: CollectionDataProbe, target_trade_date: date) -> tuple[int, object]:
+        date_column = _quoted_identifier(probe.date_column)
+        sql = (
+            f"SELECT "
+            f"SUM(CASE WHEN {date_column} = :target_trade_date THEN 1 ELSE 0 END) AS target_count, "
+            f"MAX({date_column}) AS latest_date "
+            f"FROM {_quoted_identifier(probe.table_name)} "
+            f"WHERE 1 = 1 "
+            f"{probe.where_sql}"
+        )
+        params = {**probe.params, "target_trade_date": target_trade_date}
+        row = self.db.execute(text(sql), params).mappings().first()
+        if row is None:
+            return 0, None
+        return int(row.get("target_count") or 0), row.get("latest_date")
+
+    def _compact_upstream_result(self, result: dict | None) -> str:
+        if not isinstance(result, dict):
+            return "-"
+        upstream_response = result.get("upstream_response")
+        if isinstance(upstream_response, dict) and "result" in upstream_response:
+            raw_value = upstream_response.get("result")
+        else:
+            raw_value = result
+        text_value = str(raw_value)
+        if len(text_value) > 300:
+            return f"{text_value[:300]}..."
+        return text_value
+
+    def _validate_collection_result(
+        self,
+        collector_key: str,
+        label: str,
+        result: dict | None,
+        reference_dt: datetime | None = None,
+        target_trade_date: date | None = None,
+    ) -> str:
+        probes = COLLECTION_DATA_PROBES.get(collector_key, [])
+        if not probes:
+            return ""
+
+        # End the read transaction that loaded the task/run before the upstream
+        # collector wrote data. MySQL's default REPEATABLE READ would otherwise
+        # keep validating against a stale snapshot and report freshly inserted
+        # rows as missing.
+        in_transaction = getattr(self.db, "in_transaction", None)
+        if callable(in_transaction) and in_transaction():
+            self.db.rollback()
+
+        target_trade_date = target_trade_date or self._collection_target_trade_date(collector_key, reference_dt)
+        failures: list[str] = []
+        successes: list[str] = []
+        for probe in probes:
+            target_count, latest_date = self._collection_probe_snapshot(probe, target_trade_date)
+            if target_count < probe.minimum_rows:
+                failures.append(
+                    f"{probe.label}目标日{target_trade_date.isoformat()}仅{target_count}行"
+                    f"（要求至少{probe.minimum_rows}行，当前最新{latest_date or '-'}）"
+                )
+            else:
+                successes.append(f"{probe.label}{target_count}行")
+
+        if failures:
+            upstream_result = self._compact_upstream_result(result)
+            raise RuntimeError(
+                f"{label}入库校验失败：目标交易日 {target_trade_date.isoformat()} 数据未完整入库；"
+                f"{'；'.join(failures)}；上游返回：{upstream_result}"
+            )
+
+        return f"已确认 {target_trade_date.isoformat()} 数据入库：{'，'.join(successes)}。"
+
+    def _execute_collection_task(self, task: ScheduledTask, reference_dt: datetime | None = None) -> str:
         config = task.config_json or {}
         collector_key = self._normalize_collector_key(
             config.get("collector_key"),
@@ -1120,13 +1529,23 @@ class TaskService:
                 return f"{target_name}（{target_code}）采集完成，但没有新数据。"
             return f"{target_name}（{target_code}）采集完成，状态：{upstream_status}。"
 
+        explicit_target_trade_date: date | None = None
+        collection_payload: dict | None = None
+        if collector_key == "stock_exchange_official_daily":
+            explicit_target_trade_date = self._collection_target_trade_date_for_task(collector_key, task, reference_dt)
+            collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
+
         if collector_key == "index_hk_daily":
             result = run_index_daily_collection_request("hk")
         elif collector_key == "index_us_daily":
             result = run_index_daily_collection_request("us")
         else:
             endpoint = str(definition.get("endpoint") or "").strip()
-            result = run_daily_collection_request(collector_key=collector_key, endpoint=endpoint)
+            result = run_daily_collection_request(
+                collector_key=collector_key,
+                endpoint=endpoint,
+                payload=collection_payload,
+            )
 
         upstream_status = str(result.get("upstream_status", result.get("status", "ok"))).upper()
         upstream_payload = result.get("upstream_response") if isinstance(result, dict) else None
@@ -1137,9 +1556,20 @@ class TaskService:
                 f"实际 {upstream_task_name}。请检查采集端服务是否已重启并加载最新路由。"
             )
         result_value = upstream_payload.get("result") if isinstance(upstream_payload, dict) else None
+        validation_summary = self._validate_collection_result(
+            collector_key,
+            label,
+            result,
+            reference_dt,
+            target_trade_date=explicit_target_trade_date,
+        )
         if result_value not in (None, ""):
-            return f"{label}执行完成，结果：{result_value}。"
-        return f"{label}执行完成，状态：{upstream_status}。"
+            summary = f"{label}执行完成，结果：{result_value}。"
+        else:
+            summary = f"{label}执行完成，状态：{upstream_status}。"
+        if validation_summary:
+            summary += validation_summary
+        return summary
 
     def execute_run(self, run_id: int) -> dict:
         run = self.db.get(ScheduledTaskRun, run_id)
@@ -1154,7 +1584,7 @@ class TaskService:
 
         try:
             if task.task_type == "collection":
-                summary = self._execute_collection_task(task)
+                summary = self._execute_collection_task(task, reference_dt=run.scheduled_for or started_at)
             elif task.task_type == "notification":
                 summary = self._execute_notification_task(task)
             else:

@@ -25,7 +25,11 @@ import type {
 } from '../types/quant'
 import type {
   FuturesBasisPoint,
+  IndexBasisDeltaPoint,
   IndexBreadthPoint,
+  IndexCffexNetShortDeltaPoint,
+  IndexCnOptionFlowPutCallPoint,
+  IndexCnOptionPutCallPoint,
   IndexEmotionPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
@@ -50,6 +54,10 @@ type PanelKey =
   | 'basis'
   | 'breadth'
   | 'vix'
+  | 'cnPutCall'
+  | 'cnFlowPutCall'
+  | 'cffexNetShortDelta'
+  | 'basisDelta'
   | 'usVix'
   | 'usFearGreed'
   | 'usHedge'
@@ -59,6 +67,17 @@ type PanelKey =
 type SubPanelKey = Exclude<PanelKey, 'main'>
 type MainOverlayMode = 'ma' | 'boll'
 type UsPutCallMetricKey = 'total' | 'index' | 'equity' | 'etf'
+type CnOptionPutCallMetricKey = 'currentMonth' | 'nextMonth' | 'quarter1' | 'quarter2'
+type CnOptionFlowPutCallMetricKey = 'volume' | 'turnover'
+const CFFEX_NET_SHORT_DELTA_WINDOWS = [5, 7, 14, 20, 30, 60, 120] as const
+type CffexNetShortDeltaWindow = (typeof CFFEX_NET_SHORT_DELTA_WINDOWS)[number]
+type CffexNetShortDeltaSource = 'top20' | 'citic'
+type CffexNetShortDeltaPayloadKey =
+  | `top20_delta_${CffexNetShortDeltaWindow}d`
+  | `citic_delta_${CffexNetShortDeltaWindow}d`
+type BasisDeltaWindow = CffexNetShortDeltaWindow
+type BasisDeltaMetricKey = 'main' | 'month'
+type BasisDeltaPayloadKey = `${BasisDeltaMetricKey}_delta_${BasisDeltaWindow}d`
 type UsCreditMetricKey = 'hyOas' | 'change5d'
 type BasisMetricKey = 'adjusted' | 'main'
 type AnySeries = ISeriesApi<SeriesType, Time>
@@ -70,7 +89,7 @@ type PrimitiveBinding = {
   primitive: DateHighlightPrimitive
   getHighlights: () => QuantHighlightBand[]
 }
-type SummaryRow = { label: string; value: string; placeholder?: boolean }
+type SummaryRow = { label: string; value: string; placeholder?: boolean; title?: string }
 type SummaryCard = { key: string; title: string; hint?: string; rows: SummaryRow[] }
 type SubPanelOption = { key: SubPanelKey; label: string; available: boolean }
 const HISTORY_REQUEST_THRESHOLD = 15
@@ -84,6 +103,10 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'basis',
   'breadth',
   'vix',
+  'cnPutCall',
+  'cnFlowPutCall',
+  'cffexNetShortDelta',
+  'basisDelta',
   'usVix',
   'usFearGreed',
   'usHedge',
@@ -92,6 +115,10 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'usCredit',
 ]
 const ALL_SUB_PANEL_KEYS: SubPanelKey[] = ALL_PANEL_KEYS.filter((item): item is SubPanelKey => item !== 'main')
+const DEFAULT_HIDDEN_TECHNICAL_SUB_PANELS = new Set<SubPanelKey>(['macd', 'kdj', 'wr', 'rsi'])
+const DEFAULT_VISIBLE_SUB_PANEL_KEYS: SubPanelKey[] = ALL_SUB_PANEL_KEYS.filter(
+  (item) => !DEFAULT_HIDDEN_TECHNICAL_SUB_PANELS.has(item),
+)
 
 const props = withDefaults(
   defineProps<{
@@ -107,6 +134,11 @@ const props = withDefaults(
     breadthErrorMessage?: string
     vixPoints?: IndexVixPoint[]
     supportsVixPanel?: boolean
+    cnOptionPutCallPoints?: IndexCnOptionPutCallPoint[]
+    cnOptionFlowPutCallPoints?: IndexCnOptionFlowPutCallPoint[]
+    cffexNetShortDeltaPoints?: IndexCffexNetShortDeltaPoint[]
+    basisDeltaPoints?: IndexBasisDeltaPoint[]
+    supportsCnOptionPutCallPanel?: boolean
     usVixPoints?: IndexUsVixPoint[]
     usFearGreedPoints?: IndexUsFearGreedPoint[]
     usHedgeProxyPoints?: IndexUsHedgeProxyPoint[]
@@ -145,6 +177,11 @@ const props = withDefaults(
     breadthErrorMessage: '',
     vixPoints: () => [],
     supportsVixPanel: false,
+    cnOptionPutCallPoints: () => [],
+    cnOptionFlowPutCallPoints: () => [],
+    cffexNetShortDeltaPoints: () => [],
+    basisDeltaPoints: () => [],
+    supportsCnOptionPutCallPanel: false,
     usVixPoints: () => [],
     usFearGreedPoints: () => [],
     usHedgeProxyPoints: () => [],
@@ -184,6 +221,10 @@ const emotionContainerRef = ref<HTMLDivElement | null>(null)
 const basisContainerRef = ref<HTMLDivElement | null>(null)
 const breadthContainerRef = ref<HTMLDivElement | null>(null)
 const vixContainerRef = ref<HTMLDivElement | null>(null)
+const cnPutCallContainerRef = ref<HTMLDivElement | null>(null)
+const cnFlowPutCallContainerRef = ref<HTMLDivElement | null>(null)
+const cffexNetShortDeltaContainerRef = ref<HTMLDivElement | null>(null)
+const basisDeltaContainerRef = ref<HTMLDivElement | null>(null)
 const usVixContainerRef = ref<HTMLDivElement | null>(null)
 const usFearGreedContainerRef = ref<HTMLDivElement | null>(null)
 const usHedgeContainerRef = ref<HTMLDivElement | null>(null)
@@ -193,8 +234,14 @@ const usCreditContainerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 const overlayMode = ref<MainOverlayMode>('ma')
 const hoveredTradeDate = ref<string | null>(null)
-const visibleSubPanels = ref<SubPanelKey[]>([...ALL_SUB_PANEL_KEYS])
+const visibleSubPanels = ref<SubPanelKey[]>([...DEFAULT_VISIBLE_SUB_PANEL_KEYS])
 const activeUsPutCallKey = ref<UsPutCallMetricKey>('total')
+const activeCnOptionPutCallKey = ref<CnOptionPutCallMetricKey>('currentMonth')
+const activeCnOptionFlowPutCallKey = ref<CnOptionFlowPutCallMetricKey>('volume')
+const activeCffexNetShortDeltaSource = ref<CffexNetShortDeltaSource>('top20')
+const activeCffexNetShortDeltaWindow = ref<CffexNetShortDeltaWindow>(7)
+const activeBasisDeltaMetric = ref<BasisDeltaMetricKey>('main')
+const activeBasisDeltaWindow = ref<BasisDeltaWindow>(7)
 const activeUsCreditKey = ref<UsCreditMetricKey>('hyOas')
 const activeBasisKey = ref<BasisMetricKey>('adjusted')
 
@@ -216,10 +263,19 @@ let basisMonthSeries: LineSeriesApi | null = null
 let breadthSeries: LineSeriesApi | null = null
 let breadthCountSeries: LineSeriesApi | null = null
 let vixSeries: CandleSeriesApi | null = null
+let cnPutCallSeries: LineSeriesApi | null = null
+let cnPutCallReferenceSeries: LineSeriesApi | null = null
+let cnFlowPutCallSeries: LineSeriesApi | null = null
+let cnFlowPutCallReferenceSeries: LineSeriesApi | null = null
+let cffexNetShortDeltaSeries: LineSeriesApi | null = null
+let cffexNetShortDeltaReferenceSeries: LineSeriesApi | null = null
+let basisDeltaSeries: LineSeriesApi | null = null
+let basisDeltaReferenceSeries: LineSeriesApi | null = null
 let usVixSeries: CandleSeriesApi | null = null
 let usFearGreedSeries: LineSeriesApi | null = null
 let usHedgeSeries: LineSeriesApi | null = null
 let usPutCallSeries: LineSeriesApi | null = null
+let usPutCallReferenceSeries: LineSeriesApi | null = null
 let usTreasurySpread10y2ySeries: LineSeriesApi | null = null
 let usTreasurySpread10y3mSeries: LineSeriesApi | null = null
 let usCreditSeries: LineSeriesApi | null = null
@@ -240,6 +296,10 @@ const visiblePanelOptions = computed<SubPanelOption[]>(() => [
   { key: 'basis', label: '期现差', available: props.supportsBasisPanel },
   { key: 'breadth', label: '涨跌家数', available: props.supportsAuxiliaryPanels },
   { key: 'vix', label: 'VIX', available: props.supportsVixPanel },
+  { key: 'cnPutCall', label: 'Put/Call', available: props.supportsCnOptionPutCallPanel },
+  { key: 'cnFlowPutCall', label: '成交P/C', available: props.supportsCnOptionPutCallPanel },
+  { key: 'cffexNetShortDelta', label: '净空单增量', available: props.supportsAuxiliaryPanels },
+  { key: 'basisDelta', label: '期现差变化', available: props.supportsAuxiliaryPanels },
   { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
   { key: 'usFearGreed', label: '恐贪', available: props.supportsUsFearGreedPanel },
   { key: 'usHedge', label: '对冲代理', available: props.supportsUsHedgeProxyPanel },
@@ -271,6 +331,10 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   if (panelKey === 'basis') return basisContainerRef.value
   if (panelKey === 'breadth') return breadthContainerRef.value
   if (panelKey === 'vix') return vixContainerRef.value
+  if (panelKey === 'cnPutCall') return cnPutCallContainerRef.value
+  if (panelKey === 'cnFlowPutCall') return cnFlowPutCallContainerRef.value
+  if (panelKey === 'cffexNetShortDelta') return cffexNetShortDeltaContainerRef.value
+  if (panelKey === 'basisDelta') return basisDeltaContainerRef.value
   if (panelKey === 'usVix') return usVixContainerRef.value
   if (panelKey === 'usFearGreed') return usFearGreedContainerRef.value
   if (panelKey === 'usHedge') return usHedgeContainerRef.value
@@ -413,6 +477,10 @@ const quantDataset = computed(() =>
       basisAdjustedLabel: '换月调整期现差',
       basisMonthLabel: '月连期现差',
       includeCnVix: props.supportsVixPanel,
+      includeCnOptionPutCall: props.supportsCnOptionPutCallPanel,
+      includeCnOptionFlowPutCall: props.supportsCnOptionPutCallPanel,
+      includeCffexNetShortDelta: props.supportsAuxiliaryPanels,
+      includeBasisDelta: props.supportsAuxiliaryPanels,
       includeUsVix: props.supportsUsVixPanel,
       includeUsFearGreed: props.supportsUsFearGreedPanel,
       includeUsHedge: props.supportsUsHedgeProxyPanel,
@@ -423,6 +491,10 @@ const quantDataset = computed(() =>
       usFearGreedPoints: props.usFearGreedPoints,
       usHedgeProxyPoints: props.usHedgeProxyPoints,
       usPutCallPoints: props.usPutCallPoints,
+      cnOptionPutCallPoints: props.cnOptionPutCallPoints,
+      cnOptionFlowPutCallPoints: props.cnOptionFlowPutCallPoints,
+      cffexNetShortDeltaPoints: props.cffexNetShortDeltaPoints,
+      basisDeltaPoints: props.basisDeltaPoints,
       usTreasuryYieldPoints: props.usTreasuryYieldPoints,
       usCreditSpreadPoints: props.usCreditSpreadPoints,
     },
@@ -525,6 +597,37 @@ const usPutCallMetricConfig: Record<UsPutCallMetricKey, { label: string; color: 
   etf: { label: 'ETF Put/Call', color: '#0f766e' },
 }
 
+const cnOptionPutCallMetricConfig: Record<CnOptionPutCallMetricKey, { label: string; color: string }> = {
+  currentMonth: { label: '当月', color: '#7c3aed' },
+  nextMonth: { label: '下月', color: '#2563eb' },
+  quarter1: { label: '季月1', color: '#f97316' },
+  quarter2: { label: '季月2', color: '#0f766e' },
+}
+
+const cnOptionFlowPutCallMetricConfig: Record<CnOptionFlowPutCallMetricKey, { label: string; color: string }> = {
+  volume: { label: '成交量P/C', color: '#2563eb' },
+  turnover: { label: '成交额P/C', color: '#f97316' },
+}
+
+const cffexNetShortDeltaSourceConfig: Record<CffexNetShortDeltaSource, { label: string; color: string }> = {
+  top20: { label: '前20', color: '#2563eb' },
+  citic: { label: '中信', color: '#f97316' },
+}
+const cffexNetShortDeltaSources = ['top20', 'citic'] as const
+const cffexNetShortDeltaWindowOptions = CFFEX_NET_SHORT_DELTA_WINDOWS.map((window) => ({
+  key: window,
+  label: `${window}D`,
+}))
+const basisDeltaMetricConfig: Record<BasisDeltaMetricKey, { label: string; color: string }> = {
+  main: { label: '主连', color: '#dc2626' },
+  month: { label: '月连', color: '#2563eb' },
+}
+const basisDeltaMetrics = ['main', 'month'] as const
+const basisDeltaWindowOptions = CFFEX_NET_SHORT_DELTA_WINDOWS.map((window) => ({
+  key: window,
+  label: `${window}D`,
+}))
+
 const usCreditMetricConfig: Record<UsCreditMetricKey, { label: string; color: string }> = {
   hyOas: { label: 'HY OAS', color: '#be123c' },
   change5d: { label: '5日变化', color: '#2563eb' },
@@ -542,6 +645,191 @@ function getUsPutCallMetricValue(item: IndexUsPutCallPoint | undefined, key: UsP
           : item.etf_put_call_ratio
   return toNullableNumber(value)
 }
+
+function getCnOptionPutCallMetricValue(item: IndexCnOptionPutCallPoint | undefined, key: CnOptionPutCallMetricKey) {
+  if (!item) return null
+  const value =
+    key === 'currentMonth'
+      ? item.current_month_put_call_ratio
+      : key === 'nextMonth'
+        ? item.next_month_put_call_ratio
+        : key === 'quarter1'
+          ? item.quarter_1_put_call_ratio
+          : item.quarter_2_put_call_ratio
+  return toNullableNumber(value)
+}
+
+function getCnOptionFlowPutCallMetricValue(
+  item: IndexCnOptionFlowPutCallPoint | undefined,
+  key: CnOptionFlowPutCallMetricKey,
+) {
+  if (!item) return null
+  const value = key === 'volume' ? item.volume_put_call_ratio : item.turnover_put_call_ratio
+  return toNullableNumber(value)
+}
+
+function getCffexNetShortDeltaMetricValue(
+  item: IndexCffexNetShortDeltaPoint | undefined,
+  source: CffexNetShortDeltaSource,
+  window: CffexNetShortDeltaWindow,
+) {
+  if (!item) return null
+  const payloadKey = `${source}_delta_${window}d` as CffexNetShortDeltaPayloadKey
+  const value = item[payloadKey]
+  return toNullableNumber(value)
+}
+
+function getBasisDeltaMetricValue(
+  item: IndexBasisDeltaPoint | undefined,
+  metric: BasisDeltaMetricKey,
+  window: BasisDeltaWindow,
+) {
+  if (!item) return null
+  const payloadKey = `${metric}_delta_${window}d` as BasisDeltaPayloadKey
+  return toNullableNumber(item[payloadKey])
+}
+
+function getCnOptionPutCallMetricMonth(item: IndexCnOptionPutCallPoint | undefined, key: CnOptionPutCallMetricKey) {
+  if (!item) return null
+  return key === 'currentMonth'
+    ? item.current_month_contract_month
+    : key === 'nextMonth'
+      ? item.next_month_contract_month
+      : key === 'quarter1'
+      ? item.quarter_1_contract_month
+      : item.quarter_2_contract_month
+}
+
+function getCnOptionPutCallSpecialFlag(item: IndexCnOptionPutCallPoint | undefined, key: CnOptionPutCallMetricKey) {
+  if (!item) return false
+  return key === 'currentMonth'
+    ? item.current_month_special_calculation
+    : key === 'nextMonth'
+      ? item.next_month_special_calculation
+      : key === 'quarter1'
+        ? item.quarter_1_special_calculation
+        : item.quarter_2_special_calculation
+}
+
+function getCnOptionPutCallSpecialNote(item: IndexCnOptionPutCallPoint | undefined, key: CnOptionPutCallMetricKey) {
+  if (!item) return null
+  const note =
+    key === 'currentMonth'
+      ? item.current_month_special_note
+      : key === 'nextMonth'
+        ? item.next_month_special_note
+        : key === 'quarter1'
+          ? item.quarter_1_special_note
+          : item.quarter_2_special_note
+  return typeof note === 'string' && note.trim() ? note.trim() : null
+}
+
+function getCnOptionPutCallSpecialNotes(item: IndexCnOptionPutCallPoint | undefined) {
+  if (!item) return []
+  return (Object.keys(cnOptionPutCallMetricConfig) as CnOptionPutCallMetricKey[])
+    .map((key) => getCnOptionPutCallSpecialNote(item, key))
+    .filter((note): note is string => Boolean(note))
+}
+
+function buildCnOptionPutCallSummaryRows(item: IndexCnOptionPutCallPoint | undefined): SummaryRow[] {
+  const rows: SummaryRow[] = (Object.entries(cnOptionPutCallMetricConfig) as Array<[CnOptionPutCallMetricKey, { label: string }]>).map(
+    ([key, config]) => {
+      const contractMonth = getCnOptionPutCallMetricMonth(item, key)
+      return {
+        label: contractMonth ? `${config.label}(${contractMonth})` : config.label,
+        value: formatMetric(getCnOptionPutCallMetricValue(item, key)),
+      }
+    },
+  )
+  const specialNotes = [...new Set(getCnOptionPutCallSpecialNotes(item))]
+  const specialNoteText = specialNotes.length ? specialNotes.join('；') : '-'
+  rows.push({
+    label: '特殊计算',
+    value: specialNotes.length ? '特殊点位' : '-',
+    title: specialNotes.length ? specialNoteText : undefined,
+  })
+  return rows
+}
+
+function buildCnOptionFlowPutCallSummaryRows(item: IndexCnOptionFlowPutCallPoint | undefined): SummaryRow[] {
+  return [
+    { label: '成交量P/C', value: formatMetric(item?.volume_put_call_ratio) },
+    { label: '成交额P/C', value: formatMetric(item?.turnover_put_call_ratio) },
+  ]
+}
+
+function buildCffexNetShortDeltaSummaryRows(
+  item: IndexCffexNetShortDeltaPoint | undefined,
+  window: CffexNetShortDeltaWindow,
+  emotionValue: number | undefined,
+): SummaryRow[] {
+  return [
+    {
+      label: `前20 ${window}D`,
+      value: formatMetric(item?.[`top20_delta_${window}d` as CffexNetShortDeltaPayloadKey]),
+    },
+    {
+      label: `中信 ${window}D`,
+      value: formatMetric(item?.[`citic_delta_${window}d` as CffexNetShortDeltaPayloadKey]),
+    },
+    { label: '情绪指标', value: formatMetric(emotionValue) },
+  ]
+}
+
+function buildBasisDeltaSummaryRows(item: IndexBasisDeltaPoint | undefined, window: BasisDeltaWindow): SummaryRow[] {
+  return [
+    {
+      label: `主连 ${window}D`,
+      value: formatMetric(item?.[`main_delta_${window}d` as BasisDeltaPayloadKey]),
+    },
+    {
+      label: `月连 ${window}D`,
+      value: formatMetric(item?.[`month_delta_${window}d` as BasisDeltaPayloadKey]),
+    },
+  ]
+}
+
+const cnOptionPutCallSeriesData = computed(() => {
+  const rowByDate = new Map(props.cnOptionPutCallPoints.map((item) => [item.trade_date, item]))
+  const activeKey = activeCnOptionPutCallKey.value
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: getCnOptionPutCallMetricValue(rowByDate.get(item.trade_date), activeKey),
+  }))
+})
+
+const cnOptionFlowPutCallSeriesData = computed(() => {
+  const rowByDate = new Map(props.cnOptionFlowPutCallPoints.map((item) => [item.trade_date, item]))
+  const activeKey = activeCnOptionFlowPutCallKey.value
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: getCnOptionFlowPutCallMetricValue(rowByDate.get(item.trade_date), activeKey),
+  }))
+})
+
+const cffexNetShortDeltaSeriesData = computed(() => {
+  const rowByDate = new Map(props.cffexNetShortDeltaPoints.map((item) => [item.trade_date, item]))
+  const activeSource = activeCffexNetShortDeltaSource.value
+  const activeWindow = activeCffexNetShortDeltaWindow.value
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: getCffexNetShortDeltaMetricValue(rowByDate.get(item.trade_date), activeSource, activeWindow),
+  }))
+})
+
+const basisDeltaSeriesData = computed(() => {
+  const rowByDate = new Map(props.basisDeltaPoints.map((item) => [item.trade_date, item]))
+  const activeMetric = activeBasisDeltaMetric.value
+  const activeWindow = activeBasisDeltaWindow.value
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: getBasisDeltaMetricValue(rowByDate.get(item.trade_date), activeMetric, activeWindow),
+  }))
+})
 
 const usPutCallSeriesData = computed(() => {
   const rowByDate = new Map(props.usPutCallPoints.map((item) => [item.trade_date, item]))
@@ -588,6 +876,13 @@ const basisPointByDate = computed(
         item.trade_date,
         {
           rollFlag: Boolean(item.basis_roll_flag),
+          rollType:
+            typeof item.basis_roll_type === 'string' && item.basis_roll_type.trim()
+              ? item.basis_roll_type.trim()
+              : '',
+          rollContracts: Array.isArray(item.basis_roll_contracts)
+            ? item.basis_roll_contracts.map((contract) => String(contract).trim().toUpperCase()).filter(Boolean)
+            : [],
           rollDelta:
             item.basis_roll_delta === null || item.basis_roll_delta === undefined
               ? null
@@ -700,6 +995,36 @@ const usPutCallPointByDate = computed(
         },
       ]),
     ),
+)
+
+const cnOptionPutCallPointByDate = computed(
+  () => new Map(props.cnOptionPutCallPoints.map((item) => [item.trade_date, item])),
+)
+
+const cnOptionFlowPutCallPointByDate = computed(
+  () => new Map(props.cnOptionFlowPutCallPoints.map((item) => [item.trade_date, item])),
+)
+
+const cffexNetShortDeltaPointByDate = computed(
+  () => new Map(props.cffexNetShortDeltaPoints.map((item) => [item.trade_date, item])),
+)
+
+const basisDeltaPointByDate = computed(
+  () => new Map(props.basisDeltaPoints.map((item) => [item.trade_date, item])),
+)
+
+const cnOptionPutCallSpecialHighlights = computed<QuantHighlightBand[]>(() =>
+  props.cnOptionPutCallPoints
+    .filter((item) =>
+      (Object.keys(cnOptionPutCallMetricConfig) as CnOptionPutCallMetricKey[]).some((key) =>
+        getCnOptionPutCallSpecialFlag(item, key),
+      ),
+    )
+    .map((item) => ({
+      tradeDate: item.trade_date,
+      color: 'amber',
+      variant: 'solid',
+    })),
 )
 
 const usTreasuryYieldPointByDate = computed(
@@ -869,6 +1194,62 @@ const usPutCallLegend = computed(() =>
   ),
 )
 
+const cnOptionPutCallLegend = computed(() =>
+  (
+    Object.entries(cnOptionPutCallMetricConfig) as Array<[CnOptionPutCallMetricKey, { label: string; color: string }]>
+  ).map(([key, item]) => ({
+    key,
+    label: item.label,
+    color: item.color,
+    active: activeCnOptionPutCallKey.value === key,
+  })),
+)
+
+const cnOptionFlowPutCallLegend = computed(() =>
+  (
+    Object.entries(cnOptionFlowPutCallMetricConfig) as Array<
+      [CnOptionFlowPutCallMetricKey, { label: string; color: string }]
+    >
+  ).map(([key, item]) => ({
+    key,
+    label: item.label,
+    color: item.color,
+    active: activeCnOptionFlowPutCallKey.value === key,
+  })),
+)
+
+const cffexNetShortDeltaSourceLegend = computed(() =>
+  cffexNetShortDeltaSources.map((key) => ({
+    key,
+    label: cffexNetShortDeltaSourceConfig[key].label,
+    color: cffexNetShortDeltaSourceConfig[key].color,
+    active: activeCffexNetShortDeltaSource.value === key,
+  })),
+)
+
+const cffexNetShortDeltaWindowLegend = computed(() =>
+  cffexNetShortDeltaWindowOptions.map((item) => ({
+    ...item,
+    active: activeCffexNetShortDeltaWindow.value === item.key,
+  })),
+)
+
+const basisDeltaMetricLegend = computed(() =>
+  basisDeltaMetrics.map((key) => ({
+    key,
+    label: basisDeltaMetricConfig[key].label,
+    color: basisDeltaMetricConfig[key].color,
+    active: activeBasisDeltaMetric.value === key,
+  })),
+)
+
+const basisDeltaWindowLegend = computed(() =>
+  basisDeltaWindowOptions.map((item) => ({
+    ...item,
+    active: activeBasisDeltaWindow.value === item.key,
+  })),
+)
+
 const usTreasuryLegend = computed(() => [
   {
     label: quantDataset.value.usTreasuryYield?.spread10y2y.label ?? '10Y-2Y利差',
@@ -906,6 +1287,36 @@ function selectUsPutCallMetric(key: UsPutCallMetricKey) {
   updateAllSeries()
 }
 
+function selectCnOptionPutCallMetric(key: CnOptionPutCallMetricKey) {
+  activeCnOptionPutCallKey.value = key
+  updateAllSeries()
+}
+
+function selectCnOptionFlowPutCallMetric(key: CnOptionFlowPutCallMetricKey) {
+  activeCnOptionFlowPutCallKey.value = key
+  updateAllSeries()
+}
+
+function selectCffexNetShortDeltaSource(source: CffexNetShortDeltaSource) {
+  activeCffexNetShortDeltaSource.value = source
+  updateAllSeries()
+}
+
+function selectCffexNetShortDeltaWindow(window: CffexNetShortDeltaWindow) {
+  activeCffexNetShortDeltaWindow.value = window
+  updateAllSeries()
+}
+
+function selectBasisDeltaMetric(metric: BasisDeltaMetricKey) {
+  activeBasisDeltaMetric.value = metric
+  updateAllSeries()
+}
+
+function selectBasisDeltaWindow(window: BasisDeltaWindow) {
+  activeBasisDeltaWindow.value = window
+  updateAllSeries()
+}
+
 function selectUsCreditMetric(key: UsCreditMetricKey) {
   activeUsCreditKey.value = key
   updateAllSeries()
@@ -933,13 +1344,11 @@ function formatMetricWithSuffix(value: number | null | undefined, suffix: string
 }
 
 
-function formatRuleGroupList(prefix: string, groups: number[] | undefined) {
+function formatRuleGroupList(groups: number[] | undefined) {
   if (!groups?.length) {
     return '-'
   }
-  const visibleGroups = groups.slice(0, 3)
-  const base = `${prefix}规则 ${visibleGroups.join(' / ')}`
-  return groups.length > 3 ? `${base} +${groups.length - 3}` : base
+  return groups.join(' / ')
 }
 
 
@@ -948,6 +1357,15 @@ function formatPairValue(left: number | null | undefined, right: number | null |
     return '-'
   }
   return `${formatMetric(left)}/${formatMetric(right)}`
+}
+
+function formatContractCodes(contracts: string[] | null | undefined) {
+  if (!contracts?.length) {
+    return '-'
+  }
+  const visibleContracts = contracts.slice(0, 4)
+  const base = visibleContracts.join(' / ')
+  return contracts.length > 4 ? `${base} +${contracts.length - 4}` : base
 }
 
 function buildPlaceholderRow(): SummaryRow {
@@ -1046,6 +1464,26 @@ const indicatorValueMaps = computed(() => {
     },
     breadth: buildValueMap(quantDataset.value.breadth?.data ?? []),
     vix: buildValueMap(quantDataset.value.vix?.data ?? []),
+    cnOptionPutCall: new Map(
+      cnOptionPutCallSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
+    cnOptionFlowPutCall: new Map(
+      cnOptionFlowPutCallSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
+    cffexNetShortDelta: new Map(
+      cffexNetShortDeltaSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
+    basisDelta: new Map(
+      basisDeltaSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
     usVix: buildValueMap(quantDataset.value.usVix?.data ?? []),
     usFearGreed: buildValueMap(quantDataset.value.usFearGreed?.data ?? []),
     usHedge: buildValueMap(quantDataset.value.usHedgeProxy?.data ?? []),
@@ -1091,6 +1529,8 @@ const activeIndicatorSnapshot = computed(() => {
       adjusted: maps.basis.adjusted.get(tradeDate),
       month: maps.basis.month.get(tradeDate),
       rollFlag: basisPointByDate.value.get(tradeDate)?.rollFlag ?? false,
+      rollType: basisPointByDate.value.get(tradeDate)?.rollType ?? '',
+      rollContracts: basisPointByDate.value.get(tradeDate)?.rollContracts ?? [],
       rollDelta: basisPointByDate.value.get(tradeDate)?.rollDelta ?? null,
     },
     breadth: {
@@ -1103,6 +1543,26 @@ const activeIndicatorSnapshot = computed(() => {
       high: vixPointByDate.value.get(tradeDate)?.high_price ?? null,
       low: vixPointByDate.value.get(tradeDate)?.low_price ?? null,
       close: maps.vix.get(tradeDate) ?? null,
+    },
+    cnOptionPutCall: {
+      value: maps.cnOptionPutCall.get(tradeDate) ?? null,
+      contractMonth:
+        getCnOptionPutCallMetricMonth(cnOptionPutCallPointByDate.value.get(tradeDate), activeCnOptionPutCallKey.value) ?? '',
+    },
+    cnOptionFlowPutCall: {
+      value: maps.cnOptionFlowPutCall.get(tradeDate) ?? null,
+      volume: cnOptionFlowPutCallPointByDate.value.get(tradeDate)?.volume_put_call_ratio ?? null,
+      turnover: cnOptionFlowPutCallPointByDate.value.get(tradeDate)?.turnover_put_call_ratio ?? null,
+    },
+    cffexNetShortDelta: {
+      value: maps.cffexNetShortDelta.get(tradeDate) ?? null,
+      top20Delta7d: cffexNetShortDeltaPointByDate.value.get(tradeDate)?.top20_delta_7d ?? null,
+      top20Delta30d: cffexNetShortDeltaPointByDate.value.get(tradeDate)?.top20_delta_30d ?? null,
+      citicDelta7d: cffexNetShortDeltaPointByDate.value.get(tradeDate)?.citic_delta_7d ?? null,
+      citicDelta30d: cffexNetShortDeltaPointByDate.value.get(tradeDate)?.citic_delta_30d ?? null,
+    },
+    basisDelta: {
+      value: maps.basisDelta.get(tradeDate) ?? null,
     },
     usVix: {
       open: usVixPointByDate.value.get(tradeDate)?.open_value ?? null,
@@ -1167,6 +1627,25 @@ const summaryCards = computed<SummaryCard[]>(() => {
           { label: indicatorPayload.value.boll.lower.label, value: formatMetric(indicator.boll.lower) },
           buildPlaceholderRow(),
         ]
+  const basisContractRollContracts =
+    indicator.basis.rollType === 'contract_last_trade' && indicator.basis.rollContracts.length
+      ? indicator.basis.rollContracts
+      : []
+  const basisContractRollTitle = formatContractCodes(basisContractRollContracts)
+  const basisContractRollRows =
+    props.supportsBasisPanel && props.showBasisMonthLine
+      ? [
+          {
+            label: '合约最后交易日',
+            value: basisContractRollContracts.length ? '合约到期' : '-',
+            title: basisContractRollContracts.length ? basisContractRollTitle : undefined,
+          },
+        ]
+      : []
+  const basisAdjustmentRows =
+    indicator.basis.rollFlag && indicator.basis.rollType !== 'contract_last_trade'
+      ? [{ label: '换月调整幅度', value: formatMetric(indicator.basis.rollDelta) }]
+      : []
 
   return [
     {
@@ -1211,14 +1690,41 @@ const summaryCards = computed<SummaryCard[]>(() => {
       ? [
           {
             key: 'extended',
-            title: '情绪 / 期现差 / 涨跌家数',
+            title: '期现差 / 涨跌家数',
             rows: [
-              { label: '情绪指标', value: formatMetric(indicator.emotion) },
               { label: '主连期现差', value: formatMetric(indicator.basis.main) },
               { label: '月连期现差', value: formatMetric(indicator.basis.month) },
+              ...basisContractRollRows,
               { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
               { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
             ],
+          },
+        ]
+      : []),
+    ...(props.supportsAuxiliaryPanels
+      ? [
+          {
+            key: 'cffex-net-short-delta',
+            title: '净空单增量',
+            hint: `${activeCffexNetShortDeltaWindow.value}D`,
+            rows: buildCffexNetShortDeltaSummaryRows(
+              cffexNetShortDeltaPointByDate.value.get(indicator.tradeDate),
+              activeCffexNetShortDeltaWindow.value,
+              indicator.emotion,
+            ),
+          },
+        ]
+      : []),
+    ...(props.supportsAuxiliaryPanels
+      ? [
+          {
+            key: 'basis-delta',
+            title: '期现差变化',
+            hint: `${activeBasisDeltaWindow.value}D`,
+            rows: buildBasisDeltaSummaryRows(
+              basisDeltaPointByDate.value.get(indicator.tradeDate),
+              activeBasisDeltaWindow.value,
+            ),
           },
         ]
       : []),
@@ -1238,9 +1744,8 @@ const summaryCards = computed<SummaryCard[]>(() => {
               ...(props.showBasisMonthLine
                 ? [{ label: '月连期现差', value: formatMetric(indicator.basis.month) }]
                 : []),
-              ...(indicator.basis.rollFlag
-                ? [{ label: '换月调整幅度', value: formatMetric(indicator.basis.rollDelta) }]
-                : []),
+              ...basisContractRollRows,
+              ...basisAdjustmentRows,
             ],
           },
         ]
@@ -1256,6 +1761,22 @@ const summaryCards = computed<SummaryCard[]>(() => {
               { label: 'VIX低', value: formatMetric(indicator.vix.low) },
               { label: 'VIX收', value: formatMetric(indicator.vix.close) },
             ],
+          },
+        ]
+      : []),
+    ...(props.supportsCnOptionPutCallPanel
+      ? [
+          {
+            key: 'cn-option-put-call',
+            title: 'Put/Call',
+            hint: `当前显示：${cnOptionPutCallMetricConfig[activeCnOptionPutCallKey.value].label}`,
+            rows: buildCnOptionPutCallSummaryRows(cnOptionPutCallPointByDate.value.get(indicator.tradeDate)),
+          },
+          {
+            key: 'cn-option-flow-put-call',
+            title: '成交 Put/Call',
+            hint: cnOptionFlowPutCallMetricConfig[activeCnOptionFlowPutCallKey.value].label,
+            rows: buildCnOptionFlowPutCallSummaryRows(cnOptionFlowPutCallPointByDate.value.get(indicator.tradeDate)),
           },
         ]
       : []),
@@ -1345,8 +1866,8 @@ const summaryCards = computed<SummaryCard[]>(() => {
       key: 'rule-hits',
       title: '命中规则',
       rows: [
-        { label: '蓝色命中', value: formatRuleGroupList('蓝色', activeHighlightBand.value?.blueHitGroups) },
-        { label: '红色命中', value: formatRuleGroupList('红色', activeHighlightBand.value?.redHitGroups) },
+        { label: '蓝色命中', value: formatRuleGroupList(activeHighlightBand.value?.blueHitGroups) },
+        { label: '红色命中', value: formatRuleGroupList(activeHighlightBand.value?.redHitGroups) },
         {
           label: '状态',
           value:
@@ -1422,6 +1943,16 @@ function addLineSeries(chart: IChartApi, color: string, lineWidth: LineWidth = 2
     priceLineVisible: false,
     crosshairMarkerRadius: 3,
     priceScaleId,
+  })
+}
+
+function addReferenceLineSeries(chart: IChartApi, color: string) {
+  return chart.addSeries(LineSeries, {
+    color,
+    lineWidth: 1,
+    lastValueVisible: false,
+    priceLineVisible: false,
+    crosshairMarkerVisible: false,
   })
 }
 
@@ -1716,6 +2247,98 @@ function updateAllSeries() {
     panelValueMaps.delete('vix')
   }
 
+  if (isSubPanelVisible('cnPutCall')) {
+    if (!cnPutCallSeries || !cnPutCallReferenceSeries) return
+    const metricConfig = cnOptionPutCallMetricConfig[activeCnOptionPutCallKey.value]
+    cnPutCallSeries.applyOptions({ color: metricConfig.color })
+    cnPutCallSeries.setData(
+      cnOptionPutCallSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    cnPutCallReferenceSeries.setData(mainCandles.value.map((item) => ({ time: item.time, value: 1 })))
+    panelValueMaps.set(
+      'cnPutCall',
+      new Map(cnOptionPutCallSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])),
+    )
+  } else {
+    panelValueMaps.delete('cnPutCall')
+  }
+
+  if (isSubPanelVisible('cnFlowPutCall')) {
+    if (!cnFlowPutCallSeries || !cnFlowPutCallReferenceSeries) return
+    const metricConfig = cnOptionFlowPutCallMetricConfig[activeCnOptionFlowPutCallKey.value]
+    cnFlowPutCallSeries.applyOptions({ color: metricConfig.color })
+    cnFlowPutCallSeries.setData(
+      cnOptionFlowPutCallSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    cnFlowPutCallReferenceSeries.setData(mainCandles.value.map((item) => ({ time: item.time, value: 1 })))
+    panelValueMaps.set(
+      'cnFlowPutCall',
+      new Map(
+        cnOptionFlowPutCallSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('cnFlowPutCall')
+  }
+
+  if (isSubPanelVisible('cffexNetShortDelta')) {
+    if (!cffexNetShortDeltaSeries || !cffexNetShortDeltaReferenceSeries) return
+    const sourceConfig = cffexNetShortDeltaSourceConfig[activeCffexNetShortDeltaSource.value]
+    cffexNetShortDeltaSeries.applyOptions({ color: sourceConfig.color })
+    cffexNetShortDeltaSeries.setData(
+      cffexNetShortDeltaSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    cffexNetShortDeltaReferenceSeries.setData(mainCandles.value.map((item) => ({ time: item.time, value: 0 })))
+    panelValueMaps.set(
+      'cffexNetShortDelta',
+      new Map(
+        cffexNetShortDeltaSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('cffexNetShortDelta')
+  }
+
+  if (isSubPanelVisible('basisDelta')) {
+    if (!basisDeltaSeries || !basisDeltaReferenceSeries) return
+    const metricConfig = basisDeltaMetricConfig[activeBasisDeltaMetric.value]
+    basisDeltaSeries.applyOptions({ color: metricConfig.color })
+    basisDeltaSeries.setData(
+      basisDeltaSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    basisDeltaReferenceSeries.setData(mainCandles.value.map((item) => ({ time: item.time, value: 0 })))
+    panelValueMaps.set(
+      'basisDelta',
+      new Map(
+        basisDeltaSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('basisDelta')
+  }
+
   if (isSubPanelVisible('usVix')) {
     if (!usVixSeries) return
     usVixSeries.setData(toVixCandleData(usVixSeriesData.value))
@@ -1754,7 +2377,7 @@ function updateAllSeries() {
   }
 
   if (isSubPanelVisible('usPutCall')) {
-    if (!usPutCallSeries) return
+    if (!usPutCallSeries || !usPutCallReferenceSeries) return
     const metricConfig = usPutCallMetricConfig[activeUsPutCallKey.value]
     usPutCallSeries.applyOptions({ color: metricConfig.color })
     usPutCallSeries.setData(
@@ -1764,6 +2387,7 @@ function updateAllSeries() {
           : ({ time: item.time, value: item.value }),
       ),
     )
+    usPutCallReferenceSeries.setData(mainCandles.value.map((item) => ({ time: item.time, value: 1 })))
     panelValueMaps.set(
       'usPutCall',
       new Map(usPutCallSeriesData.value.filter((item) => item.value !== null).map((item) => [item.rawDate, item.value as number])),
@@ -1837,6 +2461,18 @@ function renderCharts() {
     if (isSubPanelVisible('vix')) {
       charts.vix = createBaseChart(vixContainerRef.value!, true)
     }
+    if (isSubPanelVisible('cnPutCall')) {
+      charts.cnPutCall = createBaseChart(cnPutCallContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('cnFlowPutCall')) {
+      charts.cnFlowPutCall = createBaseChart(cnFlowPutCallContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('cffexNetShortDelta')) {
+      charts.cffexNetShortDelta = createBaseChart(cffexNetShortDeltaContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('basisDelta')) {
+      charts.basisDelta = createBaseChart(basisDeltaContainerRef.value!, true)
+    }
     if (isSubPanelVisible('usVix')) {
       charts.usVix = createBaseChart(usVixContainerRef.value!, true)
     }
@@ -1887,10 +2523,39 @@ function renderCharts() {
     breadthSeries = charts.breadth ? addLineSeries(charts.breadth, quantDataset.value.breadth?.color ?? '#0ea5e9', 2) : null
     breadthCountSeries = charts.breadth ? addLineSeries(charts.breadth, '#f97316', 2, 'left') : null
     vixSeries = charts.vix ? addVixCandles(charts.vix) : null
+    cnPutCallSeries = charts.cnPutCall
+      ? addLineSeries(charts.cnPutCall, cnOptionPutCallMetricConfig[activeCnOptionPutCallKey.value].color, 2)
+      : null
+    cnPutCallReferenceSeries = charts.cnPutCall ? addReferenceLineSeries(charts.cnPutCall, '#dc2626') : null
+    cnFlowPutCallSeries = charts.cnFlowPutCall
+      ? addLineSeries(
+          charts.cnFlowPutCall,
+          cnOptionFlowPutCallMetricConfig[activeCnOptionFlowPutCallKey.value].color,
+          2,
+        )
+      : null
+    cnFlowPutCallReferenceSeries = charts.cnFlowPutCall
+      ? addReferenceLineSeries(charts.cnFlowPutCall, '#dc2626')
+      : null
+    cffexNetShortDeltaSeries = charts.cffexNetShortDelta
+      ? addLineSeries(
+          charts.cffexNetShortDelta,
+          cffexNetShortDeltaSourceConfig[activeCffexNetShortDeltaSource.value].color,
+          2,
+        )
+      : null
+    cffexNetShortDeltaReferenceSeries = charts.cffexNetShortDelta
+      ? addReferenceLineSeries(charts.cffexNetShortDelta, '#dc2626')
+      : null
+    basisDeltaSeries = charts.basisDelta
+      ? addLineSeries(charts.basisDelta, basisDeltaMetricConfig[activeBasisDeltaMetric.value].color, 2)
+      : null
+    basisDeltaReferenceSeries = charts.basisDelta ? addReferenceLineSeries(charts.basisDelta, '#dc2626') : null
     usVixSeries = charts.usVix ? addVixCandles(charts.usVix) : null
     usFearGreedSeries = charts.usFearGreed ? addLineSeries(charts.usFearGreed, quantDataset.value.usFearGreed?.color ?? '#dc2626', 2) : null
     usHedgeSeries = charts.usHedge ? addLineSeries(charts.usHedge, quantDataset.value.usHedgeProxy?.color ?? '#0f766e', 2) : null
     usPutCallSeries = charts.usPutCall ? addLineSeries(charts.usPutCall, usPutCallMetricConfig[activeUsPutCallKey.value].color, 2) : null
+    usPutCallReferenceSeries = charts.usPutCall ? addReferenceLineSeries(charts.usPutCall, '#dc2626') : null
     usTreasurySpread10y2ySeries = charts.usTreasury
       ? addLineSeries(charts.usTreasury, quantDataset.value.usTreasuryYield?.spread10y2y.color ?? '#2563eb', 2)
       : null
@@ -1908,6 +2573,10 @@ function renderCharts() {
     if (basisMainSeries) primarySeriesMap.set('basis', basisMainSeries)
     if (breadthSeries) primarySeriesMap.set('breadth', breadthSeries)
     if (vixSeries) primarySeriesMap.set('vix', vixSeries)
+    if (cnPutCallSeries) primarySeriesMap.set('cnPutCall', cnPutCallSeries)
+    if (cnFlowPutCallSeries) primarySeriesMap.set('cnFlowPutCall', cnFlowPutCallSeries)
+    if (cffexNetShortDeltaSeries) primarySeriesMap.set('cffexNetShortDelta', cffexNetShortDeltaSeries)
+    if (basisDeltaSeries) primarySeriesMap.set('basisDelta', basisDeltaSeries)
     if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
     if (usFearGreedSeries) primarySeriesMap.set('usFearGreed', usFearGreedSeries)
     if (usHedgeSeries) primarySeriesMap.set('usHedge', usHedgeSeries)
@@ -1937,6 +2606,14 @@ function renderCharts() {
     }
     if (props.supportsVixPanel) {
       attachHighlightPrimitive(vixSeries)
+    }
+    if (props.supportsCnOptionPutCallPanel) {
+      attachHighlightPrimitive(cnPutCallSeries)
+      attachHighlightPrimitive(cnPutCallSeries, () => cnOptionPutCallSpecialHighlights.value)
+      attachHighlightPrimitive(cnFlowPutCallSeries)
+    }
+    if (props.supportsAuxiliaryPanels) {
+      attachHighlightPrimitive(cffexNetShortDeltaSeries)
     }
     if (props.supportsUsVixPanel) {
       attachHighlightPrimitive(usVixSeries)
@@ -1997,10 +2674,19 @@ function disposeCharts() {
   breadthSeries = null
   breadthCountSeries = null
   vixSeries = null
+  cnPutCallSeries = null
+  cnPutCallReferenceSeries = null
+  cnFlowPutCallSeries = null
+  cnFlowPutCallReferenceSeries = null
+  cffexNetShortDeltaSeries = null
+  cffexNetShortDeltaReferenceSeries = null
+  basisDeltaSeries = null
+  basisDeltaReferenceSeries = null
   usVixSeries = null
   usFearGreedSeries = null
   usHedgeSeries = null
   usPutCallSeries = null
+  usPutCallReferenceSeries = null
   usTreasurySpread10y2ySeries = null
   usTreasurySpread10y3mSeries = null
   usCreditSeries = null
@@ -2062,6 +2748,23 @@ watch(usPutCallSeriesData, () => {
   if (props.supportsUsPutCallPanel) updateAllSeries()
 })
 
+watch(cnOptionPutCallSeriesData, () => {
+  if (props.supportsCnOptionPutCallPanel) updateAllSeries()
+  syncHighlightBindings()
+})
+
+watch(cnOptionFlowPutCallSeriesData, () => {
+  if (props.supportsCnOptionPutCallPanel) updateAllSeries()
+})
+
+watch(cffexNetShortDeltaSeriesData, () => {
+  if (props.supportsAuxiliaryPanels) updateAllSeries()
+})
+
+watch(basisDeltaSeriesData, () => {
+  if (props.supportsAuxiliaryPanels) updateAllSeries()
+})
+
 watch(usTreasurySpread10y2ySeriesData, () => {
   if (props.supportsUsTreasuryYieldPanel) updateAllSeries()
 })
@@ -2076,7 +2779,7 @@ watch(usCreditSeriesData, () => {
 
 watch(
   () =>
-    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}`,
+    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}`,
   async () => {
     await rebuildChartsPreservingRange()
   },
@@ -2198,7 +2901,7 @@ onBeforeUnmount(() => {
           <div class="quant-kpi-list">
             <div v-for="(row, index) in card.rows" :key="`${card.key}-${index}`" class="quant-kpi-row" :class="{ 'quant-kpi-placeholder': row.placeholder }">
               <span class="quant-kpi-label">{{ row.label || '\u00A0' }}</span>
-              <strong class="quant-kpi-value">{{ row.value }}</strong>
+              <strong class="quant-kpi-value" :title="row.title ?? row.value">{{ row.value }}</strong>
             </div>
           </div>
         </article>
@@ -2228,6 +2931,14 @@ onBeforeUnmount(() => {
     <div v-if="isSubPanelVisible('breadth')" class="quant-panel"><div class="quant-panel-head"><h3>涨跌家数</h3><div class="quant-legend"><span v-for="item in breadthLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="breadthLoading" class="muted">涨跌家数加载中...</p><p v-else-if="breadthErrorMessage" class="error">{{ breadthErrorMessage }}</p><div ref="breadthContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
     <div v-if="isSubPanelVisible('vix')" class="quant-panel"><div class="quant-panel-head"><h3>VIX</h3><div class="quant-legend"><span v-for="item in vixLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!vixPoints.length" class="muted">当前范围暂无 VIX 数据</p><div ref="vixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('cnPutCall')" class="quant-panel"><div class="quant-panel-head"><h3>Put/Call</h3><div class="quant-legend"><button v-for="item in cnOptionPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCnOptionPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!cnOptionPutCallPoints.length" class="muted">当前范围暂无 A 股期权 Put/Call 数据</p><div ref="cnPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('cnFlowPutCall')" class="quant-panel"><div class="quant-panel-head"><h3>成交 Put/Call</h3><div class="quant-legend"><button v-for="item in cnOptionFlowPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCnOptionFlowPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!cnOptionFlowPutCallPoints.length" class="muted">当前范围暂无 A 股成交 Put/Call 数据</p><div ref="cnFlowPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('cffexNetShortDelta')" class="quant-panel"><div class="quant-panel-head"><h3>股指期货净空单增量</h3><div class="quant-legend quant-legend-groups"><div class="quant-legend-group"><span class="quant-legend-group-label">口径</span><button v-for="item in cffexNetShortDeltaSourceLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCffexNetShortDeltaSource(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div><div class="quant-legend-group"><span class="quant-legend-group-label">窗口</span><button v-for="item in cffexNetShortDeltaWindowLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCffexNetShortDeltaWindow(item.key)">{{ item.label }}</button></div></div></div><p v-if="!cffexNetShortDeltaPoints.length" class="muted">当前范围暂无中金所净空单增量数据</p><div ref="cffexNetShortDeltaContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('basisDelta')" class="quant-panel"><div class="quant-panel-head"><h3>期现差变化</h3><div class="quant-legend quant-legend-groups"><div class="quant-legend-group"><span class="quant-legend-group-label">口径</span><button v-for="item in basisDeltaMetricLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectBasisDeltaMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div><div class="quant-legend-group"><span class="quant-legend-group-label">窗口</span><button v-for="item in basisDeltaWindowLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectBasisDeltaWindow(item.key)">{{ item.label }}</button></div></div></div><p v-if="!basisDeltaPoints.length" class="muted">当前范围暂无期现差变化数据</p><div ref="basisDeltaContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
     <div v-if="isSubPanelVisible('usVix')" class="quant-panel"><div class="quant-panel-head"><h3>美股 VIX</h3><div class="quant-legend"><span v-for="item in usVixLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usVixPoints.length" class="muted">当前范围暂无美股 VIX 数据</p><div ref="usVixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
@@ -2443,6 +3154,23 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.quant-legend-groups {
+  gap: 14px;
+}
+
+.quant-legend-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.quant-legend-group-label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .quant-legend-item {

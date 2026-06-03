@@ -41,6 +41,7 @@ const SUB_PANEL_OPTIONS: SubPanelOption[] = [
   { key: 'rsi', label: 'RSI' },
 ]
 const ALL_PANEL_KEYS: PanelKey[] = ['main', 'turnover', 'macd', 'kdj', 'wr', 'rsi']
+const DEFAULT_VISIBLE_SUB_PANEL_KEYS: SubPanelKey[] = ['turnover']
 
 const props = withDefaults(
   defineProps<{
@@ -74,7 +75,7 @@ const rsiContainerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 const overlayMode = ref<MainOverlayMode>('ma')
 const hoveredTradeDate = ref<string | null>(null)
-const visibleSubPanels = ref<SubPanelKey[]>(SUB_PANEL_OPTIONS.map((item) => item.key))
+const visibleSubPanels = ref<SubPanelKey[]>([...DEFAULT_VISIBLE_SUB_PANEL_KEYS])
 
 const charts: Partial<Record<PanelKey, IChartApi>> = {}
 const primarySeriesMap = new Map<PanelKey, AnySeries>()
@@ -205,11 +206,9 @@ function formatMetricWithSuffix(value: number | null | undefined, suffix: string
   return formatted === '-' ? '-' : `${formatted}${suffix}`
 }
 
-function formatRuleGroupList(prefix: string, groups: number[] | undefined) {
+function formatRuleGroupList(groups: number[] | undefined) {
   if (!groups?.length) return '-'
-  const visibleGroups = groups.slice(0, 3)
-  const base = `${prefix}规则组${visibleGroups.join('、')}`
-  return groups.length > 3 ? `${base} +${groups.length - 3}` : base
+  return groups.join(' / ')
 }
 
 function buildPlaceholderRow(): SummaryRow {
@@ -371,8 +370,8 @@ const summaryCards = computed<SummaryCard[]>(() => {
       key: 'rule-hits',
       title: '命中规则',
       rows: [
-        { label: '蓝色命中', value: formatRuleGroupList('蓝色', activeHighlightBand.value?.blueHitGroups) },
-        { label: '红色命中', value: formatRuleGroupList('红色', activeHighlightBand.value?.redHitGroups) },
+        { label: '蓝色命中', value: formatRuleGroupList(activeHighlightBand.value?.blueHitGroups) },
+        { label: '红色命中', value: formatRuleGroupList(activeHighlightBand.value?.redHitGroups) },
         {
           label: '状态',
           value:

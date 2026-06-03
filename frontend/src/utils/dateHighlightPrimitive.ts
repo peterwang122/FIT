@@ -21,6 +21,7 @@ const HIGHLIGHT_FILL: Record<QuantHighlightColor, string> = {
   blue: 'rgba(29, 78, 216, 0.24)',
   red: 'rgba(220, 38, 38, 0.24)',
   purple: 'rgba(126, 34, 206, 0.26)',
+  amber: 'rgba(245, 158, 11, 0.22)',
 }
 
 class DateHighlightRenderer implements IPrimitivePaneRenderer {

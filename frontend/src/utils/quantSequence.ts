@@ -11,10 +11,76 @@ import type {
 } from '../types/quant'
 
 let draftSequence = 0
+const sequenceSeriesKeys: QuantSequenceSeriesKey[] = [
+  'market-breadth-up-pct',
+  'market-emotion',
+  'market-qvix',
+  'market-basis-main',
+  'target-up-pct',
+  'target-down-pct',
+  'target-high-new-high',
+  'target-close-new-high',
+  'target-ma-bias-1',
+  'target-ma-bias-2',
+  'target-ma-bias-3',
+  'target-ma-bias-4',
+]
+const newHighSeriesKeys = new Set<QuantSequenceSeriesKey>(['target-high-new-high', 'target-close-new-high'])
+const maBiasSeriesKeys = new Set<QuantSequenceSeriesKey>([
+  'target-ma-bias-1',
+  'target-ma-bias-2',
+  'target-ma-bias-3',
+  'target-ma-bias-4',
+])
+const sequenceOperators = new Set(['gt', 'gte', 'lt', 'lte'])
 
 function nextDraftId(prefix: string) {
   draftSequence += 1
   return `${prefix}-${draftSequence}`
+}
+
+export function isNewHighSequenceSeries(seriesKey: QuantSequenceSeriesKey | '') {
+  return Boolean(seriesKey && newHighSeriesKeys.has(seriesKey))
+}
+
+export function isMaBiasSequenceSeries(seriesKey: QuantSequenceSeriesKey | '') {
+  return Boolean(seriesKey && maBiasSeriesKeys.has(seriesKey))
+}
+
+function normalizeMaPeriods(periods?: readonly number[]) {
+  const defaults = [5, 10, 20, 60]
+  return defaults.map((fallback, index) => {
+    const value = Number(periods?.[index])
+    return Number.isInteger(value) && value > 0 ? value : fallback
+  })
+}
+
+function calculateSma(values: number[], period: number) {
+  const result: Array<number | null> = Array(values.length).fill(null)
+  let rollingSum = 0
+  let validCount = 0
+  values.forEach((value, index) => {
+    if (Number.isFinite(value)) {
+      rollingSum += value
+      validCount += 1
+    }
+    if (index >= period) {
+      const dropped = values[index - period]
+      if (Number.isFinite(dropped)) {
+        rollingSum -= dropped
+        validCount -= 1
+      }
+    }
+    if (index >= period - 1 && validCount === period) {
+      result[index] = rollingSum / period
+    }
+  })
+  return result
+}
+
+function calculateMaBias(close: number, maValue: number | null) {
+  if (!Number.isFinite(close) || maValue === null || !Number.isFinite(maValue) || maValue <= 0) return null
+  return ((close - maValue) / maValue) * 100
 }
 
 export function createEmptySequenceConditionDraft(): QuantSequenceConditionDraft {
@@ -51,7 +117,7 @@ export function normalizeSequenceGroups(drafts: QuantSequenceGroupDraft[]) {
   const groups: QuantSequenceGroup[] = []
   const groupErrors: Record<string, string> = {}
   const conditionErrors: Record<string, string> = {}
-  const allowedSeries = new Set<QuantSequenceSeriesKey>(['market-breadth-up-pct', 'target-up-pct', 'target-down-pct'])
+  const allowedSeries = new Set<QuantSequenceSeriesKey>(sequenceSeriesKeys)
 
   drafts.forEach((group) => {
     const conditions: QuantSequenceCondition[] = []
@@ -67,9 +133,24 @@ export function normalizeSequenceGroups(drafts: QuantSequenceGroupDraft[]) {
         return
       }
 
+      if (isNewHighSequenceSeries(condition.series_key)) {
+        conditions.push({
+          series_key: condition.series_key,
+          operator: 'gt',
+          threshold: 0,
+          consecutive_days: 1,
+        })
+        return
+      }
+
       const threshold = Number(condition.threshold.trim())
       if (!condition.threshold.trim() || !Number.isFinite(threshold)) {
         conditionErrors[condition.id] = '请输入有效阈值'
+        hasError = true
+        return
+      }
+      if (!sequenceOperators.has(condition.operator)) {
+        conditionErrors[condition.id] = '运算符无效'
         hasError = true
         return
       }
@@ -106,19 +187,49 @@ export function normalizeSequenceGroups(drafts: QuantSequenceGroupDraft[]) {
   }
 }
 
-export function buildSequenceSnapshots(candles: KlineCandle[], breadthPoints: IndexBreadthPoint[]): QuantSequenceSnapshot[] {
+export function buildSequenceSnapshots(
+  candles: KlineCandle[],
+  breadthPoints: IndexBreadthPoint[],
+  maPeriods?: readonly number[],
+): QuantSequenceSnapshot[] {
   const breadthByDate = new Map(breadthPoints.map((item) => [item.trade_date, item.up_ratio_pct]))
-  return [...candles]
-    .sort((left, right) => left.trade_date.localeCompare(right.trade_date))
-    .map((item) => ({
-      tradeDate: item.trade_date,
-      values: {
-        'target-up-pct': Number.isFinite(item.pct_chg) && Number(item.pct_chg) > 0 ? Number(item.pct_chg) : null,
-        'target-down-pct':
-          Number.isFinite(item.pct_chg) && Number(item.pct_chg) < 0 ? Math.abs(Number(item.pct_chg)) : null,
-        'market-breadth-up-pct': breadthByDate.get(item.trade_date) ?? null,
-      },
-    }))
+  const sortedCandles = [...candles].sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+  const closes = sortedCandles.map((item) => Number(item.close))
+  const maValues = normalizeMaPeriods(maPeriods).map((period) => calculateSma(closes, period))
+  let priorMaxHigh: number | null = null
+  let priorMaxClose: number | null = null
+  return sortedCandles
+    .map((item, index) => {
+      const high = Number(item.high)
+      const close = Number(item.close)
+      const highIsNewHigh = Number.isFinite(high) && priorMaxHigh !== null && high > priorMaxHigh
+      const closeIsNewHigh = Number.isFinite(close) && priorMaxClose !== null && close > priorMaxClose
+      const snapshot: QuantSequenceSnapshot = {
+        tradeDate: item.trade_date,
+        values: {
+          'target-up-pct': Number.isFinite(item.pct_chg) && Number(item.pct_chg) > 0 ? Number(item.pct_chg) : null,
+          'target-down-pct':
+            Number.isFinite(item.pct_chg) && Number(item.pct_chg) < 0 ? Math.abs(Number(item.pct_chg)) : null,
+          'market-breadth-up-pct': breadthByDate.get(item.trade_date) ?? null,
+          'market-emotion': null,
+          'market-qvix': null,
+          'market-basis-main': null,
+          'target-high-new-high': highIsNewHigh ? 1 : 0,
+          'target-close-new-high': closeIsNewHigh ? 1 : 0,
+          'target-ma-bias-1': calculateMaBias(close, maValues[0]?.[index] ?? null),
+          'target-ma-bias-2': calculateMaBias(close, maValues[1]?.[index] ?? null),
+          'target-ma-bias-3': calculateMaBias(close, maValues[2]?.[index] ?? null),
+          'target-ma-bias-4': calculateMaBias(close, maValues[3]?.[index] ?? null),
+        },
+      }
+      if (Number.isFinite(high)) {
+        priorMaxHigh = priorMaxHigh === null ? high : Math.max(priorMaxHigh, high)
+      }
+      if (Number.isFinite(close)) {
+        priorMaxClose = priorMaxClose === null ? close : Math.max(priorMaxClose, close)
+      }
+      return snapshot
+    })
 }
 
 function matchSequenceConditionAt(
@@ -139,7 +250,13 @@ function matchSequenceConditionAt(
     if (condition.operator === 'gt' && value <= condition.threshold) {
       return false
     }
+    if (condition.operator === 'gte' && value < condition.threshold) {
+      return false
+    }
     if (condition.operator === 'lt' && value >= condition.threshold) {
+      return false
+    }
+    if (condition.operator === 'lte' && value > condition.threshold) {
       return false
     }
   }
