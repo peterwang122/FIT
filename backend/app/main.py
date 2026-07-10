@@ -420,6 +420,30 @@ def ensure_runtime_tables() -> None:
             schedule_time="18:30",
             market_scope="cn_stock",
         )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="douyin_coze_emotion_daily",
+            name="抖音四大指数情绪日更",
+            schedule_time="20:55",
+            market_scope="cn_stock",
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="exchange_option_daily",
+            name="沪深交易所期权日更",
+            schedule_time="17:00",
+            market_scope="cn_stock",
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="cn_risk_free_rate_daily",
+            name="人民币无风险利率日更",
+            schedule_time="16:40",
+            market_scope="cn_stock",
+        )
         db.commit()
 
 

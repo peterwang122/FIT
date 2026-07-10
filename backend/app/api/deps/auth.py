@@ -49,3 +49,9 @@ def require_root_user(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "root":
         raise HTTPException(status_code=403, detail="仅 root 用户可执行该操作")
     return current_user
+
+
+def require_non_guest_user(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role == "guest":
+        raise HTTPException(status_code=403, detail="游客不可查看研究成果")
+    return current_user

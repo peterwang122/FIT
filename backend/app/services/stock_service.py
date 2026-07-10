@@ -11,6 +11,7 @@ from app.core.redis_client import redis_client
 INDEX_DISPLAY_ORDER = [
     "上证指数",
     "上证50",
+    "科创50",
     "沪深300",
     "中证500",
     "中证1000",
@@ -64,7 +65,7 @@ CITIC_CUSTOMER_MEMBER_NAME_LEGACY = "中信期货"
 CITIC_CUSTOMER_MEMBER_BROKER_START_DATE = date(2024, 2, 26)
 CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE = date(2024, 4, 29)
 
-INDEX_OPTIONS_CACHE_KEY_PREFIX = "fit:stock:index_options:v5"
+INDEX_OPTIONS_CACHE_KEY_PREFIX = "fit:stock:index_options:v6"
 FOREX_OPTIONS_CACHE_KEY = "fit:stock:forex_options:v2"
 INDEX_EMOTIONS_CACHE_KEY_PREFIX = "fit:stock:index_emotions:v2"
 CFFEX_NET_POSITION_TABLES_CACHE_KEY_PREFIX = "fit:stock:cffex:tables:v2"
@@ -135,6 +136,12 @@ class StockService:
             cache_keys.update(redis_client.scan_iter(f"{FOREX_KLINE_CACHE_KEY_PREFIX}:{code}:*"))
         if cache_keys:
             redis_client.delete(*cache_keys)
+
+    def clear_index_emotions_cache(self) -> int:
+        cache_keys = list(redis_client.scan_iter(f"{INDEX_EMOTIONS_CACHE_KEY_PREFIX}:*"))
+        if not cache_keys:
+            return 0
+        return int(redis_client.delete(*cache_keys))
 
     @property
     def mapping(self) -> dict[str, str]:

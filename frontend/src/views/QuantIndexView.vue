@@ -20,6 +20,7 @@ import type {
   IndexCffexNetShortDeltaPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
+  IndexCnOptionSeries,
   IndexDashboardBasisPoint,
   IndexDashboardEmotionPoint,
   IndexDashboardResponse,
@@ -84,6 +85,7 @@ type IndexDashboardChunkState = {
   usPutCallPoints: IndexUsPutCallPoint[]
   cnOptionPutCallPoints: IndexCnOptionPutCallPoint[]
   cnOptionFlowPutCallPoints: IndexCnOptionFlowPutCallPoint[]
+  cnOptionSeries: IndexCnOptionSeries[]
   cffexNetShortDeltaPoints: IndexCffexNetShortDeltaPoint[]
   basisDeltaPoints: IndexBasisDeltaPoint[]
   usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[]
@@ -95,9 +97,17 @@ type IndexDashboardChunkState = {
 
 const DEFAULT_INDEX_NAME = '上证指数'
 const BEIJING50_INDEX_NAME = '北证50'
+const TECHNICAL_ONLY_CN_INDEX_NAMES = ['科创50'] as const
 const CORE_INDEX_NAMES = ['上证50', '沪深300', '中证500', '中证1000'] as const
 const SHARED_AUXILIARY_INDEX_NAMES = [DEFAULT_INDEX_NAME, BEIJING50_INDEX_NAME] as const
-const OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES = [DEFAULT_INDEX_NAME, '上证50', '沪深300', '中证1000'] as const
+const OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES = [
+  DEFAULT_INDEX_NAME,
+  '上证50',
+  '沪深300',
+  '中证500',
+  '中证1000',
+  '科创50',
+] as const
 const CN_OPTION_PUT_CALL_FILTER_FIELDS = [
   'cn-option-put-call-current',
   'cn-option-put-call-next',
@@ -105,6 +115,7 @@ const CN_OPTION_PUT_CALL_FILTER_FIELDS = [
   'cn-option-put-call-quarter-2',
   'cn-option-flow-pc-volume',
   'cn-option-flow-pc-turnover',
+  'cn-option-flow-cp-turnover',
 ] as const
 const CFFEX_NET_SHORT_DELTA_FILTER_FIELDS = [
   'cffex-net-short-top20-delta-5d',
@@ -138,10 +149,12 @@ const BASIS_DELTA_FILTER_FIELDS = [
   'basis-month-delta-60d',
   'basis-month-delta-120d',
 ] as const
-const VIX_SUPPORTED_INDEX_NAMES = ['上证50', '沪深300', '中证500'] as const
+const VIX_SUPPORTED_INDEX_NAMES = ['上证50', '科创50', '沪深300', '中证500'] as const
 const VIX_SUPPORTED_INDEX_CODES = [
   '000016',
   'sh000016',
+  '000688',
+  'sh000688',
   '000300',
   'sh000300',
   '399300',
@@ -216,6 +229,20 @@ function mergeByKey<T>(existing: T[], incoming: T[], keySelector: (item: T) => s
   return [...byKey.values()].sort((left, right) => keySelector(left).localeCompare(keySelector(right)))
 }
 
+function mergeCnOptionSeries(existing: IndexCnOptionSeries[], incoming: IndexCnOptionSeries[]) {
+  const bySource = new Map<string, IndexCnOptionSeries>()
+  for (const item of [...existing, ...incoming]) {
+    const current = bySource.get(item.source_key)
+    bySource.set(item.source_key, {
+      ...item,
+      put_call_points: mergeByTradeDate(current?.put_call_points ?? [], item.put_call_points ?? []),
+      flow_points: mergeByTradeDate(current?.flow_points ?? [], item.flow_points ?? []),
+      vix_points: mergeByTradeDate(current?.vix_points ?? [], item.vix_points ?? []),
+    })
+  }
+  return [...bySource.values()]
+}
+
 function indexSupportsVix(name: string, code: string) {
   const normalizedName = String(name || '').trim()
   const normalizedCode = String(code || '').trim().toLowerCase()
@@ -258,6 +285,7 @@ function buildDashboardChunkState(
     | 'us_put_call_points'
     | 'cn_option_put_call_points'
     | 'cn_option_flow_put_call_points'
+    | 'cn_option_series'
     | 'cffex_net_short_delta_points'
     | 'basis_delta_points'
     | 'us_treasury_yield_points'
@@ -281,6 +309,7 @@ function buildDashboardChunkState(
     usPutCallPoints: payload.us_put_call_points ?? [],
     cnOptionPutCallPoints: payload.cn_option_put_call_points ?? [],
     cnOptionFlowPutCallPoints: payload.cn_option_flow_put_call_points ?? [],
+    cnOptionSeries: payload.cn_option_series ?? [],
     cffexNetShortDeltaPoints: payload.cffex_net_short_delta_points ?? [],
     basisDeltaPoints: payload.basis_delta_points ?? [],
     usTreasuryYieldPoints: payload.us_treasury_yield_points ?? [],
@@ -457,6 +486,7 @@ const usHedgeProxyPoints = ref<IndexUsHedgeProxyPoint[]>([])
 const usPutCallPoints = ref<IndexUsPutCallPoint[]>([])
 const cnOptionPutCallPoints = ref<IndexCnOptionPutCallPoint[]>([])
 const cnOptionFlowPutCallPoints = ref<IndexCnOptionFlowPutCallPoint[]>([])
+const cnOptionSeries = ref<IndexCnOptionSeries[]>([])
 const cffexNetShortDeltaPoints = ref<IndexCffexNetShortDeltaPoint[]>([])
 const basisDeltaPoints = ref<IndexBasisDeltaPoint[]>([])
 const usTreasuryYieldPoints = ref<IndexUsTreasuryYieldPoint[]>([])
@@ -512,7 +542,7 @@ const supportsUsTreasuryYieldPanel = computed(() => isUsMarket.value)
 const supportsUsCreditSpreadPanel = computed(() => isUsMarket.value)
 const supportsAdjustedBasisPanel = computed(() => isUsMarket.value && indexSupportsAdjustedBasis(selectedIndexName.value, indexCode.value))
 const quantFilterDataset = computed(() => {
-  if (isCnMarket.value && supportsAuxiliaryPanels.value) {
+  if (isCnMarket.value && (supportsAuxiliaryPanels.value || supportsCnOptionPutCallPanel.value)) {
     return buildIndexQuantFilterDataset(
       indexCandles.value,
       appliedParams.value,
@@ -523,12 +553,16 @@ const quantFilterDataset = computed(() => {
       vixPoints.value,
       supportsVixPanel.value,
       {
+        includeCnAuxiliary: supportsAuxiliaryPanels.value,
+        includeBasis: supportsBasisPanel.value,
+        includeBasisMonth: supportsAuxiliaryPanels.value,
         includeCnOptionPutCall: supportsCnOptionPutCallPanel.value,
         includeCnOptionFlowPutCall: supportsCnOptionPutCallPanel.value,
-        includeCffexNetShortDelta: true,
-        includeBasisDelta: true,
+        includeCffexNetShortDelta: supportsAuxiliaryPanels.value,
+        includeBasisDelta: supportsAuxiliaryPanels.value,
         cnOptionPutCallPoints: cnOptionPutCallPoints.value,
         cnOptionFlowPutCallPoints: cnOptionFlowPutCallPoints.value,
+        cnOptionSeries: cnOptionSeries.value,
         cffexNetShortDeltaPoints: cffexNetShortDeltaPoints.value,
         basisDeltaPoints: basisDeltaPoints.value,
       },
@@ -595,7 +629,17 @@ const numericFieldOptions = computed(() =>
     .filter((field) =>
       [
         ...(isCnMarket.value
-          ? INDEX_QUANT_FILTER_FIELD_KEYS
+          ? [
+              ...INDEX_QUANT_FILTER_FIELD_KEYS,
+              ...quantFilterDataset.value.fields
+                .map((item) => item.key)
+                .filter(
+                  (key) =>
+                    key.startsWith('cn-option-pc-') ||
+                    key.startsWith('cn-option-flow-') ||
+                    key.startsWith('cn-option-vix-'),
+                ),
+            ]
           : isUsMarket.value
             ? US_INDEX_QUANT_FILTER_FIELD_KEYS
             : STOCK_QUANT_FILTER_FIELD_KEYS),
@@ -894,14 +938,21 @@ async function handleChartIndexSelect(nextCode: string) {
 function applyDashboardState(targetCode: string, targetName: string, state: IndexDashboardChunkState | null) {
   const nextSupportsVix = targetMarket.value === 'cn' && indexSupportsVix(targetName, targetCode)
   const nextUsHedgeScope = targetMarket.value === 'us' ? resolveUsHedgeProxyScope(targetName, targetCode) : ''
+  const isTechnicalOnlyCnIndex =
+    targetMarket.value === 'cn' &&
+    TECHNICAL_ONLY_CN_INDEX_NAMES.includes(
+      targetName as (typeof TECHNICAL_ONLY_CN_INDEX_NAMES)[number],
+    )
   const basisIndexNames =
     state?.supportsAuxiliaryPanels &&
     SHARED_AUXILIARY_INDEX_NAMES.includes(targetName as (typeof SHARED_AUXILIARY_INDEX_NAMES)[number])
       ? [...CORE_INDEX_NAMES]
       : [targetName]
   indexCandles.value = state?.candles ?? []
-  supportsAuxiliaryPanels.value = state?.supportsAuxiliaryPanels ?? isCnMarket.value
-  supportsBasisPanel.value = state?.supportsBasisPanel ?? isCnMarket.value
+  supportsAuxiliaryPanels.value =
+    state?.supportsAuxiliaryPanels ?? (isCnMarket.value && !isTechnicalOnlyCnIndex)
+  supportsBasisPanel.value =
+    state?.supportsBasisPanel ?? (isCnMarket.value && !isTechnicalOnlyCnIndex)
   emotionPoints.value = supportsAuxiliaryPanels.value
     ? state?.emotionPoints.flatMap((item) =>
         basisIndexNames.map((indexName) => ({
@@ -942,6 +993,10 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
     targetMarket.value === 'cn' &&
     OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES.some((item) => item === targetName)
       ? state?.cnOptionFlowPutCallPoints ?? []
+      : []
+  cnOptionSeries.value =
+    targetMarket.value === 'cn'
+      ? state?.cnOptionSeries ?? []
       : []
   cffexNetShortDeltaPoints.value = targetMarket.value === 'cn' ? state?.cffexNetShortDeltaPoints ?? [] : []
   basisDeltaPoints.value = targetMarket.value === 'cn' ? state?.basisDeltaPoints ?? [] : []
@@ -988,6 +1043,10 @@ function mergeDashboardState(
     cnOptionFlowPutCallPoints: mergeByTradeDate(
       currentState.cnOptionFlowPutCallPoints,
       payload.cn_option_flow_put_call_points ?? [],
+    ),
+    cnOptionSeries: mergeCnOptionSeries(
+      currentState.cnOptionSeries,
+      payload.cn_option_series ?? [],
     ),
     cffexNetShortDeltaPoints: mergeByTradeDate(
       currentState.cffexNetShortDeltaPoints,
@@ -1285,6 +1344,7 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     usPutCallPoints.value = []
     cnOptionPutCallPoints.value = []
     cnOptionFlowPutCallPoints.value = []
+    cnOptionSeries.value = []
     cffexNetShortDeltaPoints.value = []
     basisDeltaPoints.value = []
     usTreasuryYieldPoints.value = []
@@ -1445,6 +1505,7 @@ watch(
           :us-put-call-points="usPutCallPoints"
           :cn-option-put-call-points="cnOptionPutCallPoints"
           :cn-option-flow-put-call-points="cnOptionFlowPutCallPoints"
+          :cn-option-series="cnOptionSeries"
           :cffex-net-short-delta-points="cffexNetShortDeltaPoints"
           :basis-delta-points="basisDeltaPoints"
           :us-treasury-yield-points="usTreasuryYieldPoints"

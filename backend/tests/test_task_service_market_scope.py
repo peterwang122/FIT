@@ -152,6 +152,35 @@ def test_enqueue_due_task_runs_skips_closed_market_scope():
     assert task.last_scheduled_date == date(2026, 4, 19)
 
 
+def test_calendar_daily_collection_runs_when_market_is_closed():
+    task = _make_task(1, "cn_stock")
+    task.name = "抖音四大指数情绪日更"
+    task.schedule_time = "20:55"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+    db = _FakeSession(tasks=[task])
+    service = TaskService(db)
+    service.market_calendar = _ClosedMarketCalendar()
+    service._now = lambda: datetime(2026, 6, 28, 21, 0)
+
+    run_ids = service.enqueue_due_task_runs()
+
+    assert run_ids == [1]
+    assert db.runs[0].status == "queued"
+    assert db.runs[0].scheduled_for == datetime(2026, 6, 28, 20, 55)
+    assert task.last_scheduled_date == date(2026, 6, 28)
+
+
+def test_calendar_daily_collection_next_run_uses_next_calendar_day():
+    task = _make_task(1, "cn_stock")
+    task.schedule_time = "20:55"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+    service = TaskService(_FakeSession(tasks=[task]))
+    service.market_calendar = _ClosedMarketCalendar()
+    service._now = lambda: datetime(2026, 6, 28, 21, 0)
+
+    assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 20, 55)
+
+
 def test_enqueue_due_task_runs_catches_up_missed_schedule_minute():
     task = _make_task(1, "cn_stock")
     task.schedule_time = "17:01"
@@ -208,6 +237,33 @@ def test_notification_basis_trade_date_uses_market_open_time_for_current_trade_d
 
     assert basis_trade_date == date(2026, 6, 12)
     assert recording_calendar.open_time_calls == [("us_index", date(2026, 6, 15))]
+
+
+def test_execute_notification_run_uses_scheduled_for(monkeypatch):
+    task = _make_task(1, "cn_stock")
+    task.task_type = "notification"
+    run = ScheduledTaskRun(
+        id=1,
+        scheduled_task_id=task.id,
+        trigger_type="manual",
+        status="queued",
+        scheduled_for=datetime(2026, 6, 29, 20, 0),
+        summary="",
+        error_message="",
+    )
+    service = TaskService(_FakeSession(tasks=[task], runs=[run]))
+    captured_reference_dates = []
+
+    monkeypatch.setattr(
+        service,
+        "_execute_notification_task",
+        lambda _task, reference_dt=None: captured_reference_dates.append(reference_dt) or "sent",
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert captured_reference_dates == [datetime(2026, 6, 29, 20, 0)]
 
 
 class _UsSundayCalendar(_ClosedMarketCalendar):

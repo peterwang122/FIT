@@ -47,6 +47,8 @@ const {
   netPositionSeriesLoadingMore,
   error,
   indexEmotionLoading,
+  indexEmotionHasMoreHistory,
+  indexEmotionLoadingMore,
   netPositionLoading,
 } = storeToRefs(stockStore)
 
@@ -224,8 +226,11 @@ onMounted(async () => {
           <IndexEmotionChart
             :points="indexEmotionPoints"
             :loading="indexEmotionLoading"
+            :has-more-history="indexEmotionHasMoreHistory"
+            :loading-more-history="indexEmotionLoadingMore"
             :default-visible-days="30"
             height="100%"
+            @request-more-history="stockStore.loadMoreIndexEmotionHistory"
           />
 
           <section class="card hero-panel chart-panel">

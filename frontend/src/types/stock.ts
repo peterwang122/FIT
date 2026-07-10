@@ -131,6 +131,38 @@ export interface IndexCnOptionFlowPutCallPoint {
   trade_date: string
   volume_put_call_ratio: number | null
   turnover_put_call_ratio: number | null
+  turnover_call_put_ratio: number | null
+}
+
+export interface IndexCnOptionVixPoint {
+  trade_date: string
+  vix_open: number | null
+  vix_high: number | null
+  vix_low: number | null
+  vix_close: number | null
+  near_contract_month: string | null
+  near_expiry_date: string | null
+  near_strike_count: number | null
+  next_contract_month: string | null
+  next_expiry_date: string | null
+  next_strike_count: number | null
+  risk_free_curve_date: string | null
+  near_risk_free_rate: number | null
+  next_risk_free_rate: number | null
+  calculation_method: string | null
+  price_basis_counts: Record<string, number>
+  pre_settle_sources: string[]
+}
+
+export interface IndexCnOptionSeries {
+  source_key: string
+  exchange: 'CFFEX' | 'SSE' | 'SZSE'
+  exchange_label: string
+  product_code: string
+  product_name: string
+  put_call_points: IndexCnOptionPutCallPoint[]
+  flow_points: IndexCnOptionFlowPutCallPoint[]
+  vix_points: IndexCnOptionVixPoint[]
 }
 
 export interface IndexCffexNetShortDeltaPoint {
@@ -203,6 +235,7 @@ export interface IndexDashboardResponse {
   us_put_call_points: IndexUsPutCallPoint[]
   cn_option_put_call_points: IndexCnOptionPutCallPoint[]
   cn_option_flow_put_call_points: IndexCnOptionFlowPutCallPoint[]
+  cn_option_series: IndexCnOptionSeries[]
   cffex_net_short_delta_points: IndexCffexNetShortDeltaPoint[]
   basis_delta_points: IndexBasisDeltaPoint[]
   us_treasury_yield_points: IndexUsTreasuryYieldPoint[]

@@ -10,6 +10,8 @@ import QuantSequenceView from '../views/QuantSequenceView.vue'
 import QuantStockView from '../views/QuantStockView.vue'
 import QuantStrategiesView from '../views/QuantStrategiesView.vue'
 import QuantView from '../views/QuantView.vue'
+import ResearchView from '../views/ResearchView.vue'
+import VixOptionResearchView from '../views/VixOptionResearchView.vue'
 import StocksView from '../views/StocksView.vue'
 import TasksManageView from '../views/TasksManageView.vue'
 import TasksMonitorView from '../views/TasksMonitorView.vue'
@@ -49,6 +51,15 @@ export const router = createRouter({
         { path: 'monitor', component: TasksMonitorView, meta: { requiresRoot: true } },
       ],
     },
+    {
+      path: '/research',
+      component: ResearchView,
+      meta: { requiresAuth: true, requiresUser: true },
+      children: [
+        { path: '', redirect: '/research/vix-options' },
+        { path: 'vix-options', component: VixOptionResearchView },
+      ],
+    },
     { path: '/progress', component: ProgressView, meta: { requiresAuth: true } },
   ],
 })
@@ -68,6 +79,10 @@ router.beforeEach(async (to) => {
     if (to.path.startsWith('/tasks')) {
       return '/tasks/manage'
     }
+    return '/'
+  }
+
+  if (to.meta.requiresUser && authStore.isGuest) {
     return '/'
   }
 

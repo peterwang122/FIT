@@ -82,6 +82,17 @@ function mergeCandles(existing: KlineCandle[], incoming: KlineCandle[]) {
   return [...byDate.values()].sort((left, right) => left.trade_date.localeCompare(right.trade_date))
 }
 
+function mergeIndexEmotionPoints(existing: IndexEmotionPoint[], incoming: IndexEmotionPoint[]) {
+  const byDateAndIndex = new Map<string, IndexEmotionPoint>()
+  for (const item of [...existing, ...incoming]) {
+    byDateAndIndex.set(`${item.emotion_date}:${item.index_name}`, item)
+  }
+  return [...byDateAndIndex.values()].sort(
+    (left, right) =>
+      left.emotion_date.localeCompare(right.emotion_date) || left.index_name.localeCompare(right.index_name),
+  )
+}
+
 function buildChunkState(
   candles: KlineCandle[],
   hasMoreHistory = true,
@@ -182,6 +193,8 @@ export const useStockStore = defineStore('stock', {
     forexHistoryByCode: {} as Record<string, ChunkedHistoryState>,
     loading: false,
     indexEmotionLoading: false,
+    indexEmotionHasMoreHistory: false,
+    indexEmotionLoadingMore: false,
     netPositionLoading: false,
     netPositionSeriesLoading: false,
     indexLoading: false,
@@ -290,10 +303,32 @@ export const useStockStore = defineStore('stock', {
       this.indexEmotionLoading = true
       try {
         this.indexEmotionPoints = await fetchIndexEmotions(monthsAgo(EMOTION_RECENT_MONTHS))
+        this.indexEmotionHasMoreHistory = this.indexEmotionPoints.length > 0
       } catch (error) {
         this.error = `加载指数情绪图失败：${String(error)}`
       } finally {
         this.indexEmotionLoading = false
+      }
+    },
+    async loadMoreIndexEmotionHistory() {
+      if (
+        this.indexEmotionLoading ||
+        this.indexEmotionLoadingMore ||
+        !this.indexEmotionHasMoreHistory ||
+        !this.indexEmotionPoints.length
+      ) {
+        return
+      }
+
+      this.indexEmotionLoadingMore = true
+      try {
+        const allPoints = await fetchIndexEmotions()
+        this.indexEmotionPoints = mergeIndexEmotionPoints(this.indexEmotionPoints, allPoints)
+        this.indexEmotionHasMoreHistory = false
+      } catch (error) {
+        this.error = `加载更早指数情绪历史失败：${String(error)}`
+      } finally {
+        this.indexEmotionLoadingMore = false
       }
     },
     async loadNetPositionTables(tradeDate?: string) {
@@ -495,4 +530,3 @@ export const useStockStore = defineStore('stock', {
     },
   },
 })
-

@@ -198,6 +198,38 @@ class IndexDashboardCnOptionFlowPutCallPointResponse(BaseModel):
     trade_date: date
     volume_put_call_ratio: float | None = None
     turnover_put_call_ratio: float | None = None
+    turnover_call_put_ratio: float | None = None
+
+
+class IndexDashboardCnOptionVixPointResponse(BaseModel):
+    trade_date: date
+    vix_open: float | None = None
+    vix_high: float | None = None
+    vix_low: float | None = None
+    vix_close: float | None = None
+    near_contract_month: str | None = None
+    near_expiry_date: date | None = None
+    near_strike_count: int | None = None
+    next_contract_month: str | None = None
+    next_expiry_date: date | None = None
+    next_strike_count: int | None = None
+    risk_free_curve_date: date | None = None
+    near_risk_free_rate: float | None = None
+    next_risk_free_rate: float | None = None
+    calculation_method: str | None = None
+    price_basis_counts: dict[str, int] = Field(default_factory=dict)
+    pre_settle_sources: list[str] = Field(default_factory=list)
+
+
+class IndexDashboardCnOptionSeriesResponse(BaseModel):
+    source_key: str
+    exchange: str
+    exchange_label: str
+    product_code: str
+    product_name: str
+    put_call_points: list[IndexDashboardCnOptionPutCallPointResponse] = Field(default_factory=list)
+    flow_points: list[IndexDashboardCnOptionFlowPutCallPointResponse] = Field(default_factory=list)
+    vix_points: list[IndexDashboardCnOptionVixPointResponse] = Field(default_factory=list)
 
 
 class IndexDashboardCffexNetShortDeltaPointResponse(BaseModel):
@@ -267,6 +299,7 @@ class IndexDashboardResponse(BaseModel):
     us_put_call_points: list[IndexDashboardUsPutCallPointResponse] = Field(default_factory=list)
     cn_option_put_call_points: list[IndexDashboardCnOptionPutCallPointResponse] = Field(default_factory=list)
     cn_option_flow_put_call_points: list[IndexDashboardCnOptionFlowPutCallPointResponse] = Field(default_factory=list)
+    cn_option_series: list[IndexDashboardCnOptionSeriesResponse] = Field(default_factory=list)
     cffex_net_short_delta_points: list[IndexDashboardCffexNetShortDeltaPointResponse] = Field(default_factory=list)
     basis_delta_points: list[IndexDashboardBasisDeltaPointResponse] = Field(default_factory=list)
     us_treasury_yield_points: list[IndexDashboardUsTreasuryYieldPointResponse] = Field(default_factory=list)

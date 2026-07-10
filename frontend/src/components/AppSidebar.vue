@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{
-  active: 'overview' | 'stocks' | 'markets' | 'progress' | 'quant' | 'account' | 'tasks'
+  active: 'overview' | 'stocks' | 'markets' | 'progress' | 'quant' | 'research' | 'account' | 'tasks'
 }>()
 
 const router = useRouter()
+const authStore = useAuthStore()
 
 function goOverview() {
   void router.push('/')
@@ -25,6 +27,10 @@ function goQuant() {
 
 function goTasks() {
   void router.push('/tasks/manage')
+}
+
+function goResearch() {
+  void router.push('/research/vix-options')
 }
 
 function goProgress() {
@@ -54,6 +60,9 @@ function goAccount() {
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'quant' }" @click="goQuant">
         量化分析
+      </button>
+      <button v-if="!authStore.isGuest" type="button" class="sidebar-link" :class="{ active: active === 'research' }" @click="goResearch">
+        研究成果
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'tasks' }" @click="goTasks">
         任务中心

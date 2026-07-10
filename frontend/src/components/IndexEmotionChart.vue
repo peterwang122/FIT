@@ -5,12 +5,15 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
+  type LogicalRange,
   type Time,
   type WhitespaceData,
 } from 'lightweight-charts'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { IndexEmotionPoint } from '../types/stock'
+
+const HISTORY_REQUEST_THRESHOLD = 15
 
 const SERIES_CONFIG = [
   { name: '上证50', color: '#2563eb' },
@@ -19,17 +22,33 @@ const SERIES_CONFIG = [
   { name: '中证1000', color: '#f59e0b' },
 ] as const
 
-const props = defineProps<{
-  points: IndexEmotionPoint[]
-  loading?: boolean
-  height?: number | string
-  defaultVisibleDays?: number
+const props = withDefaults(
+  defineProps<{
+    points: IndexEmotionPoint[]
+    loading?: boolean
+    height?: number | string
+    defaultVisibleDays?: number
+    hasMoreHistory?: boolean
+    loadingMoreHistory?: boolean
+  }>(),
+  {
+    loading: false,
+    hasMoreHistory: false,
+    loadingMoreHistory: false,
+  },
+)
+
+const emit = defineEmits<{
+  requestMoreHistory: [earliestTradeDate: string]
 }>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
 const renderError = ref('')
 
 let chart: IChartApi | null = null
+let shouldResetVisibleRange = true
+let lastRequestedHistoryBoundary: string | null = null
+let visibleRangeUnsubscribe: (() => void) | null = null
 const seriesMap = new Map<string, ISeriesApi<'Line'>>()
 
 const panelStyle = computed(() => {
@@ -76,13 +95,24 @@ const latestDate = computed(() => {
   return dates.length ? dates[dates.length - 1] : ''
 })
 
+function extractDates(
+  groups: Array<{ points: Array<{ rawDate: string }> }>,
+): string[] {
+  return [
+    ...new Set(
+      groups
+        .flatMap((item) => item.points.map((point) => point.rawDate))
+        .filter((item) => Boolean(item)),
+    ),
+  ].sort((left, right) => left.localeCompare(right))
+}
+
+const allEmotionDates = computed(() => extractDates(groupedSeries.value))
+
 function applyVisibleRange() {
   if (!chart) return
 
-  const allDates = groupedSeries.value
-    .flatMap((item) => item.points.map((point) => point.rawDate))
-    .filter((item) => Boolean(item))
-    .sort()
+  const allDates = allEmotionDates.value
 
   if (!props.defaultVisibleDays || allDates.length === 0) {
     chart.timeScale().fitContent()
@@ -124,10 +154,10 @@ function buildSeries(targetChart: IChartApi, color: string): ISeriesApi<'Line'> 
   })
 }
 
-function updateSeries() {
+function setSeriesData(groups = groupedSeries.value) {
   if (!chart) return
 
-  for (const item of groupedSeries.value) {
+  for (const item of groups) {
     let series = seriesMap.get(item.name)
     if (!series) {
       series = buildSeries(chart, item.color)
@@ -135,8 +165,34 @@ function updateSeries() {
     }
     series.setData(item.points as (WhitespaceData<Time> | any)[])
   }
+}
 
-  applyVisibleRange()
+function updateSeries() {
+  setSeriesData()
+  if (shouldResetVisibleRange && allEmotionDates.value.length) {
+    applyVisibleRange()
+    shouldResetVisibleRange = false
+  }
+}
+
+function maybeRequestMoreHistory(range: LogicalRange | null) {
+  if (
+    !range ||
+    !props.hasMoreHistory ||
+    props.loadingMoreHistory ||
+    !allEmotionDates.value.length ||
+    range.from > HISTORY_REQUEST_THRESHOLD
+  ) {
+    return
+  }
+
+  const earliestTradeDate = allEmotionDates.value[0]
+  if (!earliestTradeDate || lastRequestedHistoryBoundary === earliestTradeDate) {
+    return
+  }
+
+  lastRequestedHistoryBoundary = earliestTradeDate
+  emit('requestMoreHistory', earliestTradeDate)
 }
 
 function renderChart() {
@@ -167,21 +223,64 @@ function renderChart() {
     })
 
     updateSeries()
+
+    const visibleRangeHandler = (range: LogicalRange | null) => maybeRequestMoreHistory(range)
+    chart.timeScale().subscribeVisibleLogicalRangeChange(visibleRangeHandler)
+    visibleRangeUnsubscribe = () => chart?.timeScale().unsubscribeVisibleLogicalRangeChange(visibleRangeHandler)
   } catch (error) {
     renderError.value = `指数情绪图渲染失败：${String(error)}`
     console.error(error)
   }
 }
 
-watch(groupedSeries, () => {
-  updateSeries()
-})
+watch(
+  groupedSeries,
+  (next, previous) => {
+    if (!chart) return
+
+    const previousDates = extractDates(previous)
+    const nextDates = extractDates(next)
+    const previousEarliest = previousDates[0] ?? ''
+    const previousVisibleRange = chart.timeScale().getVisibleLogicalRange()
+    setSeriesData(next)
+
+    if (shouldResetVisibleRange && nextDates.length) {
+      applyVisibleRange()
+      shouldResetVisibleRange = false
+      return
+    }
+
+    const prependedBars =
+      previousVisibleRange && previousEarliest && nextDates[0] && nextDates[0] < previousEarliest
+        ? nextDates.filter((date) => date < previousEarliest).length
+        : 0
+
+    if (previousVisibleRange && prependedBars > 0) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: previousVisibleRange.from + prependedBars,
+        to: previousVisibleRange.to + prependedBars,
+      })
+    }
+  },
+  { deep: false },
+)
+
+watch(
+  () => allEmotionDates.value[0] ?? null,
+  (nextEarliest, previousEarliest) => {
+    if (nextEarliest && nextEarliest !== previousEarliest) {
+      lastRequestedHistoryBoundary = null
+    }
+  },
+)
 
 onMounted(() => {
   renderChart()
 })
 
 onBeforeUnmount(() => {
+  visibleRangeUnsubscribe?.()
+  visibleRangeUnsubscribe = null
   chart?.remove()
   chart = null
   seriesMap.clear()
@@ -196,8 +295,9 @@ onBeforeUnmount(() => {
     </div>
 
     <p v-if="loading" class="muted">指数情绪图加载中...</p>
-    <p v-if="renderError" class="error">{{ renderError }}</p>
-    <p v-if="!loading && points.length === 0" class="muted">当前没有可展示的指数情绪数据。</p>
+    <p v-else-if="loadingMoreHistory" class="muted">正在加载更早的指数情绪历史...</p>
+    <p v-else-if="renderError" class="error">{{ renderError }}</p>
+    <p v-else-if="points.length === 0" class="muted">当前没有可展示的指数情绪数据。</p>
 
     <div class="emotion-layout">
       <div ref="containerRef" class="emotion-chart"></div>

@@ -45,6 +45,7 @@ type CollectionTargetOption = {
   requiresTargetSelection: boolean
   description: string
   manualOnly?: boolean
+  calendarDaily?: boolean
   fixedTargetCode?: string
   fixedTargetName?: string
 }
@@ -150,6 +151,24 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     description: '执行中金所期权日更整批采集。',
   },
   {
+    value: 'exchange_option_daily',
+    label: '沪深交易所期权日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '独立采集上交所、深交所全部 ETF 指数期权合约和官方日统计。',
+  },
+  {
+    value: 'cn_risk_free_rate_daily',
+    label: '人民币无风险利率日更',
+    group: 'A股日更主链',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '采集中国货币网 SHIBOR 八期限曲线，目标日八个期限齐全才算成功。',
+  },
+  {
     value: 'quant_index_daily',
     label: '量化指数看板日更',
     group: 'A股日更主链',
@@ -234,6 +253,16 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     requiresTargetSelection: false,
     manualOnly: true,
     description: '执行 python run.py emotion-excel import 情绪指标.xlsx，只能手动立即执行，不进入自动调度。',
+  },
+  {
+    value: 'douyin_coze_emotion_daily',
+    label: '抖音四大指数情绪日更',
+    group: '独立日更',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    calendarDaily: true,
+    description: '每天检查指定抖音博主当天最新视频或图文作品，通过 Coze 提取上证50、沪深300、中证500和中证1000情绪指标。',
   },
   {
     value: 'index_us_vix_daily',
@@ -357,6 +386,13 @@ function formatMarketScope(scope: TaskMarketScope) {
   if (scope === 'hk_index') return '港股交易日'
   if (scope === 'us_index') return '美股交易日'
   return 'A股交易日'
+}
+
+function formatTaskScheduleScope(task: ScheduledTask) {
+  if (task.task_type === 'collection' && getCollectionOption(task.collector_key).calendarDaily) {
+    return '自然日'
+  }
+  return formatMarketScope(task.market_scope)
 }
 
 let collectionSearchTimer: number | null = null
@@ -832,7 +868,7 @@ onUnmounted(() => {
             {{ item.manual_only ? '仅手动' : item.schedule_time }}
           </span>
           <span v-if="item.task_type === 'collection'">
-            {{ formatMarketScope(item.market_scope) }}
+            {{ formatTaskScheduleScope(item) }}
             <template v-if="item.target_code && item.target_name"> / {{ item.target_code }} / {{ item.target_name }}</template>
           </span>
           <span v-else>{{ item.strategy_names.length }} 条策略 / {{ item.target_email || '未设置邮箱' }}</span>
@@ -914,7 +950,13 @@ onUnmounted(() => {
           </label>
 
           <p class="muted task-collection-hint">{{ currentCollectionTargetOption.description }}</p>
-          <p class="muted">自动调度口径：{{ formatMarketScope(currentCollectionTargetOption.marketScope) }}</p>
+          <p class="muted">
+            自动调度口径：{{
+              currentCollectionTargetOption.calendarDaily
+                ? '自然日'
+                : formatMarketScope(currentCollectionTargetOption.marketScope)
+            }}
+          </p>
 
           <template v-if="isSingleStockCollection">
             <label class="quant-field">

@@ -4,7 +4,7 @@ from hashlib import sha1
 from bisect import bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
-from math import ceil, sqrt
+from math import ceil, isfinite, sqrt
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -19,11 +19,14 @@ from app.services.stock_service import FUTURES_BASIS_SYMBOL_MAP, StockService
 
 SHANGHAI_INDEX_NAME = "上证指数"
 BEIJING50_INDEX_NAME = "北证50"
+TECHNICAL_ONLY_CN_INDEX_NAMES = {"科创50"}
+TECHNICAL_ONLY_CN_INDEX_CODES = {"000688", "sh000688"}
 SHARED_INDEX_AUXILIARY_NAMES = {SHANGHAI_INDEX_NAME, BEIJING50_INDEX_NAME}
 CORE_INDEX_NAMES = ["上证50", "沪深300", "中证500", "中证1000"]
 INDEX_TO_ETF_CODE = {
     SHANGHAI_INDEX_NAME: "510210",
     "上证50": "510050",
+    "科创50": "588000",
     "沪深300": "510300",
     "中证500": "510500",
     "中证1000": "512100",
@@ -44,6 +47,7 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
     "cn-option-put-call-quarter-2",
     "cn-option-flow-pc-volume",
     "cn-option-flow-pc-turnover",
+    "cn-option-flow-cp-turnover",
     "basis-main-delta-5d",
     "basis-main-delta-7d",
     "basis-main-delta-14d",
@@ -131,7 +135,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v17"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v19"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 CN_OPTION_PUT_CALL_FIELD_MAP = [
     (
@@ -191,11 +195,101 @@ CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP = [
     ("cn-option-flow-pc-turnover", "option_turnover_pc_ratio"),
 ]
 CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS = [
-    field_key for field_key, _column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
+    *[field_key for field_key, _column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP],
+    "cn-option-flow-cp-turnover",
 ]
 CN_OPTION_SUPPORTED_FILTER_KEYS = [
     *CN_OPTION_PUT_CALL_FILTER_KEYS,
     *CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS,
+]
+EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME = {
+    "上证50": [("sse", "510050", "上交所", "上证50ETF期权")],
+    "沪深300": [
+        ("sse", "510300", "上交所", "沪深300ETF期权"),
+        ("szse", "159919", "深交所", "沪深300ETF期权"),
+    ],
+    "中证500": [
+        ("sse", "510500", "上交所", "中证500ETF期权"),
+        ("szse", "159922", "深交所", "中证500ETF期权"),
+    ],
+    "科创50": [
+        ("sse", "588000", "上交所", "科创50ETF期权"),
+        ("sse", "588080", "上交所", "科创板50ETF期权"),
+    ],
+}
+EXCHANGE_OPTION_PRICE_FILTER_SUFFIXES = (
+    ("current", "option_pc_current_month"),
+    ("next", "option_pc_next_month"),
+    ("quarter-1", "option_pc_quarter_1"),
+    ("quarter-2", "option_pc_quarter_2"),
+)
+EXCHANGE_OPTION_FLOW_FILTER_SUFFIXES = (
+    ("pc-volume", "option_volume_pc_ratio"),
+    ("pc-turnover", "option_turnover_pc_ratio"),
+    ("cp-turnover", "option_turnover_cp_ratio"),
+)
+EXCHANGE_OPTION_FILTER_FIELD_MAP = [
+    (
+        f"cn-option-pc-{exchange}-{product_code}-{suffix}",
+        f"{exchange}:{product_code}",
+        column_name,
+    )
+    for sources in EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME.values()
+    for exchange, product_code, _exchange_label, _product_name in sources
+    for suffix, column_name in EXCHANGE_OPTION_PRICE_FILTER_SUFFIXES
+] + [
+    (
+        f"cn-option-flow-{suffix}-{exchange}-{product_code}",
+        f"{exchange}:{product_code}",
+        column_name,
+    )
+    for sources in EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME.values()
+    for exchange, product_code, _exchange_label, _product_name in sources
+    for suffix, column_name in EXCHANGE_OPTION_FLOW_FILTER_SUFFIXES
+]
+EXCHANGE_OPTION_FILTER_FIELD_MAP = list(dict.fromkeys(EXCHANGE_OPTION_FILTER_FIELD_MAP))
+EXCHANGE_OPTION_FILTER_KEYS = [field_key for field_key, _source_key, _column_name in EXCHANGE_OPTION_FILTER_FIELD_MAP]
+OPTION_VIX_SOURCES_BY_INDEX_NAME = {
+    "上证50": [
+        ("cffex", "HO", "中金所", "上证50股指期权"),
+        ("sse", "510050", "上交所", "上证50ETF期权"),
+    ],
+    "沪深300": [
+        ("cffex", "IO", "中金所", "沪深300股指期权"),
+        ("sse", "510300", "上交所", "沪深300ETF期权"),
+        ("szse", "159919", "深交所", "沪深300ETF期权"),
+    ],
+    "中证500": [
+        ("sse", "510500", "上交所", "中证500ETF期权"),
+        ("szse", "159922", "深交所", "中证500ETF期权"),
+    ],
+    "中证1000": [
+        ("cffex", "MO", "中金所", "中证1000股指期权"),
+    ],
+    "科创50": [
+        ("sse", "588000", "上交所", "科创50ETF期权"),
+        ("sse", "588080", "上交所", "科创板50ETF期权"),
+    ],
+}
+OPTION_VIX_FILTER_FIELD_MAP = list(
+    dict.fromkeys(
+        (
+            f"cn-option-vix-{price_kind}-{exchange}-{product_code.lower()}",
+            f"{exchange}:{product_code}",
+            f"vix_{price_kind}",
+        )
+        for sources in OPTION_VIX_SOURCES_BY_INDEX_NAME.values()
+        for exchange, product_code, _exchange_label, _product_name in sources
+        for price_kind in ("open", "close")
+    )
+)
+OPTION_VIX_FILTER_KEYS = [
+    field_key
+    for field_key, _source_key, _value_field in OPTION_VIX_FILTER_FIELD_MAP
+]
+CN_INDEX_STRATEGY_FILTER_KEYS += [
+    *EXCHANGE_OPTION_FILTER_KEYS,
+    *OPTION_VIX_FILTER_KEYS,
 ]
 CN_OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES = {
     SHANGHAI_INDEX_NAME,
@@ -295,12 +389,15 @@ SCAN_EVENT_PAGE_SIZE_MAX = 500
 SUPPORTED_TARGET_MARKETS = {"cn", "hk", "us"}
 INDEX_VIX_CODE_BY_NAME = {
     "上证50": "50ETF_QVIX",
+    "科创50": "KCB_QVIX",
     "沪深300": "300ETF_QVIX",
     "中证500": "500ETF_QVIX",
 }
 INDEX_VIX_CODE_BY_INDEX_CODE = {
     "000016": "50ETF_QVIX",
     "sh000016": "50ETF_QVIX",
+    "000688": "KCB_QVIX",
+    "sh000688": "KCB_QVIX",
     "000300": "300ETF_QVIX",
     "sh000300": "300ETF_QVIX",
     "sz399300": "300ETF_QVIX",
@@ -595,6 +692,13 @@ def _to_float(value: object) -> float | None:
         return None
 
 
+def _positive_reciprocal(value: object) -> float | None:
+    numeric_value = _to_float(value)
+    if numeric_value is None or not isfinite(numeric_value) or numeric_value <= 0:
+        return None
+    return 1 / numeric_value
+
+
 def _sort_candles(candles: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for item in candles:
@@ -852,6 +956,18 @@ class QuantService:
         self.stock_service = StockService(db)
         self.notification_service = NotificationService(db)
 
+    def clear_index_dashboard_cache(self, market: str | None = None) -> int:
+        normalized_market = str(market or "").strip().lower()
+        pattern = (
+            f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:{normalized_market}:*"
+            if normalized_market
+            else f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:*"
+        )
+        cache_keys = list(redis_client.scan_iter(pattern))
+        if not cache_keys:
+            return 0
+        return int(redis_client.delete(*cache_keys))
+
     def _normalize_strategy_engine(self, value: object) -> str:
         normalized = str(value or "snapshot").strip().lower()
         return "sequence" if normalized == "sequence" else "snapshot"
@@ -953,8 +1069,35 @@ class QuantService:
             return "cn"
         return normalized
 
-    def _index_supports_auxiliary_panels(self, market: str) -> bool:
-        return self._normalize_target_market(market) == "cn"
+    def _is_technical_only_cn_index(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        if self._normalize_target_market(target_market) != "cn":
+            return False
+        normalized_code = str(target_code or "").strip().lower()
+        normalized_name = str(target_name or "").strip()
+        return (
+            normalized_code in TECHNICAL_ONLY_CN_INDEX_CODES
+            or normalized_name in TECHNICAL_ONLY_CN_INDEX_NAMES
+        )
+
+    def _index_supports_auxiliary_panels(
+        self,
+        market: str,
+        target_code: object = "",
+        target_name: object = "",
+    ) -> bool:
+        return (
+            self._normalize_target_market(market) == "cn"
+            and not self._is_technical_only_cn_index(
+                target_code,
+                target_name,
+                market,
+            )
+        )
 
     def _index_supports_us_auxiliary_panels(self, market: str) -> bool:
         return self._normalize_target_market(market) == "us"
@@ -991,7 +1134,11 @@ class QuantService:
     ) -> bool:
         normalized_market = self._normalize_target_market(target_market)
         if normalized_market == "cn":
-            return True
+            return not self._is_technical_only_cn_index(
+                target_code,
+                target_name,
+                target_market,
+            )
         if normalized_market == "hk":
             return self._resolve_hk_index_futures_root(target_code, target_name, target_market) is not None
         if normalized_market == "us":
@@ -1033,6 +1180,111 @@ class QuantService:
             return True
         normalized_code = str(target_code or "").strip().lower()
         return normalized_code in CN_OPTION_PUT_CALL_SUPPORTED_INDEX_CODES
+
+    def _exchange_option_sources_for_index(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> list[tuple[str, str, str, str]]:
+        if self._normalize_target_market(target_market) != "cn":
+            return []
+        normalized_name = str(target_name or "").strip()
+        if normalized_name in EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME:
+            return list(EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME[normalized_name])
+        normalized_code = str(target_code or "").strip().lower()
+        index_name_by_code = {
+            "000016": "上证50",
+            "sh000016": "上证50",
+            "000300": "沪深300",
+            "sh000300": "沪深300",
+            "399300": "沪深300",
+            "sz399300": "沪深300",
+            "000905": "中证500",
+            "sh000905": "中证500",
+            "399905": "中证500",
+            "sz399905": "中证500",
+            "000688": "科创50",
+            "sh000688": "科创50",
+        }
+        return list(EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME.get(index_name_by_code.get(normalized_code, ""), []))
+
+    def _exchange_option_filter_keys_for_index(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> list[str]:
+        source_keys = {
+            f"{exchange}:{product_code}"
+            for exchange, product_code, _exchange_label, _product_name in self._exchange_option_sources_for_index(
+                target_code,
+                target_name,
+                target_market,
+            )
+        }
+        return [
+            field_key
+            for field_key, source_key, _column_name in EXCHANGE_OPTION_FILTER_FIELD_MAP
+            if source_key in source_keys
+        ]
+
+    def _option_vix_sources_for_index(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> list[tuple[str, str, str, str]]:
+        if self._normalize_target_market(target_market) != "cn":
+            return []
+        normalized_name = str(target_name or "").strip()
+        if normalized_name in OPTION_VIX_SOURCES_BY_INDEX_NAME:
+            return list(OPTION_VIX_SOURCES_BY_INDEX_NAME[normalized_name])
+        normalized_code = str(target_code or "").strip().lower()
+        index_name_by_code = {
+            "000016": "上证50",
+            "sh000016": "上证50",
+            "000300": "沪深300",
+            "sh000300": "沪深300",
+            "399300": "沪深300",
+            "sz399300": "沪深300",
+            "000905": "中证500",
+            "sh000905": "中证500",
+            "399905": "中证500",
+            "sz399905": "中证500",
+            "000852": "中证1000",
+            "sh000852": "中证1000",
+            "399852": "中证1000",
+            "sz399852": "中证1000",
+            "000688": "科创50",
+            "sh000688": "科创50",
+        }
+        return list(
+            OPTION_VIX_SOURCES_BY_INDEX_NAME.get(
+                index_name_by_code.get(normalized_code, ""),
+                [],
+            )
+        )
+
+    def _option_vix_filter_keys_for_index(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> list[str]:
+        source_keys = {
+            f"{exchange}:{product_code}"
+            for exchange, product_code, _exchange_label, _product_name in self._option_vix_sources_for_index(
+                target_code,
+                target_name,
+                target_market,
+            )
+        }
+        return [
+            field_key
+            for field_key, source_key, _value_field in OPTION_VIX_FILTER_FIELD_MAP
+            if source_key in source_keys
+        ]
 
     def _resolve_us_hedge_proxy_scope(
         self,
@@ -1157,12 +1409,47 @@ class QuantService:
         target_name: object = "",
     ) -> list[str]:
         if strategy_type == "index":
-            if self._index_supports_auxiliary_panels(target_market):
-                keys = list(CN_INDEX_STRATEGY_FILTER_KEYS)
+            if self._index_supports_auxiliary_panels(
+                target_market,
+                target_code,
+                target_name,
+            ):
+                keys = [
+                    key
+                    for key in CN_INDEX_STRATEGY_FILTER_KEYS
+                    if key not in {*EXCHANGE_OPTION_FILTER_KEYS, *OPTION_VIX_FILTER_KEYS}
+                ]
+                keys += self._exchange_option_filter_keys_for_index(
+                    target_code,
+                    target_name,
+                    target_market,
+                )
+                keys += self._option_vix_filter_keys_for_index(
+                    target_code,
+                    target_name,
+                    target_market,
+                )
                 if not self._index_supports_vix(target_code, target_name, target_market):
                     keys = [key for key in keys if key not in VIX_FILTER_KEYS]
                 if not self._index_supports_cn_option_put_call(target_code, target_name, target_market):
                     keys = [key for key in keys if key not in CN_OPTION_SUPPORTED_FILTER_KEYS]
+                return keys
+            if self._is_technical_only_cn_index(target_code, target_name, target_market):
+                keys = [
+                    *STOCK_STRATEGY_FILTER_KEYS,
+                    *self._exchange_option_filter_keys_for_index(
+                        target_code,
+                        target_name,
+                        target_market,
+                    ),
+                    *self._option_vix_filter_keys_for_index(
+                        target_code,
+                        target_name,
+                        target_market,
+                    ),
+                ]
+                if self._index_supports_vix(target_code, target_name, target_market):
+                    keys += VIX_FILTER_KEYS
                 return keys
             if self._normalize_target_market(target_market) == "hk":
                 keys = list(STOCK_STRATEGY_FILTER_KEYS)
@@ -1370,6 +1657,14 @@ class QuantService:
                 select_parts.append(f"`{ratio_column}` AS {ratio_column}")
             else:
                 select_parts.append(f"NULL AS {ratio_column}")
+        if "exchange_option_pc_json" in existing_columns:
+            select_parts.append("`exchange_option_pc_json` AS exchange_option_pc_json")
+        else:
+            select_parts.append("NULL AS exchange_option_pc_json")
+        if "option_vix_json" in existing_columns:
+            select_parts.append("`option_vix_json` AS option_vix_json")
+        else:
+            select_parts.append("NULL AS option_vix_json")
         for _field_key, column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP:
             if column_name in existing_columns:
                 select_parts.append(f"`{column_name}` AS {column_name}")
@@ -1404,7 +1699,163 @@ class QuantService:
         payload = {"trade_date": row["trade_date"]}
         for ratio_column, ratio_alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP:
             payload[ratio_alias] = _to_float(row.get(ratio_column))
+        payload["turnover_call_put_ratio"] = _positive_reciprocal(row.get("option_turnover_pc_ratio"))
         return payload
+
+    def _parse_exchange_option_pc_json(self, raw_value: object) -> dict[str, dict]:
+        if isinstance(raw_value, dict):
+            return raw_value
+        if isinstance(raw_value, str) and raw_value.strip():
+            try:
+                parsed = json.loads(raw_value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _build_cn_option_vix_point_payload(self, row: dict) -> dict:
+        return {
+            "trade_date": row["trade_date"],
+            "vix_open": _to_float(row.get("vix_open")),
+            "vix_high": _to_float(row.get("vix_high")),
+            "vix_low": _to_float(row.get("vix_low")),
+            "vix_close": _to_float(row.get("vix_close")),
+            "near_contract_month": str(row.get("near_contract_month") or "").strip() or None,
+            "near_expiry_date": row.get("near_expiry_date"),
+            "near_strike_count": row.get("near_strike_count"),
+            "next_contract_month": str(row.get("next_contract_month") or "").strip() or None,
+            "next_expiry_date": row.get("next_expiry_date"),
+            "next_strike_count": row.get("next_strike_count"),
+            "risk_free_curve_date": row.get("risk_free_curve_date"),
+            "near_risk_free_rate": _to_float(row.get("near_risk_free_rate")),
+            "next_risk_free_rate": _to_float(row.get("next_risk_free_rate")),
+            "calculation_method": str(row.get("calculation_method") or "").strip() or None,
+            "price_basis_counts": (
+                row.get("price_basis_counts")
+                if isinstance(row.get("price_basis_counts"), dict)
+                else {}
+            ),
+            "pre_settle_sources": (
+                row.get("pre_settle_sources")
+                if isinstance(row.get("pre_settle_sources"), list)
+                else []
+            ),
+        }
+
+    def _build_cn_option_series(self, rows: list[dict], index_name: str) -> list[dict]:
+        result: list[dict] = []
+        cffex_product_by_index = {
+            "上证50": ("HO", "上证50股指期权"),
+            "沪深300": ("IO", "沪深300股指期权"),
+            "中证1000": ("MO", "中证1000股指期权"),
+        }
+        cffex_meta = cffex_product_by_index.get(str(index_name or "").strip())
+        if cffex_meta:
+            product_code, product_name = cffex_meta
+            result.append(
+                {
+                    "source_key": f"cffex:{product_code}",
+                    "exchange": "CFFEX",
+                    "exchange_label": "中金所",
+                    "product_code": product_code,
+                    "product_name": product_name,
+                    "put_call_points": [
+                        self._build_cn_option_put_call_point_payload(row)
+                        for row in rows
+                    ],
+                    "flow_points": [
+                        self._build_cn_option_flow_put_call_point_payload(row)
+                        for row in rows
+                        if any(
+                            _to_float(row.get(column_name)) is not None
+                            for column_name, _alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP
+                        )
+                    ],
+                    "vix_points": [],
+                }
+            )
+
+        for exchange, product_code, exchange_label, product_name in EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME.get(
+            str(index_name or "").strip(),
+            [],
+        ):
+            source_key = f"{exchange}:{product_code}"
+            price_points: list[dict] = []
+            flow_points: list[dict] = []
+            for row in rows:
+                source_payload = self._parse_exchange_option_pc_json(
+                    row.get("exchange_option_pc_json")
+                ).get(source_key)
+                if not isinstance(source_payload, dict):
+                    continue
+                point_row = {
+                    **source_payload,
+                    "trade_date": row["trade_date"],
+                }
+                price_points.append(self._build_cn_option_put_call_point_payload(point_row))
+                if any(
+                    _to_float(point_row.get(column_name)) is not None
+                    for column_name, _alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP
+                ):
+                    flow_points.append(
+                        self._build_cn_option_flow_put_call_point_payload(point_row)
+                    )
+            result.append(
+                {
+                    "source_key": source_key,
+                    "exchange": exchange.upper(),
+                    "exchange_label": exchange_label,
+                    "product_code": product_code,
+                    "product_name": product_name,
+                    "put_call_points": price_points,
+                    "flow_points": flow_points,
+                    "vix_points": [],
+                }
+            )
+        result_by_source = {item["source_key"]: item for item in result}
+        source_meta = {
+            f"{exchange}:{product_code}": (
+                exchange,
+                exchange_label,
+                product_code,
+                product_name,
+            )
+            for exchange, product_code, exchange_label, product_name in OPTION_VIX_SOURCES_BY_INDEX_NAME.get(
+                str(index_name or "").strip(),
+                [],
+            )
+        }
+        for row in rows:
+            vix_payloads = self._parse_exchange_option_pc_json(
+                row.get("option_vix_json")
+            )
+            for source_key, source_payload in vix_payloads.items():
+                if source_key not in source_meta or not isinstance(source_payload, dict):
+                    continue
+                exchange, exchange_label, product_code, product_name = source_meta[source_key]
+                series = result_by_source.get(source_key)
+                if series is None:
+                    series = {
+                        "source_key": source_key,
+                        "exchange": exchange.upper(),
+                        "exchange_label": exchange_label,
+                        "product_code": product_code,
+                        "product_name": product_name,
+                        "put_call_points": [],
+                        "flow_points": [],
+                        "vix_points": [],
+                    }
+                    result.append(series)
+                    result_by_source[source_key] = series
+                series["vix_points"].append(
+                    self._build_cn_option_vix_point_payload(
+                        {
+                            **source_payload,
+                            "trade_date": row["trade_date"],
+                        }
+                    )
+                )
+        return result
 
     def _resolve_cffex_net_short_products(
         self,
@@ -1804,7 +2255,11 @@ class QuantService:
         candles: list[dict],
     ) -> list[dict]:
         normalized_market = self._normalize_target_market(target_market)
-        if self._index_supports_auxiliary_panels(normalized_market):
+        if self._index_supports_auxiliary_panels(
+            normalized_market,
+            target_code,
+            symbol_name,
+        ):
             return self._build_index_snapshots(target_code, symbol_name, params, candles)
         if normalized_market == "hk":
             return self._build_hk_index_snapshots(target_code, params, candles)
@@ -1895,7 +2350,36 @@ class QuantService:
             end_date=end_date,
         )
 
-        if not self._index_supports_auxiliary_panels(normalized_market):
+        if not self._index_supports_auxiliary_panels(
+            normalized_market,
+            option["code"],
+            option["name"],
+        ):
+            exchange_option_rows: list[dict] = []
+            if self._exchange_option_sources_for_index(
+                option["code"],
+                option["name"],
+                normalized_market,
+            ):
+                exchange_option_rows = self._load_precomputed_index_indicator_rows(
+                    option["name"]
+                )
+                if resolved_start_date is not None:
+                    exchange_option_rows = [
+                        row
+                        for row in exchange_option_rows
+                        if row.get("trade_date") is not None
+                        and row["trade_date"] >= resolved_start_date
+                    ]
+                if end_date is not None:
+                    exchange_option_rows = [
+                        row
+                        for row in exchange_option_rows
+                        if row.get("trade_date") is not None
+                        and row["trade_date"] <= end_date
+                    ]
+                if not candles:
+                    exchange_option_rows = []
             supports_basis_panel = self._index_supports_basis(option["code"], option["name"], normalized_market)
             basis_rows = (
                 self._load_basis_rows_for_adjustment(
@@ -1936,6 +2420,18 @@ class QuantService:
                     "us_credit_spread_rows": [],
                 }
             )
+            vix_rows: list[dict] = []
+            qvix_code = self._resolve_index_vix_code(
+                option["code"],
+                option["name"],
+                normalized_market,
+            )
+            if qvix_code:
+                vix_rows = self.stock_service.list_index_qvix_daily_data(
+                    qvix_code,
+                    start_date=resolved_start_date,
+                    end_date=end_date,
+                )
             result = {
                 "index": {"code": option["code"], "name": option["name"]},
                 "market": normalized_market,
@@ -1949,7 +2445,16 @@ class QuantService:
                     for row in basis_rows
                 ],
                 "breadth_points": [],
-                "vix_points": [],
+                "vix_points": [
+                    {
+                        "trade_date": row["trade_date"],
+                        "open_price": _to_float(row.get("open_price")) or 0.0,
+                        "high_price": _to_float(row.get("high_price")) or 0.0,
+                        "low_price": _to_float(row.get("low_price")) or 0.0,
+                        "close_price": _to_float(row.get("close_price")) or 0.0,
+                    }
+                    for row in vix_rows
+                ],
                 "us_vix_points": [
                     {
                         "trade_date": row["trade_date"],
@@ -1991,6 +2496,10 @@ class QuantService:
                 ],
                 "cn_option_put_call_points": [],
                 "cn_option_flow_put_call_points": [],
+                "cn_option_series": self._build_cn_option_series(
+                    exchange_option_rows,
+                    option["name"],
+                ),
                 "cffex_net_short_delta_points": [],
                 "basis_delta_points": [],
                 "us_treasury_yield_points": [
@@ -2099,6 +2608,7 @@ class QuantService:
                 for row in rows
                 if any(_to_float(row.get(column_name)) is not None for column_name, _alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP)
             ],
+            "cn_option_series": self._build_cn_option_series(rows, option["name"]),
             "cffex_net_short_delta_points": [
                 self._build_cffex_net_short_delta_point_payload(row)
                 for row in rows
@@ -2364,6 +2874,36 @@ class QuantService:
                 }
                 for field_key, column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
             }
+            exchange_option_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): (
+                        _positive_reciprocal(
+                            self._parse_exchange_option_pc_json(
+                                item.get("exchange_option_pc_json")
+                            ).get(source_key, {}).get("option_turnover_pc_ratio")
+                        )
+                        if column_name == "option_turnover_cp_ratio"
+                        else _to_float(
+                            self._parse_exchange_option_pc_json(
+                                item.get("exchange_option_pc_json")
+                            ).get(source_key, {}).get(column_name)
+                        )
+                    )
+                    for item in precomputed_rows
+                }
+                for field_key, source_key, column_name in EXCHANGE_OPTION_FILTER_FIELD_MAP
+            }
+            option_vix_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): _to_float(
+                        self._parse_exchange_option_pc_json(
+                            item.get("option_vix_json")
+                        ).get(source_key, {}).get(value_field)
+                    )
+                    for item in precomputed_rows
+                }
+                for field_key, source_key, value_field in OPTION_VIX_FILTER_FIELD_MAP
+            }
             cffex_net_short_delta_maps = {
                 field_key: {
                     _date_text(item["trade_date"]): _to_float(item.get(column_name))
@@ -2386,12 +2926,22 @@ class QuantService:
             option_flow_put_call_maps = {
                 field_key: {} for field_key, _column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
             }
+            exchange_option_maps = {
+                field_key: {} for field_key in EXCHANGE_OPTION_FILTER_KEYS
+            }
+            option_vix_maps = {
+                field_key: {} for field_key in OPTION_VIX_FILTER_KEYS
+            }
             cffex_net_short_delta_maps = {
                 field_key: {} for field_key, _column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP
             }
             basis_delta_maps = {
                 field_key: {} for field_key, _column_name, _payload_key in BASIS_DELTA_FIELD_MAP
             }
+        option_flow_put_call_maps["cn-option-flow-cp-turnover"] = {
+            trade_date: _positive_reciprocal(value)
+            for trade_date, value in option_flow_put_call_maps["cn-option-flow-pc-turnover"].items()
+        }
 
         vix_by_date: dict[str, dict[str, float | None]] = {}
         qvix_code = self._resolve_index_vix_code(target_code, symbol_name, "cn")
@@ -2438,6 +2988,15 @@ class QuantService:
                         "cn-option-put-call-quarter-2": option_put_call_maps["cn-option-put-call-quarter-2"].get(trade_date),
                         "cn-option-flow-pc-volume": option_flow_put_call_maps["cn-option-flow-pc-volume"].get(trade_date),
                         "cn-option-flow-pc-turnover": option_flow_put_call_maps["cn-option-flow-pc-turnover"].get(trade_date),
+                        "cn-option-flow-cp-turnover": option_flow_put_call_maps["cn-option-flow-cp-turnover"].get(trade_date),
+                        **{
+                            field_key: exchange_option_maps[field_key].get(trade_date)
+                            for field_key in EXCHANGE_OPTION_FILTER_KEYS
+                        },
+                        **{
+                            field_key: option_vix_maps[field_key].get(trade_date)
+                            for field_key in OPTION_VIX_FILTER_KEYS
+                        },
                         **{
                             field_key: cffex_net_short_delta_maps[field_key].get(trade_date)
                             for field_key in CFFEX_NET_SHORT_DELTA_FILTER_KEYS
@@ -4020,6 +4579,30 @@ class QuantService:
                         return True
         return False
 
+    def _payload_numeric_rule_fields(self, payload: dict) -> set[str]:
+        result: set[str] = set()
+        for color in ("blue", "red"):
+            raw_groups = payload.get(f"{color}_filter_groups")
+            if isinstance(raw_groups, list):
+                for raw_group in raw_groups:
+                    if not isinstance(raw_group, dict):
+                        continue
+                    raw_conditions = raw_group.get("conditions")
+                    if not isinstance(raw_conditions, list):
+                        continue
+                    for raw_condition in raw_conditions:
+                        if (
+                            isinstance(raw_condition, dict)
+                            and str(raw_condition.get("type", "")).strip() == "numeric"
+                        ):
+                            field = str(raw_condition.get("field", "")).strip()
+                            if field:
+                                result.add(field)
+            raw_filters = payload.get(f"{color}_filters")
+            if isinstance(raw_filters, dict):
+                result.update(str(key).strip() for key in raw_filters if str(key).strip())
+        return result
+
     def _payload_contains_sequence_series(self, payload: dict, target_series: set[str]) -> bool:
         if not target_series:
             return False
@@ -4069,6 +4652,32 @@ class QuantService:
             payload, CN_OPTION_SUPPORTED_FILTER_KEYS
         ) and not self._index_supports_cn_option_put_call(target_code, target_name, target_market):
             raise ValueError("当前指数不支持 A股 Put/Call 条件，请先移除相关规则。")
+        used_exchange_option_fields = (
+            self._payload_numeric_rule_fields(payload)
+            & set(EXCHANGE_OPTION_FILTER_KEYS)
+        )
+        allowed_exchange_option_fields = set(
+            self._exchange_option_filter_keys_for_index(
+                target_code,
+                target_name,
+                target_market,
+            )
+        )
+        if used_exchange_option_fields - allowed_exchange_option_fields:
+            raise ValueError("当前指数不支持所选交易所/ETF期权条件，请先移除相关规则。")
+        used_option_vix_fields = (
+            self._payload_numeric_rule_fields(payload)
+            & set(OPTION_VIX_FILTER_KEYS)
+        )
+        allowed_option_vix_fields = set(
+            self._option_vix_filter_keys_for_index(
+                target_code,
+                target_name,
+                target_market,
+            )
+        )
+        if used_option_vix_fields - allowed_option_vix_fields:
+            raise ValueError("当前指数不支持所选交易所/期权产品的自算VIX条件，请先移除相关规则。")
         if self._payload_contains_numeric_rules(payload, CFFEX_NET_SHORT_DELTA_FILTER_KEYS) and target_market != "cn":
             raise ValueError("当前市场不支持股指期货净空单增量条件，请先移除相关规则。")
         if self._payload_contains_numeric_rules(payload, BASIS_DELTA_FILTER_KEYS) and target_market != "cn":

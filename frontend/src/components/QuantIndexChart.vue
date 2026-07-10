@@ -30,6 +30,8 @@ import type {
   IndexCffexNetShortDeltaPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
+  IndexCnOptionSeries,
+  IndexCnOptionVixPoint,
   IndexEmotionPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
@@ -56,6 +58,7 @@ type PanelKey =
   | 'vix'
   | 'cnPutCall'
   | 'cnFlowPutCall'
+  | 'cnOptionVix'
   | 'cffexNetShortDelta'
   | 'basisDelta'
   | 'usVix'
@@ -68,7 +71,7 @@ type SubPanelKey = Exclude<PanelKey, 'main'>
 type MainOverlayMode = 'ma' | 'boll'
 type UsPutCallMetricKey = 'total' | 'index' | 'equity' | 'etf'
 type CnOptionPutCallMetricKey = 'currentMonth' | 'nextMonth' | 'quarter1' | 'quarter2'
-type CnOptionFlowPutCallMetricKey = 'volume' | 'turnover'
+type CnOptionFlowPutCallMetricKey = 'volume' | 'turnover' | 'turnoverCallPut'
 const CFFEX_NET_SHORT_DELTA_WINDOWS = [5, 7, 14, 20, 30, 60, 120] as const
 type CffexNetShortDeltaWindow = (typeof CFFEX_NET_SHORT_DELTA_WINDOWS)[number]
 type CffexNetShortDeltaSource = 'top20' | 'citic'
@@ -105,6 +108,7 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'vix',
   'cnPutCall',
   'cnFlowPutCall',
+  'cnOptionVix',
   'cffexNetShortDelta',
   'basisDelta',
   'usVix',
@@ -136,6 +140,7 @@ const props = withDefaults(
     supportsVixPanel?: boolean
     cnOptionPutCallPoints?: IndexCnOptionPutCallPoint[]
     cnOptionFlowPutCallPoints?: IndexCnOptionFlowPutCallPoint[]
+    cnOptionSeries?: IndexCnOptionSeries[]
     cffexNetShortDeltaPoints?: IndexCffexNetShortDeltaPoint[]
     basisDeltaPoints?: IndexBasisDeltaPoint[]
     supportsCnOptionPutCallPanel?: boolean
@@ -179,6 +184,7 @@ const props = withDefaults(
     supportsVixPanel: false,
     cnOptionPutCallPoints: () => [],
     cnOptionFlowPutCallPoints: () => [],
+    cnOptionSeries: () => [],
     cffexNetShortDeltaPoints: () => [],
     basisDeltaPoints: () => [],
     supportsCnOptionPutCallPanel: false,
@@ -223,6 +229,7 @@ const breadthContainerRef = ref<HTMLDivElement | null>(null)
 const vixContainerRef = ref<HTMLDivElement | null>(null)
 const cnPutCallContainerRef = ref<HTMLDivElement | null>(null)
 const cnFlowPutCallContainerRef = ref<HTMLDivElement | null>(null)
+const cnOptionVixContainerRef = ref<HTMLDivElement | null>(null)
 const cffexNetShortDeltaContainerRef = ref<HTMLDivElement | null>(null)
 const basisDeltaContainerRef = ref<HTMLDivElement | null>(null)
 const usVixContainerRef = ref<HTMLDivElement | null>(null)
@@ -238,6 +245,9 @@ const visibleSubPanels = ref<SubPanelKey[]>([...DEFAULT_VISIBLE_SUB_PANEL_KEYS])
 const activeUsPutCallKey = ref<UsPutCallMetricKey>('total')
 const activeCnOptionPutCallKey = ref<CnOptionPutCallMetricKey>('currentMonth')
 const activeCnOptionFlowPutCallKey = ref<CnOptionFlowPutCallMetricKey>('volume')
+const activeCnOptionPriceSourceKey = ref('')
+const activeCnOptionFlowSourceKey = ref('')
+const activeCnOptionVixSourceKey = ref('')
 const activeCffexNetShortDeltaSource = ref<CffexNetShortDeltaSource>('top20')
 const activeCffexNetShortDeltaWindow = ref<CffexNetShortDeltaWindow>(7)
 const activeBasisDeltaMetric = ref<BasisDeltaMetricKey>('main')
@@ -267,6 +277,7 @@ let cnPutCallSeries: LineSeriesApi | null = null
 let cnPutCallReferenceSeries: LineSeriesApi | null = null
 let cnFlowPutCallSeries: LineSeriesApi | null = null
 let cnFlowPutCallReferenceSeries: LineSeriesApi | null = null
+let cnOptionVixSeries: CandleSeriesApi | null = null
 let cffexNetShortDeltaSeries: LineSeriesApi | null = null
 let cffexNetShortDeltaReferenceSeries: LineSeriesApi | null = null
 let basisDeltaSeries: LineSeriesApi | null = null
@@ -283,6 +294,8 @@ let highlightBindings: PrimitiveBinding[] = []
 let isSyncingRange = false
 let isSyncingCrosshair = false
 let shouldResetVisibleRange = true
+let chartRebuildRequested = false
+let chartRebuildPromise: Promise<void> | null = null
 let unsubs: Array<() => void> = []
 let lastRequestedHistoryBoundary: string | null = null
 
@@ -298,6 +311,11 @@ const visiblePanelOptions = computed<SubPanelOption[]>(() => [
   { key: 'vix', label: 'VIX', available: props.supportsVixPanel },
   { key: 'cnPutCall', label: 'Put/Call', available: props.supportsCnOptionPutCallPanel },
   { key: 'cnFlowPutCall', label: '成交P/C', available: props.supportsCnOptionPutCallPanel },
+  {
+    key: 'cnOptionVix',
+    label: '自算VIX',
+    available: props.cnOptionSeries.some((item) => (item.vix_points ?? []).length > 0),
+  },
   { key: 'cffexNetShortDelta', label: '净空单增量', available: props.supportsAuxiliaryPanels },
   { key: 'basisDelta', label: '期现差变化', available: props.supportsAuxiliaryPanels },
   { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
@@ -333,6 +351,7 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   if (panelKey === 'vix') return vixContainerRef.value
   if (panelKey === 'cnPutCall') return cnPutCallContainerRef.value
   if (panelKey === 'cnFlowPutCall') return cnFlowPutCallContainerRef.value
+  if (panelKey === 'cnOptionVix') return cnOptionVixContainerRef.value
   if (panelKey === 'cffexNetShortDelta') return cffexNetShortDeltaContainerRef.value
   if (panelKey === 'basisDelta') return basisDeltaContainerRef.value
   if (panelKey === 'usVix') return usVixContainerRef.value
@@ -344,17 +363,41 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   return null
 }
 
-async function rebuildChartsPreservingRange() {
-  const visibleRange = charts.main?.timeScale().getVisibleLogicalRange() ?? null
-  const shouldResetAfterRender = shouldResetVisibleRange && !visibleRange
-  shouldResetVisibleRange = shouldResetAfterRender
-  disposeCharts()
-  await nextTick()
-  renderCharts()
-  if (visibleRange) {
-    shouldResetVisibleRange = false
-    charts.main?.timeScale().setVisibleLogicalRange(visibleRange)
-  }
+function rebuildChartsPreservingRange(): Promise<void> {
+  chartRebuildRequested = true
+  if (chartRebuildPromise) return chartRebuildPromise
+
+  chartRebuildPromise = (async () => {
+    try {
+      while (chartRebuildRequested) {
+        chartRebuildRequested = false
+        const visibleRange = charts.main?.timeScale().getVisibleLogicalRange() ?? null
+        const candleCount = mainCandles.value.length
+        const shouldRestoreRange =
+          visibleRange !== null &&
+          Number.isFinite(visibleRange.from) &&
+          Number.isFinite(visibleRange.to) &&
+          visibleRange.to >= 0 &&
+          visibleRange.from <= candleCount - 1
+
+        shouldResetVisibleRange = false
+        disposeCharts()
+        await nextTick()
+        renderCharts()
+
+        if (!charts.main || !candleCount) continue
+        if (shouldRestoreRange && visibleRange) {
+          charts.main.timeScale().setVisibleLogicalRange(visibleRange)
+        } else {
+          applyDefaultVisibleRange()
+        }
+      }
+    } finally {
+      chartRebuildPromise = null
+    }
+  })()
+
+  return chartRebuildPromise
 }
 
 function toggleSubPanel(panelKey: SubPanelKey) {
@@ -493,6 +536,7 @@ const quantDataset = computed(() =>
       usPutCallPoints: props.usPutCallPoints,
       cnOptionPutCallPoints: props.cnOptionPutCallPoints,
       cnOptionFlowPutCallPoints: props.cnOptionFlowPutCallPoints,
+      cnOptionSeries: props.cnOptionSeries,
       cffexNetShortDeltaPoints: props.cffexNetShortDeltaPoints,
       basisDeltaPoints: props.basisDeltaPoints,
       usTreasuryYieldPoints: props.usTreasuryYieldPoints,
@@ -607,6 +651,7 @@ const cnOptionPutCallMetricConfig: Record<CnOptionPutCallMetricKey, { label: str
 const cnOptionFlowPutCallMetricConfig: Record<CnOptionFlowPutCallMetricKey, { label: string; color: string }> = {
   volume: { label: '成交量P/C', color: '#2563eb' },
   turnover: { label: '成交额P/C', color: '#f97316' },
+  turnoverCallPut: { label: '成交额C/P', color: '#0f766e' },
 }
 
 const cffexNetShortDeltaSourceConfig: Record<CffexNetShortDeltaSource, { label: string; color: string }> = {
@@ -664,7 +709,12 @@ function getCnOptionFlowPutCallMetricValue(
   key: CnOptionFlowPutCallMetricKey,
 ) {
   if (!item) return null
-  const value = key === 'volume' ? item.volume_put_call_ratio : item.turnover_put_call_ratio
+  const value =
+    key === 'volume'
+      ? item.volume_put_call_ratio
+      : key === 'turnover'
+        ? item.turnover_put_call_ratio
+        : item.turnover_call_put_ratio
   return toNullableNumber(value)
 }
 
@@ -755,6 +805,22 @@ function buildCnOptionFlowPutCallSummaryRows(item: IndexCnOptionFlowPutCallPoint
   return [
     { label: '成交量P/C', value: formatMetric(item?.volume_put_call_ratio) },
     { label: '成交额P/C', value: formatMetric(item?.turnover_put_call_ratio) },
+    { label: '成交额C/P', value: formatMetric(item?.turnover_call_put_ratio) },
+  ]
+}
+
+function buildCnOptionVixSummaryRows(item: IndexCnOptionVixPoint | undefined): SummaryRow[] {
+  const nearLabel = item?.near_contract_month
+    ? `${item.near_contract_month} / ${item.near_strike_count ?? '-'}档`
+    : '-'
+  const nextLabel = item?.next_contract_month
+    ? `${item.next_contract_month} / ${item.next_strike_count ?? '-'}档`
+    : '-'
+  return [
+    { label: 'VIX开', value: formatMetric(item?.vix_open) },
+    { label: 'VIX收', value: formatMetric(item?.vix_close) },
+    { label: '近月', value: nearLabel },
+    { label: '次月', value: nextLabel },
   ]
 }
 
@@ -789,8 +855,102 @@ function buildBasisDeltaSummaryRows(item: IndexBasisDeltaPoint | undefined, wind
   ]
 }
 
+const availableCnOptionSeries = computed<IndexCnOptionSeries[]>(() => {
+  if (props.cnOptionSeries.length) return props.cnOptionSeries
+  if (!props.cnOptionPutCallPoints.length && !props.cnOptionFlowPutCallPoints.length) return []
+  return [{
+    source_key: 'cffex:legacy',
+    exchange: 'CFFEX',
+    exchange_label: '中金所',
+    product_code: '',
+    product_name: '股指期权',
+    put_call_points: props.cnOptionPutCallPoints,
+    flow_points: props.cnOptionFlowPutCallPoints,
+    vix_points: [],
+  }]
+})
+
+function preferredCnOptionSourceKey(series: IndexCnOptionSeries[]) {
+  const prefersCffex = ['上证50', '沪深300', '中证1000'].includes(props.symbolName)
+  if (prefersCffex) {
+    const cffex = series.find((item) => item.exchange === 'CFFEX')
+    if (cffex) return cffex.source_key
+  }
+  if (props.symbolName === '科创50') {
+    const star = series.find((item) => item.exchange === 'SSE' && item.product_code === '588000')
+    if (star) return star.source_key
+  }
+  return series.find((item) => item.exchange === 'SSE')?.source_key ?? series[0]?.source_key ?? ''
+}
+
+function ensureCnOptionSourceSelections() {
+  const series = availableCnOptionSeries.value
+  const preferred = preferredCnOptionSourceKey(series)
+  if (!series.some((item) => item.source_key === activeCnOptionPriceSourceKey.value)) {
+    activeCnOptionPriceSourceKey.value = preferred
+  }
+  if (!series.some((item) => item.source_key === activeCnOptionFlowSourceKey.value)) {
+    activeCnOptionFlowSourceKey.value = preferred
+  }
+  const vixSeries = series.filter((item) => (item.vix_points ?? []).length > 0)
+  if (!vixSeries.some((item) => item.source_key === activeCnOptionVixSourceKey.value)) {
+    activeCnOptionVixSourceKey.value = preferredCnOptionSourceKey(vixSeries)
+  }
+}
+
+watch(
+  () => `${props.symbolCode}:${availableCnOptionSeries.value.map((item) => item.source_key).join('|')}`,
+  ensureCnOptionSourceSelections,
+  { immediate: true },
+)
+
+const activeCnOptionPriceSeries = computed(
+  () => availableCnOptionSeries.value.find((item) => item.source_key === activeCnOptionPriceSourceKey.value),
+)
+const activeCnOptionFlowSeries = computed(
+  () => availableCnOptionSeries.value.find((item) => item.source_key === activeCnOptionFlowSourceKey.value),
+)
+const availableCnOptionVixSeries = computed(() =>
+  availableCnOptionSeries.value.filter((item) => (item.vix_points ?? []).length > 0),
+)
+const activeCnOptionVixSeries = computed(
+  () => availableCnOptionVixSeries.value.find((item) => item.source_key === activeCnOptionVixSourceKey.value),
+)
+const cnOptionExchangeOptions = computed(() => {
+  const seen = new Set<string>()
+  return availableCnOptionSeries.value
+    .filter((item) => {
+      if (seen.has(item.exchange)) return false
+      seen.add(item.exchange)
+      return true
+    })
+    .map((item) => ({ value: item.exchange, label: item.exchange_label }))
+})
+const activeCnOptionPriceExchange = computed(() => activeCnOptionPriceSeries.value?.exchange ?? '')
+const activeCnOptionFlowExchange = computed(() => activeCnOptionFlowSeries.value?.exchange ?? '')
+const activeCnOptionVixExchange = computed(() => activeCnOptionVixSeries.value?.exchange ?? '')
+const cnOptionPriceProductOptions = computed(() =>
+  availableCnOptionSeries.value.filter((item) => item.exchange === activeCnOptionPriceExchange.value),
+)
+const cnOptionFlowProductOptions = computed(() =>
+  availableCnOptionSeries.value.filter((item) => item.exchange === activeCnOptionFlowExchange.value),
+)
+const cnOptionVixExchangeOptions = computed(() => {
+  const seen = new Set<string>()
+  return availableCnOptionVixSeries.value
+    .filter((item) => {
+      if (seen.has(item.exchange)) return false
+      seen.add(item.exchange)
+      return true
+    })
+    .map((item) => ({ value: item.exchange, label: item.exchange_label }))
+})
+const cnOptionVixProductOptions = computed(() =>
+  availableCnOptionVixSeries.value.filter((item) => item.exchange === activeCnOptionVixExchange.value),
+)
+
 const cnOptionPutCallSeriesData = computed(() => {
-  const rowByDate = new Map(props.cnOptionPutCallPoints.map((item) => [item.trade_date, item]))
+  const rowByDate = new Map((activeCnOptionPriceSeries.value?.put_call_points ?? []).map((item) => [item.trade_date, item]))
   const activeKey = activeCnOptionPutCallKey.value
   return sortedCandles.value.map((item) => ({
     time: item.trade_date as Time,
@@ -800,13 +960,29 @@ const cnOptionPutCallSeriesData = computed(() => {
 })
 
 const cnOptionFlowPutCallSeriesData = computed(() => {
-  const rowByDate = new Map(props.cnOptionFlowPutCallPoints.map((item) => [item.trade_date, item]))
+  const rowByDate = new Map((activeCnOptionFlowSeries.value?.flow_points ?? []).map((item) => [item.trade_date, item]))
   const activeKey = activeCnOptionFlowPutCallKey.value
   return sortedCandles.value.map((item) => ({
     time: item.trade_date as Time,
     rawDate: item.trade_date,
     value: getCnOptionFlowPutCallMetricValue(rowByDate.get(item.trade_date), activeKey),
   }))
+})
+
+const cnOptionVixSeriesData = computed(() => {
+  const rowByDate = new Map(
+    (activeCnOptionVixSeries.value?.vix_points ?? []).map((item) => [item.trade_date, item]),
+  )
+  return sortedCandles.value.map((item) => {
+    const point = rowByDate.get(item.trade_date)
+    return {
+      trade_date: item.trade_date,
+      open: toNullableNumber(point?.vix_open),
+      high: toNullableNumber(point?.vix_high),
+      low: toNullableNumber(point?.vix_low),
+      close: toNullableNumber(point?.vix_close),
+    }
+  })
 })
 
 const cffexNetShortDeltaSeriesData = computed(() => {
@@ -998,11 +1174,15 @@ const usPutCallPointByDate = computed(
 )
 
 const cnOptionPutCallPointByDate = computed(
-  () => new Map(props.cnOptionPutCallPoints.map((item) => [item.trade_date, item])),
+  () => new Map((activeCnOptionPriceSeries.value?.put_call_points ?? []).map((item) => [item.trade_date, item])),
 )
 
 const cnOptionFlowPutCallPointByDate = computed(
-  () => new Map(props.cnOptionFlowPutCallPoints.map((item) => [item.trade_date, item])),
+  () => new Map((activeCnOptionFlowSeries.value?.flow_points ?? []).map((item) => [item.trade_date, item])),
+)
+
+const cnOptionVixPointByDate = computed(
+  () => new Map((activeCnOptionVixSeries.value?.vix_points ?? []).map((item) => [item.trade_date, item])),
 )
 
 const cffexNetShortDeltaPointByDate = computed(
@@ -1014,7 +1194,7 @@ const basisDeltaPointByDate = computed(
 )
 
 const cnOptionPutCallSpecialHighlights = computed<QuantHighlightBand[]>(() =>
-  props.cnOptionPutCallPoints
+  (activeCnOptionPriceSeries.value?.put_call_points ?? [])
     .filter((item) =>
       (Object.keys(cnOptionPutCallMetricConfig) as CnOptionPutCallMetricKey[]).some((key) =>
         getCnOptionPutCallSpecialFlag(item, key),
@@ -1297,6 +1477,33 @@ function selectCnOptionFlowPutCallMetric(key: CnOptionFlowPutCallMetricKey) {
   updateAllSeries()
 }
 
+function selectCnOptionExchange(event: Event, panel: 'price' | 'flow' | 'vix') {
+  const exchange = (event.target as HTMLSelectElement | null)?.value
+  if (!exchange) return
+  const candidates = (
+    panel === 'vix' ? availableCnOptionVixSeries.value : availableCnOptionSeries.value
+  ).filter((item) => item.exchange === exchange)
+  const preferred = (
+    props.symbolName === '科创50'
+      ? candidates.find((item) => item.product_code === '588000')
+      : undefined
+  ) ?? candidates[0]
+  if (!preferred) return
+  if (panel === 'price') activeCnOptionPriceSourceKey.value = preferred.source_key
+  else if (panel === 'flow') activeCnOptionFlowSourceKey.value = preferred.source_key
+  else activeCnOptionVixSourceKey.value = preferred.source_key
+  updateAllSeries()
+}
+
+function selectCnOptionProduct(event: Event, panel: 'price' | 'flow' | 'vix') {
+  const sourceKey = (event.target as HTMLSelectElement | null)?.value
+  if (!sourceKey) return
+  if (panel === 'price') activeCnOptionPriceSourceKey.value = sourceKey
+  else if (panel === 'flow') activeCnOptionFlowSourceKey.value = sourceKey
+  else activeCnOptionVixSourceKey.value = sourceKey
+  updateAllSeries()
+}
+
 function selectCffexNetShortDeltaSource(source: CffexNetShortDeltaSource) {
   activeCffexNetShortDeltaSource.value = source
   updateAllSeries()
@@ -1474,6 +1681,11 @@ const indicatorValueMaps = computed(() => {
         .filter((item) => item.value !== null)
         .map((item) => [item.rawDate, item.value as number]),
     ),
+    cnOptionVix: new Map(
+      cnOptionVixSeriesData.value
+        .filter((item) => item.close !== null)
+        .map((item) => [item.trade_date, item.close as number]),
+    ),
     cffexNetShortDelta: new Map(
       cffexNetShortDeltaSeriesData.value
         .filter((item) => item.value !== null)
@@ -1553,6 +1765,13 @@ const activeIndicatorSnapshot = computed(() => {
       value: maps.cnOptionFlowPutCall.get(tradeDate) ?? null,
       volume: cnOptionFlowPutCallPointByDate.value.get(tradeDate)?.volume_put_call_ratio ?? null,
       turnover: cnOptionFlowPutCallPointByDate.value.get(tradeDate)?.turnover_put_call_ratio ?? null,
+      turnoverCallPut: cnOptionFlowPutCallPointByDate.value.get(tradeDate)?.turnover_call_put_ratio ?? null,
+    },
+    cnOptionVix: {
+      open: cnOptionVixPointByDate.value.get(tradeDate)?.vix_open ?? null,
+      high: cnOptionVixPointByDate.value.get(tradeDate)?.vix_high ?? null,
+      low: cnOptionVixPointByDate.value.get(tradeDate)?.vix_low ?? null,
+      close: maps.cnOptionVix.get(tradeDate) ?? null,
     },
     cffexNetShortDelta: {
       value: maps.cffexNetShortDelta.get(tradeDate) ?? null,
@@ -1769,15 +1988,25 @@ const summaryCards = computed<SummaryCard[]>(() => {
           {
             key: 'cn-option-put-call',
             title: 'Put/Call',
-            hint: `当前显示：${cnOptionPutCallMetricConfig[activeCnOptionPutCallKey.value].label}`,
+            hint: `${activeCnOptionPriceSeries.value?.exchange_label ?? '-'} ${activeCnOptionPriceSeries.value?.product_code ?? ''} · ${cnOptionPutCallMetricConfig[activeCnOptionPutCallKey.value].label}`,
             rows: buildCnOptionPutCallSummaryRows(cnOptionPutCallPointByDate.value.get(indicator.tradeDate)),
           },
           {
             key: 'cn-option-flow-put-call',
             title: '成交 Put/Call',
-            hint: cnOptionFlowPutCallMetricConfig[activeCnOptionFlowPutCallKey.value].label,
+            hint: `${activeCnOptionFlowSeries.value?.exchange_label ?? '-'} ${activeCnOptionFlowSeries.value?.product_code ?? ''} · ${cnOptionFlowPutCallMetricConfig[activeCnOptionFlowPutCallKey.value].label}`,
             rows: buildCnOptionFlowPutCallSummaryRows(cnOptionFlowPutCallPointByDate.value.get(indicator.tradeDate)),
           },
+          ...(availableCnOptionVixSeries.value.length
+            ? [
+                {
+                  key: 'cn-option-vix',
+                  title: '自算VIX',
+                  hint: `${activeCnOptionVixSeries.value?.exchange_label ?? '-'} ${activeCnOptionVixSeries.value?.product_code ?? ''}`,
+                  rows: buildCnOptionVixSummaryRows(cnOptionVixPointByDate.value.get(indicator.tradeDate)),
+                },
+              ]
+            : []),
         ]
       : []),
     ...(props.supportsUsVixPanel
@@ -2291,6 +2520,21 @@ function updateAllSeries() {
     panelValueMaps.delete('cnFlowPutCall')
   }
 
+  if (isSubPanelVisible('cnOptionVix')) {
+    if (!cnOptionVixSeries) return
+    cnOptionVixSeries.setData(toVixCandleData(cnOptionVixSeriesData.value))
+    panelValueMaps.set(
+      'cnOptionVix',
+      new Map(
+        cnOptionVixSeriesData.value
+          .filter((item) => item.close !== null)
+          .map((item) => [item.trade_date, item.close as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('cnOptionVix')
+  }
+
   if (isSubPanelVisible('cffexNetShortDelta')) {
     if (!cffexNetShortDeltaSeries || !cffexNetShortDeltaReferenceSeries) return
     const sourceConfig = cffexNetShortDeltaSourceConfig[activeCffexNetShortDeltaSource.value]
@@ -2467,6 +2711,9 @@ function renderCharts() {
     if (isSubPanelVisible('cnFlowPutCall')) {
       charts.cnFlowPutCall = createBaseChart(cnFlowPutCallContainerRef.value!, true)
     }
+    if (isSubPanelVisible('cnOptionVix')) {
+      charts.cnOptionVix = createBaseChart(cnOptionVixContainerRef.value!, true)
+    }
     if (isSubPanelVisible('cffexNetShortDelta')) {
       charts.cffexNetShortDelta = createBaseChart(cffexNetShortDeltaContainerRef.value!, true)
     }
@@ -2537,6 +2784,7 @@ function renderCharts() {
     cnFlowPutCallReferenceSeries = charts.cnFlowPutCall
       ? addReferenceLineSeries(charts.cnFlowPutCall, '#dc2626')
       : null
+    cnOptionVixSeries = charts.cnOptionVix ? addVixCandles(charts.cnOptionVix) : null
     cffexNetShortDeltaSeries = charts.cffexNetShortDelta
       ? addLineSeries(
           charts.cffexNetShortDelta,
@@ -2575,6 +2823,7 @@ function renderCharts() {
     if (vixSeries) primarySeriesMap.set('vix', vixSeries)
     if (cnPutCallSeries) primarySeriesMap.set('cnPutCall', cnPutCallSeries)
     if (cnFlowPutCallSeries) primarySeriesMap.set('cnFlowPutCall', cnFlowPutCallSeries)
+    if (cnOptionVixSeries) primarySeriesMap.set('cnOptionVix', cnOptionVixSeries)
     if (cffexNetShortDeltaSeries) primarySeriesMap.set('cffexNetShortDelta', cffexNetShortDeltaSeries)
     if (basisDeltaSeries) primarySeriesMap.set('basisDelta', basisDeltaSeries)
     if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
@@ -2611,6 +2860,7 @@ function renderCharts() {
       attachHighlightPrimitive(cnPutCallSeries)
       attachHighlightPrimitive(cnPutCallSeries, () => cnOptionPutCallSpecialHighlights.value)
       attachHighlightPrimitive(cnFlowPutCallSeries)
+      attachHighlightPrimitive(cnOptionVixSeries)
     }
     if (props.supportsAuxiliaryPanels) {
       attachHighlightPrimitive(cffexNetShortDeltaSeries)
@@ -2678,6 +2928,7 @@ function disposeCharts() {
   cnPutCallReferenceSeries = null
   cnFlowPutCallSeries = null
   cnFlowPutCallReferenceSeries = null
+  cnOptionVixSeries = null
   cffexNetShortDeltaSeries = null
   cffexNetShortDeltaReferenceSeries = null
   basisDeltaSeries = null
@@ -2753,6 +3004,10 @@ watch(cnOptionPutCallSeriesData, () => {
   syncHighlightBindings()
 })
 
+watch(cnOptionVixSeriesData, () => {
+  if (availableCnOptionVixSeries.value.length) updateAllSeries()
+})
+
 watch(cnOptionFlowPutCallSeriesData, () => {
   if (props.supportsCnOptionPutCallPanel) updateAllSeries()
 })
@@ -2779,7 +3034,7 @@ watch(usCreditSeriesData, () => {
 
 watch(
   () =>
-    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}`,
+    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}:${availableSubPanelOptions.value.map((item) => item.key).join('|')}`,
   async () => {
     await rebuildChartsPreservingRange()
   },
@@ -2932,9 +3187,72 @@ onBeforeUnmount(() => {
 
     <div v-if="isSubPanelVisible('vix')" class="quant-panel"><div class="quant-panel-head"><h3>VIX</h3><div class="quant-legend"><span v-for="item in vixLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!vixPoints.length" class="muted">当前范围暂无 VIX 数据</p><div ref="vixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
-    <div v-if="isSubPanelVisible('cnPutCall')" class="quant-panel"><div class="quant-panel-head"><h3>Put/Call</h3><div class="quant-legend"><button v-for="item in cnOptionPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCnOptionPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!cnOptionPutCallPoints.length" class="muted">当前范围暂无 A 股期权 Put/Call 数据</p><div ref="cnPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('cnPutCall')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>Put/Call</h3>
+        <div class="quant-legend quant-legend-groups">
+          <div class="quant-legend-group">
+            <span class="quant-legend-group-label">来源</span>
+            <select class="quant-panel-select" :value="activeCnOptionPriceExchange" @change="selectCnOptionExchange($event, 'price')">
+              <option v-for="item in cnOptionExchangeOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+            <select v-if="cnOptionPriceProductOptions.length > 1" class="quant-panel-select" :value="activeCnOptionPriceSourceKey" @change="selectCnOptionProduct($event, 'price')">
+              <option v-for="item in cnOptionPriceProductOptions" :key="item.source_key" :value="item.source_key">{{ item.product_code }}</option>
+            </select>
+          </div>
+          <div class="quant-legend-group">
+            <button v-for="item in cnOptionPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCnOptionPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button>
+          </div>
+        </div>
+      </div>
+      <p v-if="!activeCnOptionPriceSeries?.put_call_points.length" class="muted">当前范围暂无 A 股期权 Put/Call 数据</p>
+      <div ref="cnPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
 
-    <div v-if="isSubPanelVisible('cnFlowPutCall')" class="quant-panel"><div class="quant-panel-head"><h3>成交 Put/Call</h3><div class="quant-legend"><button v-for="item in cnOptionFlowPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCnOptionFlowPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!cnOptionFlowPutCallPoints.length" class="muted">当前范围暂无 A 股成交 Put/Call 数据</p><div ref="cnFlowPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('cnFlowPutCall')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>成交 Put/Call</h3>
+        <div class="quant-legend quant-legend-groups">
+          <div class="quant-legend-group">
+            <span class="quant-legend-group-label">来源</span>
+            <select class="quant-panel-select" :value="activeCnOptionFlowExchange" @change="selectCnOptionExchange($event, 'flow')">
+              <option v-for="item in cnOptionExchangeOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+            <select v-if="cnOptionFlowProductOptions.length > 1" class="quant-panel-select" :value="activeCnOptionFlowSourceKey" @change="selectCnOptionProduct($event, 'flow')">
+              <option v-for="item in cnOptionFlowProductOptions" :key="item.source_key" :value="item.source_key">{{ item.product_code }}</option>
+            </select>
+          </div>
+          <div class="quant-legend-group">
+            <button v-for="item in cnOptionFlowPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCnOptionFlowPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button>
+          </div>
+        </div>
+      </div>
+      <p v-if="!activeCnOptionFlowSeries?.flow_points.length" class="muted">当前范围暂无 A 股成交 Put/Call 数据</p>
+      <div ref="cnFlowPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div v-if="isSubPanelVisible('cnOptionVix')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>自算 VIX</h3>
+        <div class="quant-legend quant-legend-groups">
+          <div class="quant-legend-group">
+            <span class="quant-legend-group-label">来源</span>
+            <select class="quant-panel-select" :value="activeCnOptionVixExchange" @change="selectCnOptionExchange($event, 'vix')">
+              <option v-for="item in cnOptionVixExchangeOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+            <select v-if="cnOptionVixProductOptions.length > 1" class="quant-panel-select" :value="activeCnOptionVixSourceKey" @change="selectCnOptionProduct($event, 'vix')">
+              <option v-for="item in cnOptionVixProductOptions" :key="item.source_key" :value="item.source_key">{{ item.product_code }}</option>
+            </select>
+          </div>
+          <div class="quant-legend-group">
+            <span class="quant-legend-item"><i style="background:#ef4444"></i>收高于开</span>
+            <span class="quant-legend-item"><i style="background:#10b981"></i>收低于开</span>
+          </div>
+        </div>
+      </div>
+      <p v-if="!activeCnOptionVixSeries?.vix_points.length" class="muted">当前范围暂无自算 VIX 数据</p>
+      <div ref="cnOptionVixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
 
     <div v-if="isSubPanelVisible('cffexNetShortDelta')" class="quant-panel"><div class="quant-panel-head"><h3>股指期货净空单增量</h3><div class="quant-legend quant-legend-groups"><div class="quant-legend-group"><span class="quant-legend-group-label">口径</span><button v-for="item in cffexNetShortDeltaSourceLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCffexNetShortDeltaSource(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div><div class="quant-legend-group"><span class="quant-legend-group-label">窗口</span><button v-for="item in cffexNetShortDeltaWindowLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCffexNetShortDeltaWindow(item.key)">{{ item.label }}</button></div></div></div><p v-if="!cffexNetShortDeltaPoints.length" class="muted">当前范围暂无中金所净空单增量数据</p><div ref="cffexNetShortDeltaContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
@@ -3169,6 +3487,19 @@ onBeforeUnmount(() => {
 
 .quant-legend-group-label {
   color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quant-panel-select {
+  min-width: 78px;
+  height: 30px;
+  padding: 0 26px 0 8px;
+  border: 1px solid rgba(100, 116, 139, 0.28);
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  font: inherit;
   font-size: 12px;
   font-weight: 700;
 }

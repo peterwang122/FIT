@@ -237,7 +237,12 @@ def run_daily_collection_request(
             for attempt in range(1, max_attempts + 1):
                 response = client.post(normalized_endpoint, json=payload or {})
                 if response.is_error:
-                    if response.status_code >= 500 and attempt < max_attempts:
+                    should_retry = (
+                        normalized_key != "douyin_coze_emotion_daily"
+                        and response.status_code >= 500
+                        and attempt < max_attempts
+                    )
+                    if should_retry:
                         sleep_seconds = min(
                             30,
                             max(1, int(settings.collector_task_retry_backoff_seconds)) * attempt,

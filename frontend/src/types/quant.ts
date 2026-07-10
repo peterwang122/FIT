@@ -91,6 +91,10 @@ export type QuantFilterFieldKey =
   | 'cn-option-put-call-quarter-2'
   | 'cn-option-flow-pc-volume'
   | 'cn-option-flow-pc-turnover'
+  | 'cn-option-flow-cp-turnover'
+  | `cn-option-pc-${'sse' | 'szse'}-${string}-${'current' | 'next' | 'quarter-1' | 'quarter-2'}`
+  | `cn-option-flow-${'pc-volume' | 'pc-turnover' | 'cp-turnover'}-${'sse' | 'szse'}-${string}`
+  | `cn-option-vix-${'open' | 'close'}-${'cffex' | 'sse' | 'szse'}-${string}`
   | 'basis-main-delta-5d'
   | 'basis-main-delta-7d'
   | 'basis-main-delta-14d'

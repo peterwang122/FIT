@@ -17,6 +17,7 @@ import type {
   IndexCffexNetShortDeltaPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
+  IndexCnOptionSeries,
   IndexEmotionPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
@@ -65,6 +66,7 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'cn-option-put-call-quarter-2',
   'cn-option-flow-pc-volume',
   'cn-option-flow-pc-turnover',
+  'cn-option-flow-cp-turnover',
   'basis-main-delta-5d',
   'basis-main-delta-7d',
   'basis-main-delta-14d',
@@ -834,6 +836,7 @@ type IndexDatasetOptions = {
   usPutCallPoints?: IndexUsPutCallPoint[]
   cnOptionPutCallPoints?: IndexCnOptionPutCallPoint[]
   cnOptionFlowPutCallPoints?: IndexCnOptionFlowPutCallPoint[]
+  cnOptionSeries?: IndexCnOptionSeries[]
   cffexNetShortDeltaPoints?: IndexCffexNetShortDeltaPoint[]
   basisDeltaPoints?: IndexBasisDeltaPoint[]
   usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
@@ -861,6 +864,7 @@ function buildIndexQuantFilterFields(
     includeUsPutCall: boolean
     includeUsTreasuryYield: boolean
     includeUsCreditSpread: boolean
+    cnOptionSeries: IndexCnOptionSeries[]
   },
 ): QuantFilterFieldMeta[] {
   const fields: QuantFilterFieldMeta[] = [
@@ -912,6 +916,63 @@ function buildIndexQuantFilterFields(
     fields.unshift(
       { key: 'cn-option-flow-pc-volume', group: 'put-call', label: 'A股成交量 Put/Call' },
       { key: 'cn-option-flow-pc-turnover', group: 'put-call', label: 'A股成交额 Put/Call' },
+      { key: 'cn-option-flow-cp-turnover', group: 'put-call', label: 'A股成交额 Call/Put' },
+    )
+  }
+  for (const series of options.cnOptionSeries.filter((item) => item.exchange !== 'CFFEX')) {
+    const sourceLabel = `${series.exchange_label}${series.product_code}`
+    fields.unshift(
+      {
+        key: `cn-option-pc-${series.exchange.toLowerCase()}-${series.product_code}-current` as QuantFilterFieldKey,
+        group: 'put-call',
+        label: `${sourceLabel} Put/Call 当月`,
+      },
+      {
+        key: `cn-option-pc-${series.exchange.toLowerCase()}-${series.product_code}-next` as QuantFilterFieldKey,
+        group: 'put-call',
+        label: `${sourceLabel} Put/Call 下月`,
+      },
+      {
+        key: `cn-option-pc-${series.exchange.toLowerCase()}-${series.product_code}-quarter-1` as QuantFilterFieldKey,
+        group: 'put-call',
+        label: `${sourceLabel} Put/Call 季月1`,
+      },
+      {
+        key: `cn-option-pc-${series.exchange.toLowerCase()}-${series.product_code}-quarter-2` as QuantFilterFieldKey,
+        group: 'put-call',
+        label: `${sourceLabel} Put/Call 季月2`,
+      },
+      {
+        key: `cn-option-flow-pc-volume-${series.exchange.toLowerCase()}-${series.product_code}` as QuantFilterFieldKey,
+        group: 'put-call',
+        label: `${sourceLabel} 成交量 P/C`,
+      },
+      {
+        key: `cn-option-flow-pc-turnover-${series.exchange.toLowerCase()}-${series.product_code}` as QuantFilterFieldKey,
+        group: 'put-call',
+        label: `${sourceLabel} 成交额 P/C`,
+      },
+      {
+        key: `cn-option-flow-cp-turnover-${series.exchange.toLowerCase()}-${series.product_code}` as QuantFilterFieldKey,
+        group: 'put-call',
+        label: `${sourceLabel} 成交额 C/P`,
+      },
+    )
+  }
+  for (const series of options.cnOptionSeries.filter((item) => (item.vix_points ?? []).length > 0)) {
+    const sourceLabel = `${series.exchange_label}${series.product_code}`
+    const sourcePrefix = `${series.exchange.toLowerCase()}-${series.product_code.toLowerCase()}`
+    fields.unshift(
+      {
+        key: `cn-option-vix-open-${sourcePrefix}` as QuantFilterFieldKey,
+        group: 'vix',
+        label: `${sourceLabel} 自算VIX开盘`,
+      },
+      {
+        key: `cn-option-vix-close-${sourcePrefix}` as QuantFilterFieldKey,
+        group: 'vix',
+        label: `${sourceLabel} 自算VIX收盘`,
+      },
     )
   }
   if (options.includeBasisDelta) {
@@ -1082,6 +1143,7 @@ export function buildIndexQuantFilterDataset(
   const usPutCallPoints = options.usPutCallPoints ?? []
   const cnOptionPutCallPoints = options.cnOptionPutCallPoints ?? []
   const cnOptionFlowPutCallPoints = options.cnOptionFlowPutCallPoints ?? []
+  const cnOptionSeries = options.cnOptionSeries ?? []
   const cffexNetShortDeltaPoints = options.cffexNetShortDeltaPoints ?? []
   const basisDeltaPoints = options.basisDeltaPoints ?? []
   const usTreasuryYieldPoints = options.usTreasuryYieldPoints ?? []
@@ -1170,9 +1232,48 @@ export function buildIndexQuantFilterDataset(
       {
         'cn-option-flow-pc-volume': toFiniteNullableNumber(item.volume_put_call_ratio),
         'cn-option-flow-pc-turnover': toFiniteNullableNumber(item.turnover_put_call_ratio),
+        'cn-option-flow-cp-turnover': toFiniteNullableNumber(item.turnover_call_put_ratio),
       },
     ]),
   )
+  const exchangeOptionValuesByDate = new Map<string, Partial<Record<QuantFilterFieldKey, number | null>>>()
+  for (const series of cnOptionSeries.filter((item) => item.exchange !== 'CFFEX')) {
+    const sourcePrefix = `${series.exchange.toLowerCase()}-${series.product_code}`
+    for (const item of series.put_call_points) {
+      const values = exchangeOptionValuesByDate.get(item.trade_date) ?? {}
+      values[`cn-option-pc-${sourcePrefix}-current` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.current_month_put_call_ratio)
+      values[`cn-option-pc-${sourcePrefix}-next` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.next_month_put_call_ratio)
+      values[`cn-option-pc-${sourcePrefix}-quarter-1` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.quarter_1_put_call_ratio)
+      values[`cn-option-pc-${sourcePrefix}-quarter-2` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.quarter_2_put_call_ratio)
+      exchangeOptionValuesByDate.set(item.trade_date, values)
+    }
+    for (const item of series.flow_points) {
+      const values = exchangeOptionValuesByDate.get(item.trade_date) ?? {}
+      values[`cn-option-flow-pc-volume-${sourcePrefix}` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.volume_put_call_ratio)
+      values[`cn-option-flow-pc-turnover-${sourcePrefix}` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.turnover_put_call_ratio)
+      values[`cn-option-flow-cp-turnover-${sourcePrefix}` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.turnover_call_put_ratio)
+      exchangeOptionValuesByDate.set(item.trade_date, values)
+    }
+  }
+  const optionVixValuesByDate = new Map<string, Partial<Record<QuantFilterFieldKey, number | null>>>()
+  for (const series of cnOptionSeries) {
+    const sourcePrefix = `${series.exchange.toLowerCase()}-${series.product_code.toLowerCase()}`
+    for (const item of series.vix_points ?? []) {
+      const values = optionVixValuesByDate.get(item.trade_date) ?? {}
+      values[`cn-option-vix-open-${sourcePrefix}` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.vix_open)
+      values[`cn-option-vix-close-${sourcePrefix}` as QuantFilterFieldKey] =
+        toFiniteNullableNumber(item.vix_close)
+      optionVixValuesByDate.set(item.trade_date, values)
+    }
+  }
   const cffexNetShortDeltaByDate = new Map(
     cffexNetShortDeltaPoints.map((item) => [
       item.trade_date,
@@ -1280,6 +1381,9 @@ export function buildIndexQuantFilterDataset(
       'cn-option-put-call-quarter-2': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-quarter-2'] ?? null,
       'cn-option-flow-pc-volume': cnOptionFlowPutCallByDate.get(snapshot.tradeDate)?.['cn-option-flow-pc-volume'] ?? null,
       'cn-option-flow-pc-turnover': cnOptionFlowPutCallByDate.get(snapshot.tradeDate)?.['cn-option-flow-pc-turnover'] ?? null,
+      'cn-option-flow-cp-turnover': cnOptionFlowPutCallByDate.get(snapshot.tradeDate)?.['cn-option-flow-cp-turnover'] ?? null,
+      ...(exchangeOptionValuesByDate.get(snapshot.tradeDate) ?? {}),
+      ...(optionVixValuesByDate.get(snapshot.tradeDate) ?? {}),
       'cffex-net-short-top20-delta-5d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-5d'] ?? null,
       'cffex-net-short-top20-delta-7d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-7d'] ?? null,
       'cffex-net-short-top20-delta-14d': cffexNetShortDeltaByDate.get(snapshot.tradeDate)?.['cffex-net-short-top20-delta-14d'] ?? null,
@@ -1361,6 +1465,7 @@ export function buildIndexQuantFilterDataset(
       includeUsPutCall,
       includeUsTreasuryYield,
       includeUsCreditSpread,
+      cnOptionSeries,
     }),
     snapshots,
   }

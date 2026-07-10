@@ -26,6 +26,11 @@ US_INDEX_ALL_CODE = "ALL_US_INDEX"
 HK_INDEX_ALL_NAME = "港股指数全市场"
 US_INDEX_ALL_NAME = "美股指数全市场"
 
+
+class TaskRunSkipped(RuntimeError):
+    pass
+
+
 COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
     "stock_hfq_single": {
         "label": "A股股票单只 HFQ 采集",
@@ -104,6 +109,20 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "requires_target": False,
         "endpoint": "/collect-option-daily",
     },
+    "exchange_option_daily": {
+        "label": "沪深交易所期权日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-exchange-option-daily",
+    },
+    "cn_risk_free_rate_daily": {
+        "label": "人民币无风险利率日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-cn-risk-free-rate-daily",
+    },
     "quant_index_daily": {
         "label": "量化指数看板日更",
         "market_scope": "cn_stock",
@@ -168,6 +187,14 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "endpoint": "/import-emotion-excel",
         "manual_only": True,
     },
+    "douyin_coze_emotion_daily": {
+        "label": "抖音四大指数情绪日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-douyin-coze-emotion-daily",
+        "calendar_daily": True,
+    },
     "index_us_vix_daily": {
         "label": "美股 VIX 日更",
         "market_scope": "us_index",
@@ -224,6 +251,8 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "futures_daily": "中金所期货日更",
     "etf_daily": "ETF 日更",
     "option_daily": "中金所期权日更",
+    "exchange_option_daily": "沪深交易所期权日更",
+    "cn_risk_free_rate_daily": "人民币无风险利率日更",
     "quant_index_daily": "量化指数看板日更",
     "index_hk_daily": "港股指数日更",
     "index_us_daily": "美股指数日更",
@@ -233,6 +262,7 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "index_qvix_daily": "QVIX 日更",
     "index_news_sentiment_daily": "新闻情绪日更",
     "excel_emotion_import": "情绪指标 Excel 导入",
+    "douyin_coze_emotion_daily": "抖音四大指数情绪日更",
     "index_us_vix_daily": "美股 VIX 日更",
     "index_us_fear_greed_daily": "美股恐贪指数日更",
     "index_us_hedge_proxy_daily": "美股对冲基金代理日更",
@@ -399,11 +429,79 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
     "option_daily": [
         CollectionDataProbe("option_cffex_rtj_daily_data", "trade_date", "中金所期权日线"),
     ],
+    "exchange_option_daily": [
+        CollectionDataProbe(
+            "option_exchange_daily_stats",
+            "trade_date",
+            "上交所期权产品",
+            where_sql="AND exchange = :exchange",
+            params={"exchange": "SSE"},
+            minimum_rows=5,
+        ),
+        CollectionDataProbe(
+            "option_exchange_daily_stats",
+            "trade_date",
+            "深交所期权产品",
+            where_sql="AND exchange = :exchange",
+            params={"exchange": "SZSE"},
+            minimum_rows=4,
+        ),
+        CollectionDataProbe(
+            "option_exchange_contract_daily_data",
+            "trade_date",
+            "上交所期权合约官方量额",
+            where_sql=(
+                "AND exchange = :exchange "
+                "AND close_price IS NOT NULL "
+                "AND volume IS NOT NULL "
+                "AND turnover IS NOT NULL"
+            ),
+            params={"exchange": "SSE"},
+        ),
+        CollectionDataProbe(
+            "option_exchange_contract_daily_data",
+            "trade_date",
+            "深交所期权合约官方量额",
+            where_sql=(
+                "AND exchange = :exchange "
+                "AND close_price IS NOT NULL "
+                "AND volume IS NOT NULL "
+                "AND turnover IS NOT NULL"
+            ),
+            params={"exchange": "SZSE"},
+        ),
+    ],
+    "cn_risk_free_rate_daily": [
+        CollectionDataProbe(
+            "cn_risk_free_rate_daily",
+            "trade_date",
+            "人民币无风险利率曲线",
+            minimum_rows=8,
+        ),
+    ],
     "quant_index_daily": [
         CollectionDataProbe(
             settings.quant_index_dashboard_table_name,
             settings.quant_index_dashboard_date_column,
             "量化指数看板",
+        ),
+    ],
+    "douyin_coze_emotion_daily": [
+        CollectionDataProbe(
+            settings.excel_index_emotion_table_name,
+            settings.excel_index_emotion_date_column,
+            "抖音四大指数情绪",
+            where_sql=(
+                f"AND {_quoted_identifier(settings.excel_index_emotion_name_column)} "
+                "IN (:sz50_name, :hs300_name, :zz500_name, :zz1000_name)"
+            ),
+            params={
+                "sz50_name": "上证50",
+                "hs300_name": "沪深300",
+                "zz500_name": "中证500",
+                "zz1000_name": "中证1000",
+            },
+            minimum_rows=4,
         ),
     ],
     "index_hk_daily": [
@@ -598,6 +696,8 @@ class TaskService:
         if market_scope == "cn_stock":
             if "\u5317\u8bc1" in normalized_name or "899050" in lowered_name:
                 return "index_bj50_daily"
+            if "抖音" in normalized_name and "情绪" in normalized_name:
+                return "douyin_coze_emotion_daily"
             if "qvix" in lowered_name:
                 return "index_qvix_daily"
             if "新闻" in normalized_name or "情绪" in normalized_name:
@@ -634,6 +734,12 @@ class TaskService:
         definition = COLLECTION_TASK_DEFINITIONS.get(str(collector_key).strip().lower())
         return bool(definition and definition.get("manual_only"))
 
+    def _is_calendar_daily_collection(self, collector_key: str | None) -> bool:
+        if not collector_key:
+            return False
+        definition = COLLECTION_TASK_DEFINITIONS.get(str(collector_key).strip().lower())
+        return bool(definition and definition.get("calendar_daily"))
+
     def _is_manual_only_task(self, task: ScheduledTask) -> bool:
         if task.task_type != "collection":
             return False
@@ -650,6 +756,23 @@ class TaskService:
         except ValueError:
             return False
         return self._is_manual_only_collection(collector_key)
+
+    def _is_calendar_daily_task(self, task: ScheduledTask) -> bool:
+        if task.task_type != "collection":
+            return False
+        config = task.config_json or {}
+        try:
+            collector_key = self._normalize_collector_key(
+                config.get("collector_key"),
+                task.market_scope,
+                config.get("target_type"),
+                config.get("target_code") or config.get("stock_code"),
+                config.get("target_name"),
+                task.name,
+            )
+        except ValueError:
+            return False
+        return self._is_calendar_daily_collection(collector_key)
 
     def _is_single_stock_collection(self, task: ScheduledTask | None = None, config: dict | None = None) -> bool:
         target_config = config if config is not None else (task.config_json if task is not None else {}) or {}
@@ -810,6 +933,11 @@ class TaskService:
             return None
         if not item.enabled:
             return None
+        if self._is_calendar_daily_task(item):
+            hour, minute = self._parse_schedule_parts(item.schedule_time)
+            now = self._now()
+            candidate = datetime.combine(now.date(), time(hour=hour, minute=minute))
+            return candidate if candidate > now else candidate + timedelta(days=1)
         market_scope = self._effective_task_market_scope(item)
         return self._compute_next_run_at_for_scope(market_scope, item.schedule_time)
 
@@ -1244,6 +1372,14 @@ class TaskService:
             if self._scheduled_run_exists(task.id, scheduled_for):
                 continue
 
+            if self._is_calendar_daily_task(task):
+                run = self._create_run(task, trigger_type="schedule", scheduled_for=scheduled_for)
+                task.last_scheduled_date = now.date()
+                self.db.add(task)
+                self.db.commit()
+                created_run_ids.append(run.id)
+                continue
+
             market_scope = self._effective_task_market_scope(task)
             market_reference_date = self.market_calendar.current_market_date(market_scope, now)
             if not self.market_calendar.is_trading_day(market_scope, market_reference_date):
@@ -1379,7 +1515,11 @@ class TaskService:
         lines.append(f"本次汇总共 {len(summaries)} 条策略，其中 {actionable_count} 条存在操作信号。")
         return subject, "\n".join(lines).strip()
 
-    def _execute_notification_task(self, task: ScheduledTask) -> str:
+    def _execute_notification_task(
+        self,
+        task: ScheduledTask,
+        reference_dt: datetime | None = None,
+    ) -> str:
         owner = self.db.get(User, task.owner_user_id)
         if owner is None:
             raise ValueError("task owner not found")
@@ -1391,7 +1531,10 @@ class TaskService:
             raise ValueError("notification task target email is missing")
 
         market_scope = self._normalize_market_scope(task.market_scope)
-        basis_trade_date = self._notification_basis_trade_date(market_scope, self._now())
+        basis_trade_date = self._notification_basis_trade_date(
+            market_scope,
+            reference_dt or self._now(),
+        )
         subject, body = self._build_notification_email(task, owner, basis_trade_date)
         self._send_email(recipient, subject, body)
 
@@ -1408,6 +1551,14 @@ class TaskService:
         return self._collection_market_scope(collector_key)
 
     def _collection_target_trade_date(self, collector_key: str, reference_dt: datetime | None = None) -> date:
+        if self._is_calendar_daily_collection(collector_key):
+            reference = reference_dt or self._now()
+            localized = (
+                reference.replace(tzinfo=SHANGHAI_TZ)
+                if reference.tzinfo is None
+                else reference.astimezone(SHANGHAI_TZ)
+            )
+            return localized.date()
         market_scope = self._collection_validation_market_scope(collector_key)
         market_date = self.market_calendar.current_market_date(market_scope, reference_dt or self._now())
         if self.market_calendar.is_trading_day(market_scope, market_date):
@@ -1447,6 +1598,55 @@ class TaskService:
         if row is None:
             return 0, None
         return int(row.get("target_count") or 0), row.get("latest_date")
+
+    def _qvix_recent_gap_failure(self, target_trade_date: date, lookback_days: int = 30) -> str:
+        sql = f"""
+            SELECT
+                COUNT(*) AS missing_date_count,
+                GROUP_CONCAT(
+                    CONCAT(CAST(missing_by_date.trade_date AS CHAR), ':', missing_by_date.missing_codes)
+                    ORDER BY missing_by_date.trade_date
+                    SEPARATOR '；'
+                ) AS missing_summary
+            FROM (
+                SELECT
+                    expected.trade_date,
+                    GROUP_CONCAT(expected.index_code ORDER BY expected.index_code SEPARATOR ',') AS missing_codes
+                FROM (
+                    SELECT recent_calendar.trade_date, basic.index_code
+                    FROM (
+                        SELECT trade_date
+                        FROM (
+                            SELECT DISTINCT trade_date
+                            FROM `{settings.index_daily_table_name}`
+                            WHERE `{settings.index_daily_code_column}` = :calendar_index_code
+                              AND `{settings.index_daily_date_column}` <= :target_trade_date
+                            ORDER BY `{settings.index_daily_date_column}` DESC
+                            LIMIT {int(lookback_days)}
+                        ) AS ordered_calendar
+                    ) AS recent_calendar
+                    CROSS JOIN `{settings.index_qvix_basic_info_table_name}` AS basic
+                ) AS expected
+                LEFT JOIN `{settings.index_qvix_daily_table_name}` AS qvix
+                  ON qvix.`{settings.index_qvix_daily_date_column}` = expected.trade_date
+                 AND qvix.`{settings.index_qvix_daily_code_column}` = expected.index_code
+                WHERE qvix.`{settings.index_qvix_daily_code_column}` IS NULL
+                GROUP BY expected.trade_date
+            ) AS missing_by_date
+        """
+        row = self.db.execute(
+            text(sql),
+            {
+                "calendar_index_code": "sh000001",
+                "target_trade_date": target_trade_date,
+            },
+        ).mappings().first()
+        if row is None or int(row.get("missing_date_count") or 0) <= 0:
+            return ""
+        return (
+            f"近{lookback_days}个A股交易日QVIX仍有缺口："
+            f"{row.get('missing_summary') or '-'}"
+        )
 
     def _compact_upstream_result(self, result: dict | None) -> str:
         if not isinstance(result, dict):
@@ -1494,6 +1694,11 @@ class TaskService:
             else:
                 successes.append(f"{probe.label}{target_count}行")
 
+        if collector_key == "index_qvix_daily" and not failures:
+            qvix_gap_failure = self._qvix_recent_gap_failure(target_trade_date)
+            if qvix_gap_failure:
+                failures.append(qvix_gap_failure)
+
         if failures:
             upstream_result = self._compact_upstream_result(result)
             raise RuntimeError(
@@ -1531,8 +1736,18 @@ class TaskService:
 
         explicit_target_trade_date: date | None = None
         collection_payload: dict | None = None
-        if collector_key == "stock_exchange_official_daily":
+        if collector_key in {
+            "stock_exchange_official_daily",
+            "exchange_option_daily",
+            "cn_risk_free_rate_daily",
+            "quant_index_daily",
+            "index_qvix_daily",
+        }:
             explicit_target_trade_date = self._collection_target_trade_date_for_task(collector_key, task, reference_dt)
+            if collector_key in {"stock_exchange_official_daily", "exchange_option_daily", "cn_risk_free_rate_daily"}:
+                collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
+        elif collector_key == "douyin_coze_emotion_daily":
+            explicit_target_trade_date = self._collection_target_trade_date(collector_key, reference_dt)
             collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
 
         if collector_key == "index_hk_daily":
@@ -1556,6 +1771,19 @@ class TaskService:
                 f"实际 {upstream_task_name}。请检查采集端服务是否已重启并加载最新路由。"
             )
         result_value = upstream_payload.get("result") if isinstance(upstream_payload, dict) else None
+        result_status = (
+            str(result_value.get("status") or "").strip().upper()
+            if isinstance(result_value, dict)
+            else ""
+        )
+        if collector_key == "douyin_coze_emotion_daily" and result_status == "NO_UPDATE":
+            latest_video_date = str(result_value.get("latest_video_date") or "-")
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            raise TaskRunSkipped(
+                f"{label}已检查：目标日期 {target_date} 当天未发布新作品，"
+                f"当前最新作品日期为 {latest_video_date}。"
+            )
+
         validation_summary = self._validate_collection_result(
             collector_key,
             label,
@@ -1563,8 +1791,27 @@ class TaskService:
             reference_dt,
             target_trade_date=explicit_target_trade_date,
         )
+        if collector_key == "douyin_coze_emotion_daily":
+            self.stock_service.clear_index_emotions_cache()
+            self.quant_service.clear_index_dashboard_cache("cn")
+
         if result_value not in (None, ""):
-            summary = f"{label}执行完成，结果：{result_value}。"
+            if isinstance(result_value, dict):
+                target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+                video_id = str(result_value.get("video_id") or "-")
+                values = result_value.get("values") if isinstance(result_value.get("values"), dict) else {}
+                if collector_key == "douyin_coze_emotion_daily":
+                    summary = (
+                        f"{label}执行完成：日期 {target_date}，作品 {video_id}，"
+                        f"上证50={values.get('sz50_emotion', '-')}，"
+                        f"沪深300={values.get('hs300_emotion', '-')}，"
+                        f"中证500={values.get('zz500_emotion', '-')}，"
+                        f"中证1000={values.get('zz1000_emotion', '-')}。"
+                    )
+                else:
+                    summary = f"{label}执行完成，结果：{result_value}。"
+            else:
+                summary = f"{label}执行完成，结果：{result_value}。"
         else:
             summary = f"{label}执行完成，状态：{upstream_status}。"
         if validation_summary:
@@ -1586,9 +1833,25 @@ class TaskService:
             if task.task_type == "collection":
                 summary = self._execute_collection_task(task, reference_dt=run.scheduled_for or started_at)
             elif task.task_type == "notification":
-                summary = self._execute_notification_task(task)
+                summary = self._execute_notification_task(
+                    task,
+                    reference_dt=run.scheduled_for or started_at,
+                )
             else:
                 raise ValueError("unsupported task type")
+        except TaskRunSkipped as exc:
+            finished_at = self._now()
+            summary = str(exc)
+            self._mark_run_state(
+                run,
+                task,
+                status="skipped",
+                summary=summary,
+                error_message="",
+                finished_at=finished_at,
+            )
+            self.db.refresh(run)
+            return self._serialize_run(run)
         except Exception as exc:
             finished_at = self._now()
             self._mark_run_state(
