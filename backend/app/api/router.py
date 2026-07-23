@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps.auth import require_authenticated_user
 from app.api.routes_auth import router as auth_router
 from app.api.routes_notifications import router as notifications_router
+from app.api.routes_macro import router as macro_router
 from app.api.routes_progress import router as progress_router
 from app.api.routes_research import router as research_router
 from app.api.routes_stock import router as stock_router
@@ -15,6 +16,12 @@ api_router.include_router(
     notifications_router,
     prefix="/notifications",
     tags=["notifications"],
+    dependencies=[Depends(require_authenticated_user)],
+)
+api_router.include_router(
+    macro_router,
+    prefix="/macro",
+    tags=["macro"],
     dependencies=[Depends(require_authenticated_user)],
 )
 api_router.include_router(

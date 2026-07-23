@@ -155,30 +155,191 @@ def test_enqueue_due_task_runs_skips_closed_market_scope():
 def test_calendar_daily_collection_runs_when_market_is_closed():
     task = _make_task(1, "cn_stock")
     task.name = "抖音四大指数情绪日更"
-    task.schedule_time = "20:55"
+    task.schedule_time = "19:00"
     task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
     db = _FakeSession(tasks=[task])
     service = TaskService(db)
     service.market_calendar = _ClosedMarketCalendar()
-    service._now = lambda: datetime(2026, 6, 28, 21, 0)
+    service._now = lambda: datetime(2026, 6, 28, 19, 0)
 
     run_ids = service.enqueue_due_task_runs()
 
     assert run_ids == [1]
     assert db.runs[0].status == "queued"
-    assert db.runs[0].scheduled_for == datetime(2026, 6, 28, 20, 55)
+    assert db.runs[0].scheduled_for == datetime(2026, 6, 28, 19, 0)
     assert task.last_scheduled_date == date(2026, 6, 28)
 
 
-def test_calendar_daily_collection_next_run_uses_next_calendar_day():
+def test_douyin_polling_next_run_uses_window_and_next_calendar_day():
     task = _make_task(1, "cn_stock")
-    task.schedule_time = "20:55"
+    task.schedule_time = "19:00"
     task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
     service = TaskService(_FakeSession(tasks=[task]))
     service.market_calendar = _ClosedMarketCalendar()
-    service._now = lambda: datetime(2026, 6, 28, 21, 0)
+    service._now = lambda: datetime(2026, 6, 28, 18, 30)
 
-    assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 20, 55)
+    assert service._compute_next_run_at(task) == datetime(2026, 6, 28, 19, 0)
+
+    service._now = lambda: datetime(2026, 6, 28, 19, 3, 12)
+    assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 19, 0)
+
+    service._now = lambda: datetime(2026, 6, 28, 21, 0)
+    assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 19, 0)
+
+
+def test_douyin_polling_uses_one_scheduled_run_for_the_whole_window():
+    task = _make_task(1, "cn_stock")
+    task.schedule_time = "19:00"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+    db = _FakeSession(tasks=[task])
+    service = TaskService(db)
+    service.market_calendar = _ClosedMarketCalendar()
+    service._scheduled_run_exists = lambda task_id, scheduled_for: any(
+        run.scheduled_task_id == task_id
+        and run.trigger_type == "schedule"
+        and run.scheduled_for == scheduled_for
+        for run in db.runs
+    )
+    service._now = lambda: datetime(2026, 6, 28, 19, 0)
+
+    assert service.enqueue_due_task_runs() == [1]
+    db.runs[0].status = "skipped"
+    service._now = lambda: datetime(2026, 6, 28, 19, 1)
+
+    assert service.enqueue_due_task_runs() == []
+    assert len(db.runs) == 1
+
+
+def test_douyin_polling_does_not_overlap_or_continue_after_success():
+    task = _make_task(1, "cn_stock")
+    task.schedule_time = "19:00"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+    active_run = ScheduledTaskRun(
+        id=1,
+        scheduled_task_id=task.id,
+        trigger_type="schedule",
+        status="running",
+        scheduled_for=datetime(2026, 6, 28, 19, 0),
+        summary="",
+        error_message="",
+    )
+    db = _FakeSession(tasks=[task], runs=[active_run])
+    service = TaskService(db)
+    service.market_calendar = _ClosedMarketCalendar()
+    service._now = lambda: datetime(2026, 6, 28, 19, 1)
+
+    assert service.enqueue_due_task_runs() == []
+
+    active_run.status = "success"
+    service._now = lambda: datetime(2026, 6, 28, 19, 2)
+    assert service.enqueue_due_task_runs() == []
+    assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 19, 0)
+
+
+def test_douyin_polling_stops_after_content_processing_failure():
+    task = _make_task(1, "cn_stock")
+    task.schedule_time = "19:00"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+    failed_run = ScheduledTaskRun(
+        id=1,
+        scheduled_task_id=task.id,
+        trigger_type="schedule",
+        status="failed",
+        scheduled_for=datetime(2026, 6, 28, 19, 0),
+        summary="已发现当天新作品：后续情绪提取失败。今日轮询已停止。",
+        error_message="图文 OCR 缺少情绪指标：中证500",
+    )
+    db = _FakeSession(tasks=[task], runs=[failed_run])
+    service = TaskService(db)
+    service.market_calendar = _ClosedMarketCalendar()
+    service._scheduled_run_exists = lambda task_id, scheduled_for: any(
+        run.scheduled_task_id == task_id
+        and run.trigger_type == "schedule"
+        and run.scheduled_for == scheduled_for
+        for run in db.runs
+    )
+    service._now = lambda: datetime(2026, 6, 28, 19, 9)
+
+    assert service.enqueue_due_task_runs() == []
+    assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 19, 0)
+
+
+def test_douyin_polling_does_not_create_a_second_run_after_retryable_failure():
+    task = _make_task(1, "cn_stock")
+    task.schedule_time = "19:00"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+    failed_run = ScheduledTaskRun(
+        id=1,
+        scheduled_task_id=task.id,
+        trigger_type="schedule",
+        status="failed",
+        scheduled_for=datetime(2026, 6, 28, 19, 0),
+        summary="作品处理可重试：本轮自动重试后仍未完成。下一轮将继续重试。",
+        error_message="等待 Coze 视频文案超时",
+    )
+    db = _FakeSession(tasks=[task], runs=[failed_run])
+    service = TaskService(db)
+    service.market_calendar = _ClosedMarketCalendar()
+    service._scheduled_run_exists = lambda task_id, scheduled_for: any(
+        run.scheduled_task_id == task_id
+        and run.trigger_type == "schedule"
+        and run.scheduled_for == scheduled_for
+        for run in db.runs
+    )
+    service._now = lambda: datetime(2026, 6, 28, 19, 9)
+
+    assert service.enqueue_due_task_runs() == []
+    assert len(db.runs) == 1
+
+
+def test_douyin_polling_stops_after_end_time():
+    task = _make_task(1, "cn_stock")
+    task.schedule_time = "19:00"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+    service = TaskService(_FakeSession(tasks=[task]))
+    service.market_calendar = _ClosedMarketCalendar()
+    service._now = lambda: datetime(2026, 6, 28, 21, 1)
+
+    assert service.enqueue_due_task_runs() == []
+    assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 19, 0)
+
+
+def test_douyin_run_history_shows_only_latest_scheduled_run_per_day():
+    task = _make_task(1, "cn_stock")
+    task.name = "抖音四大指数情绪日更"
+    task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
+
+    def make_run(run_id, trigger_type, scheduled_for):
+        return ScheduledTaskRun(
+            id=run_id,
+            scheduled_task_id=task.id,
+            trigger_type=trigger_type,
+            status="skipped",
+            celery_task_id=None,
+            scheduled_for=scheduled_for,
+            started_at=scheduled_for,
+            finished_at=scheduled_for,
+            summary="",
+            error_message="",
+            created_at=scheduled_for,
+        )
+
+    service = TaskService(
+        _FakeSession(
+            tasks=[task],
+            runs=[
+                make_run(5, "schedule", datetime(2026, 7, 15, 19, 2)),
+                make_run(4, "manual", datetime(2026, 7, 15, 19, 1, 30)),
+                make_run(3, "schedule", datetime(2026, 7, 15, 19, 1)),
+                make_run(2, "schedule", datetime(2026, 7, 15, 19, 0)),
+                make_run(1, "schedule", datetime(2026, 7, 14, 19, 0)),
+            ],
+        )
+    )
+
+    visible = service.list_runs(task.id, owner_user_id=1, limit=20)
+
+    assert [item["id"] for item in visible] == [5, 4, 1]
 
 
 def test_enqueue_due_task_runs_catches_up_missed_schedule_minute():

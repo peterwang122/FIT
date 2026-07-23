@@ -216,9 +216,14 @@ def run_daily_collection_request(
 
     lock_key = dedupe_lock_key or _daily_temp_lock_key(normalized_key)
     owner_token = request_id or f"manual:{uuid4()}"
+    request_timeout_seconds = (
+        int(settings.option_minute_daily_service_timeout_seconds)
+        if normalized_key == "option_minute_daily"
+        else int(settings.stock_temp_daily_service_timeout_seconds)
+    )
     lock_ttl_seconds = max(
         int(settings.collector_dedupe_lock_ttl_seconds),
-        int(settings.stock_temp_daily_task_time_limit_seconds) + 300,
+        request_timeout_seconds + 300,
     )
     lock_acquired = redis_client.set(lock_key, owner_token, nx=True, ex=lock_ttl_seconds)
     if not lock_acquired:
@@ -230,17 +235,40 @@ def run_daily_collection_request(
     try:
         with httpx.Client(
             base_url=settings.stock_temp_service_base_url,
-            timeout=settings.stock_temp_daily_service_timeout_seconds,
+            timeout=request_timeout_seconds,
             trust_env=False,
         ) as client:
             max_attempts = max(1, int(settings.stock_temp_daily_task_max_retries))
             for attempt in range(1, max_attempts + 1):
-                response = client.post(normalized_endpoint, json=payload or {})
+                try:
+                    response = client.post(normalized_endpoint, json=payload or {})
+                except (httpx.RemoteProtocolError, httpx.ConnectError):
+                    if attempt >= max_attempts:
+                        raise
+                    sleep_seconds = min(
+                        30,
+                        max(1, int(settings.collector_task_retry_backoff_seconds))
+                        * attempt,
+                    )
+                    time.sleep(sleep_seconds)
+                    continue
                 if response.is_error:
+                    response_text = ""
+                    try:
+                        response_text = response.text
+                    except Exception:
+                        response_text = ""
+                    douyin_auth_retryable = (
+                        normalized_key == "douyin_coze_emotion_daily"
+                        and "登录已失效" in response_text
+                    )
                     should_retry = (
-                        normalized_key != "douyin_coze_emotion_daily"
-                        and response.status_code >= 500
+                        response.status_code >= 500
                         and attempt < max_attempts
+                        and (
+                            normalized_key != "douyin_coze_emotion_daily"
+                            or douyin_auth_retryable
+                        )
                     )
                     if should_retry:
                         sleep_seconds = min(

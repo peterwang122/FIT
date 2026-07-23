@@ -5,7 +5,7 @@ import pytest
 from app.models.scheduled_task import ScheduledTask
 from app.models.scheduled_task_run import ScheduledTaskRun
 import app.services.task_service as task_service_module
-from app.services.task_service import TaskService
+from app.services.task_service import TaskRunPollingPending, TaskService
 
 
 class _FakeExecuteResult:
@@ -162,10 +162,12 @@ def test_execute_run_marks_failed_when_upstream_success_has_no_target_rows(monke
 
 def test_douyin_no_update_marks_run_skipped(monkeypatch):
     task = _make_collection_task("douyin_coze_emotion_daily")
+    task.schedule_time = "19:00"
     run = _make_run(task.id)
-    run.scheduled_for = datetime(2026, 6, 28, 20, 55)
+    run.scheduled_for = datetime(2026, 6, 28, 21, 0)
     db = _FakeSession(tasks=[task], runs=[run])
     service = TaskService(db)
+    service._now = lambda: datetime(2026, 6, 28, 21, 0)
 
     requests = []
 
@@ -180,6 +182,7 @@ def test_douyin_no_update_marks_run_skipped(monkeypatch):
                     "status": "NO_UPDATE",
                     "target_date": "2026-06-28",
                     "latest_video_date": "2026-06-27",
+                    "minimum_publish_time": "15:00",
                 },
             },
         }
@@ -194,8 +197,161 @@ def test_douyin_no_update_marks_run_skipped(monkeypatch):
 
     assert result["status"] == "skipped"
     assert task.last_run_status == "skipped"
-    assert "当天未发布新作品" in result["summary"]
-    assert requests[0]["payload"] == {"target_date": "2026-06-28"}
+    assert "截至 21:00 仍未发现 15:00 后发布的新作品" in result["summary"]
+    assert "今日轮询已结束" in result["summary"]
+    assert requests[0]["payload"] == {
+        "target_date": "2026-06-28",
+        "keep_browser_open": False,
+        "browser_close_at": "2026-06-28T21:00:00",
+    }
+
+
+def test_douyin_no_update_before_deadline_reports_next_check(monkeypatch):
+    task = _make_collection_task("douyin_coze_emotion_daily")
+    task.schedule_time = "19:00"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 6, 28, 20, 15)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service._now = lambda: datetime(2026, 6, 28, 20, 15, 20)
+
+    requests = []
+
+    def fake_run_daily_collection_request(**kwargs):
+        requests.append(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "douyin_coze_emotion_daily",
+                "result": {
+                    "status": "NO_UPDATE",
+                    "target_date": "2026-06-28",
+                    "latest_video_date": "2026-06-27",
+                    "minimum_publish_time": "15:00",
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        fake_run_daily_collection_request,
+    )
+
+    with pytest.raises(TaskRunPollingPending, match="20:16"):
+        service.execute_run(run.id)
+
+    assert run.status == "running"
+    assert "同一条运行记录" in run.summary
+    assert requests[0]["payload"] == {
+        "target_date": "2026-06-28",
+        "keep_browser_open": True,
+        "browser_close_at": "2026-06-28T21:00:00",
+    }
+
+
+def test_douyin_detected_content_processing_failure_stops_daily_polling(monkeypatch):
+    task = _make_collection_task("douyin_coze_emotion_daily")
+    task.schedule_time = "19:00"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 6, 28, 19, 8)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service._now = lambda: datetime(2026, 6, 28, 19, 8, 20)
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "douyin_coze_emotion_daily",
+                "result": {
+                    "status": "UPDATE_FOUND_FAILED",
+                    "target_date": "2026-06-28",
+                    "video_id": "123",
+                    "error": "文案日期 2026-06-27 与作品发布日期 2026-06-28 不一致",
+                },
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "failed"
+    assert result["summary"].startswith("已发现当天新作品")
+    assert "今日轮询已停止" in result["summary"]
+    assert task.last_run_status == "failed"
+
+
+def test_douyin_incomplete_extraction_continues_daily_polling(monkeypatch):
+    task = _make_collection_task("douyin_coze_emotion_daily")
+    task.schedule_time = "19:00"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 6, 28, 19, 8)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service._now = lambda: datetime(2026, 6, 28, 19, 18, 20)
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "douyin_coze_emotion_daily",
+                "result": {
+                    "status": "UPDATE_FOUND_FAILED",
+                    "target_date": "2026-06-28",
+                    "video_id": "123",
+                    "error": "文案缺少上证50情绪指标",
+                },
+            },
+        },
+    )
+
+    with pytest.raises(TaskRunPollingPending, match="同一条运行记录"):
+        service.execute_run(run.id)
+
+    assert run.status == "running"
+    assert "文案缺少上证50情绪指标" in run.summary
+
+
+def test_douyin_transient_processing_failure_continues_daily_polling(monkeypatch):
+    task = _make_collection_task("douyin_coze_emotion_daily")
+    task.schedule_time = "19:00"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 6, 28, 19, 8)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service._now = lambda: datetime(2026, 6, 28, 19, 18, 20)
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "douyin_coze_emotion_daily",
+                "result": {
+                    "status": "UPDATE_FOUND_RETRYABLE",
+                    "target_date": "2026-06-28",
+                    "video_id": "123",
+                    "error": "等待 Coze 视频文案超时",
+                },
+            },
+        },
+    )
+
+    with pytest.raises(TaskRunPollingPending, match="同一条运行记录"):
+        service.execute_run(run.id)
+
+    assert run.status == "running"
+    assert "等待 Coze 视频文案超时" in run.summary
 
 
 def test_douyin_success_requires_four_rows_and_clears_caches(monkeypatch):
@@ -303,15 +459,13 @@ def test_qvix_validation_fails_when_recent_backfill_has_gaps():
     assert "2026-07-01:50ETF_QVIX,300ETF_QVIX" in message
 
 
-def test_exchange_option_daily_is_independent_and_validates_both_exchanges(monkeypatch):
+def test_exchange_option_daily_validates_both_exchanges_contract_rows(monkeypatch):
     task = _make_collection_task("exchange_option_daily")
     run = _make_run(task.id)
     db = _FakeSession(
         tasks=[task],
         runs=[run],
         execute_rows=[
-            {"target_count": 5, "latest_date": date(2026, 4, 30)},
-            {"target_count": 4, "latest_date": date(2026, 4, 30)},
             {"target_count": 600, "latest_date": date(2026, 4, 30)},
             {"target_count": 300, "latest_date": date(2026, 4, 30)},
         ],
@@ -343,8 +497,133 @@ def test_exchange_option_daily_is_independent_and_validates_both_exchanges(monke
     assert requests[0]["collector_key"] == "exchange_option_daily"
     assert requests[0]["endpoint"] == "/collect-exchange-option-daily"
     assert requests[0]["payload"] == {"target_date": "2026-04-30"}
+    assert "上交所期权合约官方量额600行" in result["summary"]
+    assert "深交所期权合约官方量额300行" in result["summary"]
+
+
+def test_exchange_option_stats_daily_requires_all_nine_products(monkeypatch):
+    task = _make_collection_task("exchange_option_stats_daily")
+    run = _make_run(task.id)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": 5, "latest_date": date(2026, 4, 30)},
+            {"target_count": 4, "latest_date": date(2026, 4, 30)},
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 4, 30))
+    requests = []
+
+    def fake_run_daily_collection_request(**kwargs):
+        requests.append(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "exchange_option_stats_daily",
+                "result": {"status": "SUCCESS", "target_date": "2026-04-30"},
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        fake_run_daily_collection_request,
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert requests[0]["collector_key"] == "exchange_option_stats_daily"
+    assert requests[0]["endpoint"] == "/collect-exchange-option-stats-daily"
+    assert requests[0]["payload"] == {"target_date": "2026-04-30"}
     assert "上交所期权产品5行" in result["summary"]
     assert "深交所期权产品4行" in result["summary"]
+
+
+def test_option_minute_daily_requires_all_ten_raw_and_vix_sources(monkeypatch):
+    task = _make_collection_task("option_minute_daily")
+    run = _make_run(task.id)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": 242, "latest_date": date(2026, 7, 13)}
+            for _ in range(20)
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 13))
+    requests = []
+
+    def fake_run_daily_collection_request(**kwargs):
+        requests.append(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "option_minute_daily",
+                "result": {"status": "SUCCESS", "target_date": "2026-07-13"},
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        fake_run_daily_collection_request,
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert requests[0]["endpoint"] == "/collect-option-minute-daily"
+    assert requests[0]["payload"] == {"target_date": "2026-07-13"}
+    assert "cffex:HO原始分钟242分钟" in result["summary"]
+    assert "cffex:HO分钟VIX242行" in result["summary"]
+    assert "szse:159922分钟VIX242行" in result["summary"]
+
+
+def test_option_minute_daily_warns_for_partial_vix_when_raw_minutes_are_complete(monkeypatch):
+    task = _make_collection_task("option_minute_daily")
+    run = _make_run(task.id)
+    vix_counts = [242, 242, 242, 242, 241, 241, 147, 224, 241, 126]
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            *[
+                {"target_count": 242, "latest_date": date(2026, 7, 17)}
+                for _ in range(10)
+            ],
+            *[
+                {"target_count": count, "latest_date": date(2026, 7, 17)}
+                for count in vix_counts
+            ],
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 17))
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "option_minute_daily",
+                "result": {"status": "SUCCESS", "target_date": "2026-07-17"},
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert "sse:588000分钟VIX147行（质量告警" in result["summary"]
+    assert "szse:159922分钟VIX126行（质量告警" in result["summary"]
 
 
 def test_us_futures_validation_rejects_stale_upstream_trade_date(monkeypatch):
@@ -398,6 +677,75 @@ def test_collection_validation_uses_previous_trade_date_when_reference_market_is
 
     assert db.executed[0][1]["target_trade_date"] == date(2026, 5, 1)
     assert "已确认 2026-05-01 数据入库" in summary
+
+
+@pytest.mark.parametrize(
+    "collector_key,label,target_count",
+    [
+        ("index_us_treasury_yield_daily", "美债收益率日更", 1),
+        ("index_us_credit_spread_daily", "美股高收益债利差日更", 1),
+        ("us_index_futures_official_daily", "美股股指期货官方合约日更", 2),
+    ],
+)
+def test_lagged_us_releases_validate_previous_us_trading_day(collector_key, label, target_count):
+    db = _FakeSession(execute_rows=[{"target_count": target_count, "latest_date": date(2026, 7, 17)}])
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(
+        date(2026, 7, 20),
+        previous_date=date(2026, 7, 17),
+    )
+
+    summary = service._validate_collection_result(
+        collector_key,
+        label,
+        {"upstream_response": {"result": 1}},
+        datetime(2026, 7, 21, 5, 30),
+    )
+
+    assert db.executed[0][1]["target_trade_date"] == date(2026, 7, 17)
+    assert "已确认 2026-07-17 数据入库" in summary
+
+
+def test_monthly_us_hedge_proxy_validates_latest_release_instead_of_daily_target():
+    db = _FakeSession(
+        execute_rows=[
+            {"target_count": 0, "latest_date": date(2026, 6, 19)},
+            {"target_count": 2, "latest_date": date(2026, 6, 19)},
+        ]
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 20))
+
+    summary = service._validate_collection_result(
+        "index_us_hedge_proxy_daily",
+        "OFR 美股持仓代理月更",
+        {"upstream_response": {"result": 0}},
+        datetime(2026, 7, 21, 9, 30),
+    )
+
+    assert db.executed[1][1]["target_trade_date"] == date(2026, 6, 19)
+    assert "最新月度发布2026-06-19共2行" in summary
+
+
+def test_monthly_us_hedge_proxy_rejects_stale_release():
+    db = _FakeSession(
+        execute_rows=[
+            {"target_count": 0, "latest_date": date(2026, 5, 1)},
+            {"target_count": 2, "latest_date": date(2026, 5, 1)},
+        ]
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 20))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service._validate_collection_result(
+            "index_us_hedge_proxy_daily",
+            "OFR 美股持仓代理月更",
+            {"upstream_response": {"result": 0}},
+            datetime(2026, 7, 21, 9, 30),
+        )
+
+    assert "已超过45天未更新" in str(exc_info.value)
 
 
 def test_stock_exchange_official_validation_requires_both_sh_and_sz():
@@ -526,6 +874,47 @@ def test_quant_index_manual_run_uses_previous_trade_date_before_schedule(monkeyp
 
     assert captured_kwargs["payload"] is None
     assert db.executed[0][1]["target_trade_date"] == date(2026, 7, 3)
+    assert result["status"] == "success"
+
+
+def test_cn_macro_manual_run_passes_trade_date_and_requires_complete_indicator(monkeypatch):
+    task = _make_collection_task("cn_macro_daily")
+    task.schedule_time = "18:10"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 7, 10, 19, 0)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": 1, "latest_date": date(2026, 7, 10)},
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 10), trading=True)
+    captured_kwargs = {}
+
+    def _fake_run_daily_collection_request(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "cn_macro_daily",
+                "result": {"indicator_rows": {"rows": 1}},
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        _fake_run_daily_collection_request,
+    )
+
+    result = service.execute_run(run.id)
+
+    assert captured_kwargs["endpoint"] == "/collect-cn-macro-daily"
+    assert captured_kwargs["payload"] == {"target_date": "2026-07-10"}
+    assert db.executed[0][1]["target_trade_date"] == date(2026, 7, 10)
     assert result["status"] == "success"
 
 

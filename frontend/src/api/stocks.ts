@@ -17,6 +17,7 @@ import type {
 } from '../types/stock'
 import type {
   QuantEquityCurveResponse,
+  QuantOptionTradeResult,
   QuantIndicatorParams,
   QuantScanEventPage,
   QuantScanTargetHits,
@@ -27,6 +28,7 @@ import type {
   QuantScanTradeConfig,
   QuantStrategyConfig,
   QuantStrategyPayload,
+  QuantStrategyTargetChartResponse,
   QuantStrategyType,
   QuantTargetMarket,
   QuantTargetOption,
@@ -268,6 +270,35 @@ export async function sendQuantStrategy(strategyId: number, targetUsername: stri
 export async function fetchQuantStrategyEquityCurve(strategyId: number) {
   const { data } = await http.get<ApiResponse<QuantEquityCurveResponse>>(
     `/stocks/quant/strategies/${strategyId}/equity-curve`,
+  )
+  return data.data
+}
+
+export async function fetchQuantStrategyTargetChart(
+  strategyId: number,
+  options: {
+    scanResultId?: string
+    targetCode?: string
+    signal?: AbortSignal
+  } = {},
+) {
+  const { data } = await http.get<ApiResponse<QuantStrategyTargetChartResponse>>(
+    `/stocks/quant/strategies/${strategyId}/target-chart`,
+    {
+      params: {
+        scan_result_id: options.scanResultId,
+        target_code: options.targetCode,
+      },
+      signal: options.signal,
+      timeout: SCAN_REQUEST_TIMEOUT_MS,
+    },
+  )
+  return data.data
+}
+
+export async function fetchQuantStrategyOptionTrades(strategyId: number) {
+  const { data } = await http.get<ApiResponse<QuantOptionTradeResult>>(
+    `/stocks/quant/strategies/${strategyId}/option-trades`,
   )
   return data.data
 }

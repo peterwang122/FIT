@@ -3,7 +3,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{
-  active: 'overview' | 'stocks' | 'markets' | 'progress' | 'quant' | 'research' | 'account' | 'tasks'
+  active: 'overview' | 'macro' | 'stocks' | 'markets' | 'progress' | 'quant' | 'research' | 'account' | 'tasks'
 }>()
 
 const router = useRouter()
@@ -15,6 +15,10 @@ function goOverview() {
 
 function goStocks() {
   void router.push('/stocks')
+}
+
+function goMacro() {
+  void router.push('/macro')
 }
 
 function goMarkets() {
@@ -51,6 +55,9 @@ function goAccount() {
     <nav class="sidebar-nav">
       <button type="button" class="sidebar-link" :class="{ active: active === 'overview' }" @click="goOverview">
         首页总览
+      </button>
+      <button type="button" class="sidebar-link" :class="{ active: active === 'macro' }" @click="goMacro">
+        宏观指标
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'stocks' }" @click="goStocks">
         个股行情

@@ -9,6 +9,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineWidth,
+  type Logical,
   type LogicalRange,
   type MouseEventParams,
   type SeriesType,
@@ -33,6 +34,8 @@ import type {
   IndexCnOptionSeries,
   IndexCnOptionVixPoint,
   IndexEmotionPoint,
+  IndexFundPurchaseLimitPoint,
+  IndexMarginTradingPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
@@ -61,6 +64,8 @@ type PanelKey =
   | 'cnOptionVix'
   | 'cffexNetShortDelta'
   | 'basisDelta'
+  | 'fundPurchaseLimit'
+  | 'marginTrading'
   | 'usVix'
   | 'usFearGreed'
   | 'usHedge'
@@ -81,8 +86,11 @@ type CffexNetShortDeltaPayloadKey =
 type BasisDeltaWindow = CffexNetShortDeltaWindow
 type BasisDeltaMetricKey = 'main' | 'month'
 type BasisDeltaPayloadKey = `${BasisDeltaMetricKey}_delta_${BasisDeltaWindow}d`
+type FundPurchaseLimitMetricKey = 'count' | 'pct'
+type MarginTradingMetricKey = 'financing' | 'securitiesLending' | 'total' | 'netBuy'
 type UsCreditMetricKey = 'hyOas' | 'change5d'
 type BasisMetricKey = 'adjusted' | 'main'
+const CNY_PER_YI = 100_000_000
 type AnySeries = ISeriesApi<SeriesType, Time>
 type LineSeriesApi = ISeriesApi<'Line', Time>
 type HistogramSeriesApi = ISeriesApi<'Histogram', Time>
@@ -111,6 +119,8 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'cnOptionVix',
   'cffexNetShortDelta',
   'basisDelta',
+  'fundPurchaseLimit',
+  'marginTrading',
   'usVix',
   'usFearGreed',
   'usHedge',
@@ -143,6 +153,10 @@ const props = withDefaults(
     cnOptionSeries?: IndexCnOptionSeries[]
     cffexNetShortDeltaPoints?: IndexCffexNetShortDeltaPoint[]
     basisDeltaPoints?: IndexBasisDeltaPoint[]
+    fundPurchaseLimitPoints?: IndexFundPurchaseLimitPoint[]
+    supportsFundPurchaseLimitPanel?: boolean
+    marginTradingPoints?: IndexMarginTradingPoint[]
+    supportsMarginTradingPanel?: boolean
     supportsCnOptionPutCallPanel?: boolean
     usVixPoints?: IndexUsVixPoint[]
     usFearGreedPoints?: IndexUsFearGreedPoint[]
@@ -187,6 +201,10 @@ const props = withDefaults(
     cnOptionSeries: () => [],
     cffexNetShortDeltaPoints: () => [],
     basisDeltaPoints: () => [],
+    fundPurchaseLimitPoints: () => [],
+    supportsFundPurchaseLimitPanel: false,
+    marginTradingPoints: () => [],
+    supportsMarginTradingPanel: false,
     supportsCnOptionPutCallPanel: false,
     usVixPoints: () => [],
     usFearGreedPoints: () => [],
@@ -232,6 +250,8 @@ const cnFlowPutCallContainerRef = ref<HTMLDivElement | null>(null)
 const cnOptionVixContainerRef = ref<HTMLDivElement | null>(null)
 const cffexNetShortDeltaContainerRef = ref<HTMLDivElement | null>(null)
 const basisDeltaContainerRef = ref<HTMLDivElement | null>(null)
+const fundPurchaseLimitContainerRef = ref<HTMLDivElement | null>(null)
+const marginTradingContainerRef = ref<HTMLDivElement | null>(null)
 const usVixContainerRef = ref<HTMLDivElement | null>(null)
 const usFearGreedContainerRef = ref<HTMLDivElement | null>(null)
 const usHedgeContainerRef = ref<HTMLDivElement | null>(null)
@@ -252,6 +272,8 @@ const activeCffexNetShortDeltaSource = ref<CffexNetShortDeltaSource>('top20')
 const activeCffexNetShortDeltaWindow = ref<CffexNetShortDeltaWindow>(7)
 const activeBasisDeltaMetric = ref<BasisDeltaMetricKey>('main')
 const activeBasisDeltaWindow = ref<BasisDeltaWindow>(7)
+const activeFundPurchaseLimitMetric = ref<FundPurchaseLimitMetricKey>('count')
+const activeMarginTradingMetric = ref<MarginTradingMetricKey>('financing')
 const activeUsCreditKey = ref<UsCreditMetricKey>('hyOas')
 const activeBasisKey = ref<BasisMetricKey>('adjusted')
 
@@ -282,6 +304,8 @@ let cffexNetShortDeltaSeries: LineSeriesApi | null = null
 let cffexNetShortDeltaReferenceSeries: LineSeriesApi | null = null
 let basisDeltaSeries: LineSeriesApi | null = null
 let basisDeltaReferenceSeries: LineSeriesApi | null = null
+let fundPurchaseLimitSeries: LineSeriesApi | null = null
+let marginTradingSeries: LineSeriesApi | null = null
 let usVixSeries: CandleSeriesApi | null = null
 let usFearGreedSeries: LineSeriesApi | null = null
 let usHedgeSeries: LineSeriesApi | null = null
@@ -318,6 +342,8 @@ const visiblePanelOptions = computed<SubPanelOption[]>(() => [
   },
   { key: 'cffexNetShortDelta', label: '净空单增量', available: props.supportsAuxiliaryPanels },
   { key: 'basisDelta', label: '期现差变化', available: props.supportsAuxiliaryPanels },
+  { key: 'fundPurchaseLimit', label: '公募限购', available: props.supportsFundPurchaseLimitPanel },
+  { key: 'marginTrading', label: '融资融券', available: props.supportsMarginTradingPanel },
   { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
   { key: 'usFearGreed', label: '恐贪', available: props.supportsUsFearGreedPanel },
   { key: 'usHedge', label: '对冲代理', available: props.supportsUsHedgeProxyPanel },
@@ -354,6 +380,8 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   if (panelKey === 'cnOptionVix') return cnOptionVixContainerRef.value
   if (panelKey === 'cffexNetShortDelta') return cffexNetShortDeltaContainerRef.value
   if (panelKey === 'basisDelta') return basisDeltaContainerRef.value
+  if (panelKey === 'fundPurchaseLimit') return fundPurchaseLimitContainerRef.value
+  if (panelKey === 'marginTrading') return marginTradingContainerRef.value
   if (panelKey === 'usVix') return usVixContainerRef.value
   if (panelKey === 'usFearGreed') return usFearGreedContainerRef.value
   if (panelKey === 'usHedge') return usHedgeContainerRef.value
@@ -524,6 +552,8 @@ const quantDataset = computed(() =>
       includeCnOptionFlowPutCall: props.supportsCnOptionPutCallPanel,
       includeCffexNetShortDelta: props.supportsAuxiliaryPanels,
       includeBasisDelta: props.supportsAuxiliaryPanels,
+      includeFundPurchaseLimit: props.supportsFundPurchaseLimitPanel,
+      includeMarginTrading: props.supportsMarginTradingPanel,
       includeUsVix: props.supportsUsVixPanel,
       includeUsFearGreed: props.supportsUsFearGreedPanel,
       includeUsHedge: props.supportsUsHedgeProxyPanel,
@@ -539,6 +569,8 @@ const quantDataset = computed(() =>
       cnOptionSeries: props.cnOptionSeries,
       cffexNetShortDeltaPoints: props.cffexNetShortDeltaPoints,
       basisDeltaPoints: props.basisDeltaPoints,
+      fundPurchaseLimitPoints: props.fundPurchaseLimitPoints,
+      marginTradingPoints: props.marginTradingPoints,
       usTreasuryYieldPoints: props.usTreasuryYieldPoints,
       usCreditSpreadPoints: props.usCreditSpreadPoints,
     },
@@ -816,9 +848,42 @@ function buildCnOptionVixSummaryRows(item: IndexCnOptionVixPoint | undefined): S
   const nextLabel = item?.next_contract_month
     ? `${item.next_contract_month} / ${item.next_strike_count ?? '-'}档`
     : '-'
+  const comparisonRow = (
+    label: string,
+    calculated: number | null | undefined,
+    reference: number | null | undefined,
+    error: number | null | undefined,
+    errorPct: number | null | undefined,
+  ): SummaryRow => ({
+    label,
+    value: `${formatMetric(calculated)} / ${formatMetric(reference)}`,
+    title: error === null || error === undefined
+      ? undefined
+      : `自算减采集：${formatSignedMetric(error)}（${formatSignedPercent(errorPct)}）`,
+  })
+  const validationLabel = !item?.uses_minute_ohlc
+    ? '未用分钟线'
+    : item.reference_match_type === 'direct_product'
+      ? '同ETF直接校验'
+      : item.reference_match_type === 'same_index_proxy'
+        ? '同指数代理校验'
+        : '无采集参照'
+  const minuteCoverage = item?.uses_minute_ohlc
+    ? `${item.minute_mid_quote_count ?? '-'}/${item.minute_count ?? '-'}`
+    : '-'
   return [
-    { label: 'VIX开', value: formatMetric(item?.vix_open) },
-    { label: 'VIX收', value: formatMetric(item?.vix_close) },
+    comparisonRow('开盘(算/采)', item?.vix_open, item?.reference_vix_open, item?.open_error, item?.open_error_pct),
+    comparisonRow('最高(算/采)', item?.vix_high, item?.reference_vix_high, item?.high_error, item?.high_error_pct),
+    comparisonRow('最低(算/采)', item?.vix_low, item?.reference_vix_low, item?.low_error, item?.low_error_pct),
+    comparisonRow('收盘(算/采)', item?.vix_close, item?.reference_vix_close, item?.close_error, item?.close_error_pct),
+    {
+      label: '平均绝对误差',
+      value: item?.ohlc_mean_abs_error === null || item?.ohlc_mean_abs_error === undefined
+        ? '-'
+        : `${formatMetric(item.ohlc_mean_abs_error)} / ${formatPercent(item.ohlc_mean_abs_pct_error)}`,
+    },
+    { label: '分钟双边/总数', value: minuteCoverage },
+    { label: '校验口径', value: validationLabel },
     { label: '近月', value: nearLabel },
     { label: '次月', value: nextLabel },
   ]
@@ -1005,6 +1070,55 @@ const basisDeltaSeriesData = computed(() => {
     rawDate: item.trade_date,
     value: getBasisDeltaMetricValue(rowByDate.get(item.trade_date), activeMetric, activeWindow),
   }))
+})
+
+const fundPurchaseLimitMetricConfig: Record<FundPurchaseLimitMetricKey, { label: string; color: string }> = {
+  count: { label: '大额限购家数', color: '#2563eb' },
+  pct: { label: '大额限购比例', color: '#f97316' },
+}
+
+const fundPurchaseLimitPointByDate = computed(
+  () => new Map(props.fundPurchaseLimitPoints.map((item) => [item.trade_date, item])),
+)
+
+const fundPurchaseLimitSeriesData = computed(() => {
+  const activeMetric = activeFundPurchaseLimitMetric.value
+  return sortedCandles.value.map((item) => {
+    const point = fundPurchaseLimitPointByDate.value.get(item.trade_date)
+    return {
+      time: item.trade_date as Time,
+      rawDate: item.trade_date,
+      value: toNullableNumber(activeMetric === 'count' ? point?.limited_fund_count : point?.limited_fund_pct),
+    }
+  })
+})
+
+const marginTradingMetricConfig: Record<MarginTradingMetricKey, {
+  label: string
+  color: string
+  field: keyof IndexMarginTradingPoint
+}> = {
+  financing: { label: '融资余额', color: '#2563eb', field: 'financing_balance' },
+  securitiesLending: { label: '融券余额', color: '#7c3aed', field: 'securities_lending_balance' },
+  total: { label: '两融余额', color: '#0f766e', field: 'total_balance' },
+  netBuy: { label: '融资净买入', color: '#dc2626', field: 'financing_net_buy_amount' },
+}
+
+const marginTradingPointByDate = computed(
+  () => new Map(props.marginTradingPoints.map((item) => [item.trade_date, item])),
+)
+
+const marginTradingSeriesData = computed(() => {
+  const field = marginTradingMetricConfig[activeMarginTradingMetric.value].field
+  return sortedCandles.value.map((item) => {
+    const point = marginTradingPointByDate.value.get(item.trade_date)
+    const rawValue = toNullableNumber(point?.[field] as number | null | undefined)
+    return {
+      time: item.trade_date as Time,
+      rawDate: item.trade_date,
+      value: rawValue === null ? null : rawValue / CNY_PER_YI,
+    }
+  })
 })
 
 const usPutCallSeriesData = computed(() => {
@@ -1430,6 +1544,28 @@ const basisDeltaWindowLegend = computed(() =>
   })),
 )
 
+const fundPurchaseLimitLegend = computed(() =>
+  (Object.entries(fundPurchaseLimitMetricConfig) as Array<
+    [FundPurchaseLimitMetricKey, { label: string; color: string }]
+  >).map(([key, item]) => ({
+    key,
+    label: item.label,
+    color: item.color,
+    active: activeFundPurchaseLimitMetric.value === key,
+  })),
+)
+
+const marginTradingLegend = computed(() =>
+  (Object.entries(marginTradingMetricConfig) as Array<
+    [MarginTradingMetricKey, (typeof marginTradingMetricConfig)[MarginTradingMetricKey]]
+  >).map(([key, item]) => ({
+    key,
+    label: item.label,
+    color: item.color,
+    active: activeMarginTradingMetric.value === key,
+  })),
+)
+
 const usTreasuryLegend = computed(() => [
   {
     label: quantDataset.value.usTreasuryYield?.spread10y2y.label ?? '10Y-2Y利差',
@@ -1524,6 +1660,16 @@ function selectBasisDeltaWindow(window: BasisDeltaWindow) {
   updateAllSeries()
 }
 
+function selectFundPurchaseLimitMetric(metric: FundPurchaseLimitMetricKey) {
+  activeFundPurchaseLimitMetric.value = metric
+  updateAllSeries()
+}
+
+function selectMarginTradingMetric(metric: MarginTradingMetricKey) {
+  activeMarginTradingMetric.value = metric
+  updateAllSeries()
+}
+
 function selectUsCreditMetric(key: UsCreditMetricKey) {
   activeUsCreditKey.value = key
   updateAllSeries()
@@ -1545,9 +1691,43 @@ function formatMetric(value: number | null | undefined) {
   return rounded.replace(/\.?0+$/, '')
 }
 
+function formatSignedMetric(value: number | null | undefined) {
+  const formatted = formatMetric(value)
+  if (formatted === '-') return '-'
+  return value !== undefined && value !== null && value > 0 ? `+${formatted}` : formatted
+}
+
+function formatPercent(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? '-'
+    : `${value.toFixed(2)}%`
+}
+
+function formatSignedPercent(value: number | null | undefined) {
+  const formatted = formatPercent(value)
+  if (formatted === '-') return '-'
+  return value !== undefined && value !== null && value > 0 ? `+${formatted}` : formatted
+}
+
 function formatMetricWithSuffix(value: number | null | undefined, suffix: string) {
   const formatted = formatMetric(value)
   return formatted === '-' ? '-' : `${formatted}${suffix}`
+}
+
+function formatCnyYi(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  const amountYi = value / CNY_PER_YI
+  return `${amountYi.toLocaleString('zh-CN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}亿元`
+}
+
+function formatYiAxisValue(value: number) {
+  return `${value.toLocaleString('zh-CN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}亿`
 }
 
 
@@ -1696,6 +1876,16 @@ const indicatorValueMaps = computed(() => {
         .filter((item) => item.value !== null)
         .map((item) => [item.rawDate, item.value as number]),
     ),
+    fundPurchaseLimit: new Map(
+      fundPurchaseLimitSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
+    marginTrading: new Map(
+      marginTradingSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
     usVix: buildValueMap(quantDataset.value.usVix?.data ?? []),
     usFearGreed: buildValueMap(quantDataset.value.usFearGreed?.data ?? []),
     usHedge: buildValueMap(quantDataset.value.usHedgeProxy?.data ?? []),
@@ -1782,6 +1972,21 @@ const activeIndicatorSnapshot = computed(() => {
     },
     basisDelta: {
       value: maps.basisDelta.get(tradeDate) ?? null,
+    },
+    fundPurchaseLimit: {
+      value: maps.fundPurchaseLimit.get(tradeDate) ?? null,
+      limitedCount: fundPurchaseLimitPointByDate.value.get(tradeDate)?.limited_fund_count ?? null,
+      totalCount: fundPurchaseLimitPointByDate.value.get(tradeDate)?.total_fund_count ?? null,
+      limitedPct: fundPurchaseLimitPointByDate.value.get(tradeDate)?.limited_fund_pct ?? null,
+    },
+    marginTrading: {
+      value: maps.marginTrading.get(tradeDate) ?? null,
+      financing: marginTradingPointByDate.value.get(tradeDate)?.financing_balance ?? null,
+      securitiesLending:
+        marginTradingPointByDate.value.get(tradeDate)?.securities_lending_balance ?? null,
+      total: marginTradingPointByDate.value.get(tradeDate)?.total_balance ?? null,
+      netBuy:
+        marginTradingPointByDate.value.get(tradeDate)?.financing_net_buy_amount ?? null,
     },
     usVix: {
       open: usVixPointByDate.value.get(tradeDate)?.open_value ?? null,
@@ -1916,6 +2121,35 @@ const summaryCards = computed<SummaryCard[]>(() => {
               ...basisContractRollRows,
               { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
               { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsFundPurchaseLimitPanel
+      ? [
+          {
+            key: 'fund-purchase-limit',
+            title: 'A股公募基金大额限购',
+            hint: fundPurchaseLimitMetricConfig[activeFundPurchaseLimitMetric.value].label,
+            rows: [
+              { label: '大额限购家数', value: formatMetric(indicator.fundPurchaseLimit.limitedCount) },
+              { label: '基金总数', value: formatMetric(indicator.fundPurchaseLimit.totalCount) },
+              { label: '大额限购比例', value: formatPercent(indicator.fundPurchaseLimit.limitedPct) },
+            ],
+          },
+        ]
+      : []),
+    ...(props.supportsMarginTradingPanel
+      ? [
+          {
+            key: 'margin-trading',
+            title: 'A股融资融券',
+            hint: marginTradingMetricConfig[activeMarginTradingMetric.value].label,
+            rows: [
+              { label: '融资余额', value: formatCnyYi(indicator.marginTrading.financing) },
+              { label: '融券余额', value: formatCnyYi(indicator.marginTrading.securitiesLending) },
+              { label: '两融余额', value: formatCnyYi(indicator.marginTrading.total) },
+              { label: '融资净买入', value: formatCnyYi(indicator.marginTrading.netBuy) },
             ],
           },
         ]
@@ -2339,10 +2573,22 @@ function zoomChart(direction: 'in' | 'out') {
   const center = (visibleRange.from + visibleRange.to) / 2
 
   shouldResetVisibleRange = false
+  if (direction === 'out' && clampedSpan >= maxSpan - 0.5) {
+    const fullLoadedRange: LogicalRange = {
+      from: -10 as Logical,
+      to: (mainCandles.value.length + 10) as Logical,
+    }
+    mainChart.timeScale().setVisibleLogicalRange(fullLoadedRange)
+    maybeRequestMoreHistory({ from: 0 as Logical, to: 0 as Logical })
+    return
+  }
   mainChart.timeScale().setVisibleLogicalRange({
     from: center - clampedSpan / 2,
     to: center + clampedSpan / 2,
   })
+  if (direction === 'out') {
+    maybeRequestMoreHistory({ from: 0 as Logical, to: 0 as Logical })
+  }
 }
 
 function cleanupHighlightBindings() {
@@ -2583,6 +2829,52 @@ function updateAllSeries() {
     panelValueMaps.delete('basisDelta')
   }
 
+  if (isSubPanelVisible('fundPurchaseLimit')) {
+    if (!fundPurchaseLimitSeries) return
+    const metricConfig = fundPurchaseLimitMetricConfig[activeFundPurchaseLimitMetric.value]
+    fundPurchaseLimitSeries.applyOptions({ color: metricConfig.color })
+    fundPurchaseLimitSeries.setData(
+      fundPurchaseLimitSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    panelValueMaps.set(
+      'fundPurchaseLimit',
+      new Map(
+        fundPurchaseLimitSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('fundPurchaseLimit')
+  }
+
+  if (isSubPanelVisible('marginTrading')) {
+    if (!marginTradingSeries) return
+    const metricConfig = marginTradingMetricConfig[activeMarginTradingMetric.value]
+    marginTradingSeries.applyOptions({ color: metricConfig.color })
+    marginTradingSeries.setData(
+      marginTradingSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    panelValueMaps.set(
+      'marginTrading',
+      new Map(
+        marginTradingSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('marginTrading')
+  }
+
   if (isSubPanelVisible('usVix')) {
     if (!usVixSeries) return
     usVixSeries.setData(toVixCandleData(usVixSeriesData.value))
@@ -2720,6 +3012,12 @@ function renderCharts() {
     if (isSubPanelVisible('basisDelta')) {
       charts.basisDelta = createBaseChart(basisDeltaContainerRef.value!, true)
     }
+    if (isSubPanelVisible('fundPurchaseLimit')) {
+      charts.fundPurchaseLimit = createBaseChart(fundPurchaseLimitContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('marginTrading')) {
+      charts.marginTrading = createBaseChart(marginTradingContainerRef.value!, true)
+    }
     if (isSubPanelVisible('usVix')) {
       charts.usVix = createBaseChart(usVixContainerRef.value!, true)
     }
@@ -2799,6 +3097,27 @@ function renderCharts() {
       ? addLineSeries(charts.basisDelta, basisDeltaMetricConfig[activeBasisDeltaMetric.value].color, 2)
       : null
     basisDeltaReferenceSeries = charts.basisDelta ? addReferenceLineSeries(charts.basisDelta, '#dc2626') : null
+    fundPurchaseLimitSeries = charts.fundPurchaseLimit
+      ? addLineSeries(
+          charts.fundPurchaseLimit,
+          fundPurchaseLimitMetricConfig[activeFundPurchaseLimitMetric.value].color,
+          2,
+        )
+      : null
+    marginTradingSeries = charts.marginTrading
+      ? addLineSeries(
+          charts.marginTrading,
+          marginTradingMetricConfig[activeMarginTradingMetric.value].color,
+          2,
+        )
+      : null
+    marginTradingSeries?.applyOptions({
+      priceFormat: {
+        type: 'custom',
+        minMove: 0.01,
+        formatter: formatYiAxisValue,
+      },
+    })
     usVixSeries = charts.usVix ? addVixCandles(charts.usVix) : null
     usFearGreedSeries = charts.usFearGreed ? addLineSeries(charts.usFearGreed, quantDataset.value.usFearGreed?.color ?? '#dc2626', 2) : null
     usHedgeSeries = charts.usHedge ? addLineSeries(charts.usHedge, quantDataset.value.usHedgeProxy?.color ?? '#0f766e', 2) : null
@@ -2826,6 +3145,8 @@ function renderCharts() {
     if (cnOptionVixSeries) primarySeriesMap.set('cnOptionVix', cnOptionVixSeries)
     if (cffexNetShortDeltaSeries) primarySeriesMap.set('cffexNetShortDelta', cffexNetShortDeltaSeries)
     if (basisDeltaSeries) primarySeriesMap.set('basisDelta', basisDeltaSeries)
+    if (fundPurchaseLimitSeries) primarySeriesMap.set('fundPurchaseLimit', fundPurchaseLimitSeries)
+    if (marginTradingSeries) primarySeriesMap.set('marginTrading', marginTradingSeries)
     if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
     if (usFearGreedSeries) primarySeriesMap.set('usFearGreed', usFearGreedSeries)
     if (usHedgeSeries) primarySeriesMap.set('usHedge', usHedgeSeries)
@@ -2864,6 +3185,12 @@ function renderCharts() {
     }
     if (props.supportsAuxiliaryPanels) {
       attachHighlightPrimitive(cffexNetShortDeltaSeries)
+    }
+    if (props.supportsFundPurchaseLimitPanel) {
+      attachHighlightPrimitive(fundPurchaseLimitSeries)
+    }
+    if (props.supportsMarginTradingPanel) {
+      attachHighlightPrimitive(marginTradingSeries)
     }
     if (props.supportsUsVixPanel) {
       attachHighlightPrimitive(usVixSeries)
@@ -2933,6 +3260,8 @@ function disposeCharts() {
   cffexNetShortDeltaReferenceSeries = null
   basisDeltaSeries = null
   basisDeltaReferenceSeries = null
+  fundPurchaseLimitSeries = null
+  marginTradingSeries = null
   usVixSeries = null
   usFearGreedSeries = null
   usHedgeSeries = null
@@ -3020,6 +3349,14 @@ watch(basisDeltaSeriesData, () => {
   if (props.supportsAuxiliaryPanels) updateAllSeries()
 })
 
+watch(fundPurchaseLimitSeriesData, () => {
+  if (props.supportsFundPurchaseLimitPanel) updateAllSeries()
+})
+
+watch(marginTradingSeriesData, () => {
+  if (props.supportsMarginTradingPanel) updateAllSeries()
+})
+
 watch(usTreasurySpread10y2ySeriesData, () => {
   if (props.supportsUsTreasuryYieldPanel) updateAllSeries()
 })
@@ -3034,7 +3371,7 @@ watch(usCreditSeriesData, () => {
 
 watch(
   () =>
-    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}:${availableSubPanelOptions.value.map((item) => item.key).join('|')}`,
+    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsFundPurchaseLimitPanel}:${props.supportsMarginTradingPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}:${availableSubPanelOptions.value.map((item) => item.key).join('|')}`,
   async () => {
     await rebuildChartsPreservingRange()
   },
@@ -3257,6 +3594,28 @@ onBeforeUnmount(() => {
     <div v-if="isSubPanelVisible('cffexNetShortDelta')" class="quant-panel"><div class="quant-panel-head"><h3>股指期货净空单增量</h3><div class="quant-legend quant-legend-groups"><div class="quant-legend-group"><span class="quant-legend-group-label">口径</span><button v-for="item in cffexNetShortDeltaSourceLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCffexNetShortDeltaSource(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div><div class="quant-legend-group"><span class="quant-legend-group-label">窗口</span><button v-for="item in cffexNetShortDeltaWindowLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectCffexNetShortDeltaWindow(item.key)">{{ item.label }}</button></div></div></div><p v-if="!cffexNetShortDeltaPoints.length" class="muted">当前范围暂无中金所净空单增量数据</p><div ref="cffexNetShortDeltaContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
     <div v-if="isSubPanelVisible('basisDelta')" class="quant-panel"><div class="quant-panel-head"><h3>期现差变化</h3><div class="quant-legend quant-legend-groups"><div class="quant-legend-group"><span class="quant-legend-group-label">口径</span><button v-for="item in basisDeltaMetricLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectBasisDeltaMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div><div class="quant-legend-group"><span class="quant-legend-group-label">窗口</span><button v-for="item in basisDeltaWindowLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectBasisDeltaWindow(item.key)">{{ item.label }}</button></div></div></div><p v-if="!basisDeltaPoints.length" class="muted">当前范围暂无期现差变化数据</p><div ref="basisDeltaContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+
+    <div v-if="isSubPanelVisible('fundPurchaseLimit')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>A股公募基金大额限购</h3>
+        <div class="quant-legend">
+          <button v-for="item in fundPurchaseLimitLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectFundPurchaseLimitMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button>
+        </div>
+      </div>
+      <p v-if="!fundPurchaseLimitPoints.length" class="muted">当前范围暂无公募基金大额限购数据</p>
+      <div ref="fundPurchaseLimitContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div v-if="isSubPanelVisible('marginTrading')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>A股融资融券（亿元）</h3>
+        <div class="quant-legend">
+          <button v-for="item in marginTradingLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectMarginTradingMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button>
+        </div>
+      </div>
+      <p v-if="!marginTradingPoints.length" class="muted">当前范围暂无融资融券统计数据</p>
+      <div ref="marginTradingContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
 
     <div v-if="isSubPanelVisible('usVix')" class="quant-panel"><div class="quant-panel-head"><h3>美股 VIX</h3><div class="quant-legend"><span v-for="item in usVixLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usVixPoints.length" class="muted">当前范围暂无美股 VIX 数据</p><div ref="usVixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 

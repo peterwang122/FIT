@@ -1,3 +1,5 @@
+import type { KlineCandle } from './stock'
+
 export interface MaParams {
   periods: [number, number, number, number]
 }
@@ -85,6 +87,8 @@ export type QuantFilterFieldKey =
   | 'vix-high'
   | 'vix-low'
   | 'vix-close'
+  | 'reference-vix-hs300-high'
+  | 'reference-vix-csi500-high'
   | 'cn-option-put-call-current'
   | 'cn-option-put-call-next'
   | 'cn-option-put-call-quarter-1'
@@ -123,6 +127,12 @@ export type QuantFilterFieldKey =
   | 'cffex-net-short-citic-delta-30d'
   | 'cffex-net-short-citic-delta-60d'
   | 'cffex-net-short-citic-delta-120d'
+  | 'fund-purchase-limit-count'
+  | 'fund-purchase-limit-pct'
+  | 'margin-financing-balance'
+  | 'margin-securities-lending-balance'
+  | 'margin-total-balance'
+  | 'margin-financing-net-buy'
   | 'us-vix-open'
   | 'us-vix-high'
   | 'us-vix-low'
@@ -171,6 +181,8 @@ export type QuantFilterGroupKey =
   | 'hedge'
   | 'put-call'
   | 'net-short'
+  | 'fund-limit'
+  | 'margin-trading'
   | 'treasury'
   | 'credit'
   | 'change'
@@ -258,7 +270,7 @@ export type QuantExecutionPriceMode = 'next_open' | 'next_close' | 'next_best'
 export type QuantConflictMode = 'sell_first' | 'buy_first' | 'skip'
 export type QuantSignalColor = 'blue' | 'red'
 export type QuantBollFilterKey = 'boll-upper' | 'boll-middle' | 'boll-lower'
-export type QuantRuleOperator = 'gt' | 'lt'
+export type QuantRuleOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'episode_start'
 export type QuantRuleTargetKey = `field:${QuantFilterFieldKey}` | 'boll:close' | 'boll:intraday'
 
 export interface QuantSavedBollFilter {
@@ -362,6 +374,25 @@ export interface QuantScanSellTriggerConfig {
   target: QuantScanSellTriggerTarget
 }
 
+export interface QuantResearchOptionTemplate {
+  enabled: boolean
+  report_generated_at?: string | null
+  direction_mode: 'dynamic'
+  product_code: string
+  product_name: string
+  exchange: 'SSE' | 'SZSE' | 'CFFEX'
+  option_type: 'CALL' | 'PUT'
+  strategy_type: 'long_call' | 'long_put'
+  expiry_bucket: 'current' | 'next' | 'quarter_1' | 'quarter_2'
+  expiry_bucket_label: string
+  moneyness: 'itm_1' | 'itm_2' | 'itm_3' | 'atm' | 'otm_1' | 'otm_2' | 'otm_3'
+  moneyness_label: string
+  holding_days: number
+  slippage: number
+  initial_capital: number
+  contracts_per_trade: number
+}
+
 export interface QuantScanTradeConfig {
   initial_capital: number
   buy_amount_per_event: number
@@ -421,6 +452,7 @@ export interface QuantStrategyConfig {
   buy_sequence_groups: QuantSequenceGroupSet
   sell_sequence_groups: QuantSequenceGroupSet
   scan_trade_config: QuantScanTradeConfig
+  research_option_template: QuantResearchOptionTemplate | null
   blue_filter_groups: QuantFilterGroupSet
   red_filter_groups: QuantFilterGroupSet
   blue_filters: QuantFilterApplied
@@ -453,6 +485,7 @@ export interface QuantStrategyPayload {
   buy_sequence_groups: QuantSequenceGroupSet
   sell_sequence_groups: QuantSequenceGroupSet
   scan_trade_config: QuantScanTradeConfig
+  research_option_template?: QuantResearchOptionTemplate | null
   blue_filter_groups: QuantFilterGroupSet
   red_filter_groups: QuantFilterGroupSet
   blue_filters: QuantFilterApplied
@@ -470,6 +503,15 @@ export interface QuantStrategyPayload {
   execution_price_mode: QuantExecutionPriceMode
 }
 
+export interface QuantStrategyTargetChartResponse {
+  target_type: QuantStrategyType
+  target_market: QuantTargetMarket
+  target_code: string
+  target_name: string
+  candles: KlineCandle[]
+  highlight_bands: QuantHighlightBand[]
+}
+
 export interface QuantEquityCurvePoint {
   trade_date: string
   nav: number
@@ -479,6 +521,49 @@ export interface QuantEquityCurvePoint {
   position_value?: number | null
   position_pct: number
   position_bucket: 'flat' | 'light' | 'medium' | 'heavy' | 'full' | null
+}
+
+export type QuantOptionTradeStatus = 'completed' | 'pending' | 'direction_mismatch' | 'not_listed' | 'unavailable'
+
+export interface QuantOptionTrade {
+  signal_date: string
+  product_code: string
+  product_name: string
+  exchange: 'SSE' | 'SZSE' | 'CFFEX'
+  option_type: 'CALL' | 'PUT'
+  expiry_bucket: QuantResearchOptionTemplate['expiry_bucket']
+  expiry_bucket_label: string
+  moneyness: QuantResearchOptionTemplate['moneyness']
+  moneyness_label: string
+  holding_days: number
+  direction_reason: string
+  prior_20d_return_pct: number | null
+  prior_40d_return_pct: number | null
+  contract_code: string | null
+  contract_month: string | null
+  contract_month_label: string | null
+  strike_price: number | null
+  contract_unit: number | null
+  contract_quantity: number | null
+  buy_date: string | null
+  buy_price: number | null
+  buy_amount: number | null
+  sell_date: string | null
+  sell_price: number | null
+  sell_amount: number | null
+  profit_per_contract: number | null
+  return_pct: number | null
+  status: QuantOptionTradeStatus
+  status_reason: string
+}
+
+export interface QuantOptionTradeSummary {
+  signal_count: number
+  completed_count: number
+  pending_count: number
+  direction_mismatch_count: number
+  not_listed_count: number
+  unavailable_count: number
 }
 
 export interface QuantPositionPair {
@@ -504,6 +589,17 @@ export interface QuantEquityCurveResponse {
   max_drawdown_pct: number
   points: QuantEquityCurvePoint[]
   position_optimization: QuantPositionOptimizationResult
+}
+
+export interface QuantOptionTradeResult {
+  template: QuantResearchOptionTemplate
+  trades: QuantOptionTrade[]
+  summary: QuantOptionTradeSummary
+  initial_capital: number
+  cumulative_return_pct: number
+  annualized_return_pct: number
+  max_drawdown_pct: number
+  points: QuantEquityCurvePoint[]
 }
 
 export interface QuantSequenceScanPreviewResponse {

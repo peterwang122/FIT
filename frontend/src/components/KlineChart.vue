@@ -29,6 +29,7 @@ const props = withDefaults(
     loadingMoreHistory?: boolean
     highlightBands?: QuantHighlightBand[]
     overlayLines?: QuantChartOverlayLine[]
+    focusTradeDate?: string | null
   }>(),
   {
     hasMoreHistory: false,
@@ -90,6 +91,8 @@ const dataMap = computed(() => {
   return result
 })
 
+const highlightMap = computed(() => new Map(props.highlightBands.map((item) => [item.tradeDate, item])))
+
 const hasFixedHeight = computed(() => typeof props.height === "number")
 
 const shellStyle = computed(() => {
@@ -106,6 +109,17 @@ const containerStyle = computed(() => {
 
 function applyVisibleRange() {
   if (!chart) return
+
+  if (props.focusTradeDate && klineData.value.length) {
+    const focusIndex = klineData.value.findIndex((item) => String(item.time) === props.focusTradeDate)
+    if (focusIndex >= 0) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, focusIndex - 45),
+        to: Math.min(klineData.value.length - 1, focusIndex + 45),
+      })
+      return
+    }
+  }
 
   if (!props.defaultVisibleDays || klineData.value.length === 0) {
     chart.timeScale().fitContent()
@@ -227,6 +241,15 @@ function bindCrosshairTooltip() {
       tooltipRef.value!.style.display = 'none'
       return
     }
+    const highlight = highlightMap.value.get(key)
+    const blueGroups = highlight?.blueHitGroups?.length ? highlight.blueHitGroups.join(' / ') : '是'
+    const redGroups = highlight?.redHitGroups?.length ? highlight.redHitGroups.join(' / ') : '是'
+    const highlightRows = highlight
+      ? [
+          highlight.color === 'blue' || highlight.color === 'purple' ? `<div>蓝色命中: ${blueGroups}</div>` : '',
+          highlight.color === 'red' || highlight.color === 'purple' ? `<div>红色命中: ${redGroups}</div>` : '',
+        ].join('')
+      : ''
 
     tooltipRef.value!.style.display = 'block'
     tooltipRef.value!.style.left = `${Math.min(param.point.x + 16, containerRef.value!.clientWidth - 220)}px`
@@ -239,6 +262,7 @@ function bindCrosshairTooltip() {
       <div>PE: ${row.pe_ttm} PB: ${row.pb}</div>
       <div>总市值: ${row.total_market_value}</div>
       <div>流通市值: ${row.circulating_market_value}</div>
+      ${highlightRows}
     `
   })
 }
@@ -326,6 +350,13 @@ watch(
   () => {
     shouldResetVisibleRange = true
     lastRequestedHistoryBoundary = null
+  },
+)
+
+watch(
+  () => props.focusTradeDate,
+  () => {
+    if (chart && klineData.value.length) applyVisibleRange()
   },
 )
 

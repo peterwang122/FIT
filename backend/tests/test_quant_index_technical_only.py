@@ -144,3 +144,18 @@ def test_star_50_backtest_uses_most_liquid_etf():
     assert service.stock_service.requested_etf_code == "588000"
     assert returned_signal_candles == signal_candles
     assert price_rows[0]["close"] == 1
+
+
+def test_star_50_strategy_snapshots_include_collected_vix():
+    service = _service()
+    service._build_index_snapshots = lambda *args: [{"trade_date": "2026-07-03", "values": {"vix-high": 45}}]
+
+    snapshots = service._build_index_snapshots_for_market(
+        "cn",
+        "sh000688",
+        "科创50",
+        {},
+        [{"trade_date": "2026-07-03", "open": 1, "high": 1, "low": 1, "close": 1}],
+    )
+
+    assert snapshots[0]["values"]["vix-high"] == 45

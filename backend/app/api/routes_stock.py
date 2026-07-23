@@ -28,7 +28,9 @@ from app.schemas.stock import (
     QuantSequenceScanPreviewResponse,
     QuantSequenceScanTargetHitsResponse,
     QuantEquityCurveResponse,
+    QuantOptionTradeResultResponse,
     QuantStrategyConfigResponse,
+    QuantStrategyTargetChartResponse,
     QuantStrategySendPayload,
     QuantStrategySavePayload,
     StockCandle,
@@ -230,8 +232,11 @@ def update_quant_strategy(
     current_user: User = Depends(get_current_user),
 ):
     service = QuantService(db)
+    payload_data = payload.model_dump()
+    if "research_option_template" not in payload.model_fields_set:
+        payload_data.pop("research_option_template", None)
     try:
-        item = service.update_strategy(strategy_id, payload.model_dump(), current_user.id)
+        item = service.update_strategy(strategy_id, payload_data, current_user.id)
     except ValueError as exc:
         detail = str(exc)
         status_code = 404 if detail == "strategy not found" else 400
@@ -284,6 +289,51 @@ def get_quant_strategy_equity_curve(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ApiResponse(data=QuantEquityCurveResponse.model_validate(item))
+
+
+@router.get(
+    "/quant/strategies/{strategy_id}/target-chart",
+    response_model=ApiResponse[QuantStrategyTargetChartResponse],
+)
+def get_quant_strategy_target_chart(
+    strategy_id: int,
+    scan_result_id: str | None = Query(default=None),
+    target_code: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = QuantService(db)
+    try:
+        item = service.get_strategy_target_chart(
+            strategy_id,
+            current_user.id,
+            scan_result_id=scan_result_id,
+            target_code=target_code,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if detail in {"strategy not found", "scan result not found", "scan target not found"} else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return ApiResponse(data=QuantStrategyTargetChartResponse.model_validate(item))
+
+
+@router.get(
+    "/quant/strategies/{strategy_id}/option-trades",
+    response_model=ApiResponse[QuantOptionTradeResultResponse],
+)
+def get_quant_strategy_option_trades(
+    strategy_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = QuantService(db)
+    try:
+        item = service.calculate_research_option_trades(strategy_id, current_user.id)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if detail in {"strategy not found", "option trade template not configured"} else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return ApiResponse(data=QuantOptionTradeResultResponse.model_validate(item))
 
 
 @router.post("/quant/sequence/scan-preview", response_model=ApiResponse[QuantSequenceScanPreviewResponse])

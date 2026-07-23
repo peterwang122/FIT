@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import AccountView from '../views/AccountView.vue'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
+import MacroView from '../views/MacroView.vue'
 import MarketsView from '../views/MarketsView.vue'
 import ProgressView from '../views/ProgressView.vue'
 import QuantIndexView from '../views/QuantIndexView.vue'
@@ -11,6 +12,7 @@ import QuantStockView from '../views/QuantStockView.vue'
 import QuantStrategiesView from '../views/QuantStrategiesView.vue'
 import QuantView from '../views/QuantView.vue'
 import ResearchView from '../views/ResearchView.vue'
+import Csi1000FuturesResearchView from '../views/Csi1000FuturesResearchView.vue'
 import VixOptionResearchView from '../views/VixOptionResearchView.vue'
 import StocksView from '../views/StocksView.vue'
 import TasksManageView from '../views/TasksManageView.vue'
@@ -26,6 +28,7 @@ export const router = createRouter({
     { path: '/login', component: LoginView, meta: { public: true } },
     { path: '/account', component: AccountView, meta: { requiresAuth: true } },
     { path: '/', component: HomeView, meta: { requiresAuth: true } },
+    { path: '/macro', component: MacroView, meta: { requiresAuth: true } },
     { path: '/stocks', component: StocksView, meta: { requiresAuth: true } },
     { path: '/markets', component: MarketsView, meta: { requiresAuth: true } },
     {
@@ -58,6 +61,7 @@ export const router = createRouter({
       children: [
         { path: '', redirect: '/research/vix-options' },
         { path: 'vix-options', component: VixOptionResearchView },
+        { path: 'csi1000-futures', component: Csi1000FuturesResearchView },
       ],
     },
     { path: '/progress', component: ProgressView, meta: { requiresAuth: true } },

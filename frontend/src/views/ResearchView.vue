@@ -18,8 +18,11 @@ import AppSidebar from '../components/AppSidebar.vue'
         </div>
 
         <nav class="quant-subnav">
-          <RouterLink to="/research/vix-options" class="quant-subnav-link active">
+          <RouterLink to="/research/vix-options" class="quant-subnav-link" active-class="active">
             VIX底部期权
+          </RouterLink>
+          <RouterLink to="/research/csi1000-futures" class="quant-subnav-link" active-class="active">
+            中证1000期货
           </RouterLink>
         </nav>
       </section>

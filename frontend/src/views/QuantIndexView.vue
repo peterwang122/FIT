@@ -25,6 +25,9 @@ import type {
   IndexDashboardEmotionPoint,
   IndexDashboardResponse,
   IndexEmotionPoint,
+  IndexFundPurchaseLimitPoint,
+  IndexMarginTradingPoint,
+  IndexRelatedVixSeries,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
@@ -79,6 +82,7 @@ type IndexDashboardChunkState = {
   basisPoints: IndexDashboardBasisPoint[]
   breadthPoints: IndexBreadthPoint[]
   vixPoints: IndexVixPoint[]
+  relatedVixSeries: IndexRelatedVixSeries[]
   usVixPoints: IndexUsVixPoint[]
   usFearGreedPoints: IndexUsFearGreedPoint[]
   usHedgeProxyPoints: IndexUsHedgeProxyPoint[]
@@ -88,6 +92,8 @@ type IndexDashboardChunkState = {
   cnOptionSeries: IndexCnOptionSeries[]
   cffexNetShortDeltaPoints: IndexCffexNetShortDeltaPoint[]
   basisDeltaPoints: IndexBasisDeltaPoint[]
+  fundPurchaseLimitPoints: IndexFundPurchaseLimitPoint[]
+  marginTradingPoints: IndexMarginTradingPoint[]
   usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints: IndexUsCreditSpreadPoint[]
   earliestLoadedDate: string | null
@@ -279,6 +285,7 @@ function buildDashboardChunkState(
     | 'basis_points'
     | 'breadth_points'
     | 'vix_points'
+    | 'related_vix_series'
     | 'us_vix_points'
     | 'us_fear_greed_points'
     | 'us_hedge_proxy_points'
@@ -288,6 +295,8 @@ function buildDashboardChunkState(
     | 'cn_option_series'
     | 'cffex_net_short_delta_points'
     | 'basis_delta_points'
+    | 'fund_purchase_limit_points'
+    | 'margin_trading_points'
     | 'us_treasury_yield_points'
     | 'us_credit_spread_points'
   >,
@@ -303,6 +312,7 @@ function buildDashboardChunkState(
     basisPoints: payload.basis_points,
     breadthPoints: payload.breadth_points,
     vixPoints: payload.vix_points,
+    relatedVixSeries: payload.related_vix_series ?? [],
     usVixPoints: payload.us_vix_points ?? [],
     usFearGreedPoints: payload.us_fear_greed_points ?? [],
     usHedgeProxyPoints: payload.us_hedge_proxy_points ?? [],
@@ -312,6 +322,8 @@ function buildDashboardChunkState(
     cnOptionSeries: payload.cn_option_series ?? [],
     cffexNetShortDeltaPoints: payload.cffex_net_short_delta_points ?? [],
     basisDeltaPoints: payload.basis_delta_points ?? [],
+    fundPurchaseLimitPoints: payload.fund_purchase_limit_points ?? [],
+    marginTradingPoints: payload.margin_trading_points ?? [],
     usTreasuryYieldPoints: payload.us_treasury_yield_points ?? [],
     usCreditSpreadPoints: payload.us_credit_spread_points ?? [],
     earliestLoadedDate: payload.candles[0]?.trade_date ?? null,
@@ -480,6 +492,7 @@ const emotionPoints = ref<IndexEmotionPoint[]>([])
 const futuresBasisPoints = ref<FuturesBasisPoint[]>([])
 const breadthPoints = ref<IndexBreadthPoint[]>([])
 const vixPoints = ref<IndexVixPoint[]>([])
+const relatedVixSeries = ref<IndexRelatedVixSeries[]>([])
 const usVixPoints = ref<IndexUsVixPoint[]>([])
 const usFearGreedPoints = ref<IndexUsFearGreedPoint[]>([])
 const usHedgeProxyPoints = ref<IndexUsHedgeProxyPoint[]>([])
@@ -489,6 +502,8 @@ const cnOptionFlowPutCallPoints = ref<IndexCnOptionFlowPutCallPoint[]>([])
 const cnOptionSeries = ref<IndexCnOptionSeries[]>([])
 const cffexNetShortDeltaPoints = ref<IndexCffexNetShortDeltaPoint[]>([])
 const basisDeltaPoints = ref<IndexBasisDeltaPoint[]>([])
+const fundPurchaseLimitPoints = ref<IndexFundPurchaseLimitPoint[]>([])
+const marginTradingPoints = ref<IndexMarginTradingPoint[]>([])
 const usTreasuryYieldPoints = ref<IndexUsTreasuryYieldPoint[]>([])
 const usCreditSpreadPoints = ref<IndexUsCreditSpreadPoint[]>([])
 const loading = ref(false)
@@ -509,6 +524,7 @@ const saveName = ref('')
 const saveLoading = ref(false)
 const saveMessage = ref('')
 const saveError = ref('')
+const loadedStrategyNotes = ref('')
 const showParamsModal = ref(false)
 const loadedStrategyId = ref<number | null>(null)
 let activeDashboardToken = 0
@@ -538,11 +554,23 @@ const supportsCnOptionPutCallPanel = computed(
     isCnMarket.value &&
     OPTION_PUT_CALL_SUPPORTED_INDEX_NAMES.some((item) => item === selectedIndexName.value),
 )
+const supportsFundPurchaseLimitPanel = computed(
+  () => isCnMarket.value && selectedIndexName.value === DEFAULT_INDEX_NAME,
+)
+const supportsMarginTradingPanel = computed(() => isCnMarket.value)
 const supportsUsTreasuryYieldPanel = computed(() => isUsMarket.value)
 const supportsUsCreditSpreadPanel = computed(() => isUsMarket.value)
 const supportsAdjustedBasisPanel = computed(() => isUsMarket.value && indexSupportsAdjustedBasis(selectedIndexName.value, indexCode.value))
 const quantFilterDataset = computed(() => {
-  if (isCnMarket.value && (supportsAuxiliaryPanels.value || supportsCnOptionPutCallPanel.value)) {
+  if (
+    isCnMarket.value &&
+    (
+      supportsAuxiliaryPanels.value
+      || supportsCnOptionPutCallPanel.value
+      || supportsFundPurchaseLimitPanel.value
+      || supportsMarginTradingPanel.value
+    )
+  ) {
     return buildIndexQuantFilterDataset(
       indexCandles.value,
       appliedParams.value,
@@ -560,11 +588,16 @@ const quantFilterDataset = computed(() => {
         includeCnOptionFlowPutCall: supportsCnOptionPutCallPanel.value,
         includeCffexNetShortDelta: supportsAuxiliaryPanels.value,
         includeBasisDelta: supportsAuxiliaryPanels.value,
+        includeFundPurchaseLimit: supportsFundPurchaseLimitPanel.value,
+        includeMarginTrading: supportsMarginTradingPanel.value,
         cnOptionPutCallPoints: cnOptionPutCallPoints.value,
         cnOptionFlowPutCallPoints: cnOptionFlowPutCallPoints.value,
         cnOptionSeries: cnOptionSeries.value,
+        relatedVixSeries: relatedVixSeries.value,
         cffexNetShortDeltaPoints: cffexNetShortDeltaPoints.value,
         basisDeltaPoints: basisDeltaPoints.value,
+        fundPurchaseLimitPoints: fundPurchaseLimitPoints.value,
+        marginTradingPoints: marginTradingPoints.value,
       },
     )
   }
@@ -861,9 +894,10 @@ function filterHitGroupsByDisplay(color: QuantFilterColor, groups: number[]) {
 }
 
 const highlightBands = computed<QuantHighlightBand[]>(() => {
-  return quantFilterDataset.value.snapshots.reduce<QuantHighlightBand[]>((bands, snapshot) => {
-    const matchedBlueGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value)
-    const matchedRedGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value)
+  return quantFilterDataset.value.snapshots.reduce<QuantHighlightBand[]>((bands, snapshot, index, snapshots) => {
+    const previousSnapshots = snapshots.slice(Math.max(0, index - 3), index)
+    const matchedBlueGroups = matchRuleGroupIndexes(snapshot, appliedBlueFilterGroups.value, previousSnapshots)
+    const matchedRedGroups = matchRuleGroupIndexes(snapshot, appliedRedFilterGroups.value, previousSnapshots)
     const blueHitGroups = filterHitGroupsByDisplay('blue', matchedBlueGroups)
     const redHitGroups = filterHitGroupsByDisplay('red', matchedRedGroups)
     const isBlue = blueHitGroups.length > 0
@@ -979,6 +1013,7 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
     : []
   breadthPoints.value = supportsAuxiliaryPanels.value ? state?.breadthPoints ?? [] : []
   vixPoints.value = nextSupportsVix ? state?.vixPoints ?? [] : []
+  relatedVixSeries.value = targetMarket.value === 'cn' ? state?.relatedVixSeries ?? [] : []
   usVixPoints.value = targetMarket.value === 'us' ? state?.usVixPoints ?? [] : []
   usFearGreedPoints.value = targetMarket.value === 'us' ? state?.usFearGreedPoints ?? [] : []
   usHedgeProxyPoints.value =
@@ -1000,6 +1035,12 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
       : []
   cffexNetShortDeltaPoints.value = targetMarket.value === 'cn' ? state?.cffexNetShortDeltaPoints ?? [] : []
   basisDeltaPoints.value = targetMarket.value === 'cn' ? state?.basisDeltaPoints ?? [] : []
+  fundPurchaseLimitPoints.value =
+    targetMarket.value === 'cn' && targetName === DEFAULT_INDEX_NAME
+      ? state?.fundPurchaseLimitPoints ?? []
+      : []
+  marginTradingPoints.value =
+    targetMarket.value === 'cn' ? state?.marginTradingPoints ?? [] : []
   usTreasuryYieldPoints.value = targetMarket.value === 'us' ? state?.usTreasuryYieldPoints ?? [] : []
   usCreditSpreadPoints.value = targetMarket.value === 'us' ? state?.usCreditSpreadPoints ?? [] : []
   hasMoreHistory.value = state?.hasMoreHistory ?? false
@@ -1028,6 +1069,17 @@ function mergeDashboardState(
     basisPoints: mergeByTradeDate(currentState.basisPoints, payload.basis_points),
     breadthPoints: mergeByTradeDate(currentState.breadthPoints, payload.breadth_points),
     vixPoints: mergeByTradeDate(currentState.vixPoints, payload.vix_points),
+    relatedVixSeries: mergeByKey(
+      currentState.relatedVixSeries,
+      payload.related_vix_series ?? [],
+      (item) => item.source_key,
+    ).map((series) => ({
+      ...series,
+      points: mergeByTradeDate(
+        currentState.relatedVixSeries.find((item) => item.source_key === series.source_key)?.points ?? [],
+        (payload.related_vix_series ?? []).find((item) => item.source_key === series.source_key)?.points ?? [],
+      ),
+    })),
     usVixPoints: mergeByTradeDate(currentState.usVixPoints, payload.us_vix_points),
     usFearGreedPoints: mergeByTradeDate(currentState.usFearGreedPoints, payload.us_fear_greed_points),
     usHedgeProxyPoints: mergeByKey(
@@ -1055,6 +1107,14 @@ function mergeDashboardState(
     basisDeltaPoints: mergeByTradeDate(
       currentState.basisDeltaPoints,
       payload.basis_delta_points ?? [],
+    ),
+    fundPurchaseLimitPoints: mergeByTradeDate(
+      currentState.fundPurchaseLimitPoints,
+      payload.fund_purchase_limit_points ?? [],
+    ),
+    marginTradingPoints: mergeByTradeDate(
+      currentState.marginTradingPoints,
+      payload.margin_trading_points ?? [],
     ),
     usTreasuryYieldPoints: mergeByTradeDate(currentState.usTreasuryYieldPoints, payload.us_treasury_yield_points ?? []),
     usCreditSpreadPoints: mergeByTradeDate(currentState.usCreditSpreadPoints, payload.us_credit_spread_points ?? []),
@@ -1182,7 +1242,7 @@ function clearFilters() {
 function buildStrategyPayload() {
   return {
     name: saveName.value.trim(),
-    notes: '',
+    notes: loadedStrategyNotes.value,
     strategy_engine: 'snapshot' as const,
     sequence_mode: 'single_target' as const,
     strategy_type: 'index' as const,
@@ -1302,6 +1362,7 @@ function applyStrategyConfig(strategy: QuantStrategyConfig) {
   appliedRedFilterGroups.value = redGroups
   resetRuleHitDisplayFilter()
   saveName.value = strategy.name
+  loadedStrategyNotes.value = strategy.notes ?? ''
   loadedStrategyId.value = strategy.id
   showParamsModal.value = false
 }
@@ -1338,6 +1399,7 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     futuresBasisPoints.value = []
     breadthPoints.value = []
     vixPoints.value = []
+    relatedVixSeries.value = []
     usVixPoints.value = []
     usFearGreedPoints.value = []
     usHedgeProxyPoints.value = []
@@ -1347,6 +1409,7 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     cnOptionSeries.value = []
     cffexNetShortDeltaPoints.value = []
     basisDeltaPoints.value = []
+    fundPurchaseLimitPoints.value = []
     usTreasuryYieldPoints.value = []
     usCreditSpreadPoints.value = []
     supportsAuxiliaryPanels.value = nextMarket === 'cn'
@@ -1508,6 +1571,8 @@ watch(
           :cn-option-series="cnOptionSeries"
           :cffex-net-short-delta-points="cffexNetShortDeltaPoints"
           :basis-delta-points="basisDeltaPoints"
+          :fund-purchase-limit-points="fundPurchaseLimitPoints"
+          :margin-trading-points="marginTradingPoints"
           :us-treasury-yield-points="usTreasuryYieldPoints"
           :us-credit-spread-points="usCreditSpreadPoints"
           :supports-us-vix-panel="supportsUsVixPanel"
@@ -1515,6 +1580,8 @@ watch(
           :supports-us-hedge-proxy-panel="supportsUsHedgeProxyPanel"
           :supports-us-put-call-panel="supportsUsPutCallPanel"
           :supports-cn-option-put-call-panel="supportsCnOptionPutCallPanel"
+          :supports-fund-purchase-limit-panel="supportsFundPurchaseLimitPanel"
+          :supports-margin-trading-panel="supportsMarginTradingPanel"
           :supports-us-treasury-yield-panel="supportsUsTreasuryYieldPanel"
           :supports-us-credit-spread-panel="supportsUsCreditSpreadPanel"
           :highlight-bands="highlightBands"

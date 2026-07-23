@@ -21,12 +21,12 @@ import type {
   QuantChartOverlayLine,
   QuantHighlightBand,
   QuantIndicatorParams,
-  QuantRuleOperator,
   QuantScanBoardFilter,
   QuantScanEvent,
   QuantScanSellTriggerTarget,
   QuantScanTradeConfig,
   QuantSequenceGroupDraft,
+  QuantSequenceOperator,
   QuantSequenceMode,
   QuantStrategyConfig,
   QuantStrategyPayload,
@@ -65,7 +65,7 @@ const DEFAULT_SCAN_TRADE_CONFIG: QuantScanTradeConfig = {
 
 const DEFAULT_SCAN_SELL_TRIGGER = {
   enabled: true,
-  operator: 'lt' as QuantRuleOperator,
+  operator: 'lt' as QuantSequenceOperator,
   target: 'ma-1' as QuantScanSellTriggerTarget,
 }
 
@@ -152,7 +152,7 @@ const scanIndicatorParams = ref<QuantIndicatorParams>({
   boll: { ...DEFAULT_INDICATOR_PARAMS.boll },
 })
 
-const scanSellTriggerOperatorOptions: Array<{ value: QuantRuleOperator; label: string }> = [
+const scanSellTriggerOperatorOptions: Array<{ value: QuantSequenceOperator; label: string }> = [
   { value: 'lt', label: '低于' },
   { value: 'gt', label: '高于' },
 ]
@@ -446,7 +446,7 @@ const scanSellTriggerEnabled = computed({
 })
 const scanSellTriggerOperator = computed({
   get: () => scanTradeConfig.value.sell_trigger?.operator ?? DEFAULT_SCAN_SELL_TRIGGER.operator,
-  set: (operator: QuantRuleOperator) => {
+  set: (operator: QuantSequenceOperator) => {
     scanTradeConfig.value = {
       ...scanTradeConfig.value,
       sell_trigger: {

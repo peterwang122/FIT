@@ -264,6 +264,7 @@ class Settings(BaseSettings):
     stock_temp_daily_task_soft_time_limit_seconds: int = 14400
     stock_temp_daily_task_time_limit_seconds: int = 15000
     stock_temp_daily_task_max_retries: int = 3
+    option_minute_daily_service_timeout_seconds: int = 23400
 
     task_idempotency_ttl_seconds: int = 3600
     collector_dedupe_lock_ttl_seconds: int = 120

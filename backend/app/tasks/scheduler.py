@@ -1,5 +1,5 @@
 from app.db.session import SessionLocal
-from app.services.task_service import TaskService
+from app.services.task_service import TaskRunPollingPending, TaskService
 from app.workers.celery_app import celery_app
 
 
@@ -28,4 +28,11 @@ def execute_scheduled_task_run(self, run_id: int):
     with SessionLocal() as db:
         service = TaskService(db)
         service.bind_run_celery_task_id(run_id, self.request.id)
-        return service.execute_run(run_id)
+        try:
+            return service.execute_run(run_id)
+        except TaskRunPollingPending as exc:
+            raise self.retry(
+                exc=exc,
+                countdown=exc.countdown_seconds,
+                max_retries=130,
+            )

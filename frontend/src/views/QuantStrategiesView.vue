@@ -7,16 +7,21 @@ import {
   deleteQuantStrategy,
   fetchQuantStrategies,
   fetchQuantStrategyEquityCurve,
+  fetchQuantStrategyOptionTrades,
+  fetchQuantStrategyTargetChart,
   previewQuantSequenceScan,
   sendQuantStrategy,
   updateQuantStrategy,
 } from '../api/stocks'
+import KlineChart from '../components/KlineChart.vue'
 import StrategyEquityCurveChart from '../components/StrategyEquityCurveChart.vue'
 import { useAuthStore } from '../stores/auth'
 import type {
   QuantConflictMode,
   QuantEquityCurveResponse,
   QuantExecutionPriceMode,
+  QuantOptionTrade,
+  QuantOptionTradeResult,
   QuantPositionPair,
   QuantScanEvent,
   QuantScanBacktestSelection,
@@ -24,6 +29,7 @@ import type {
   QuantSignalColor,
   QuantStrategyConfig,
   QuantStrategyPayload,
+  QuantStrategyTargetChartResponse,
 } from '../types/quant'
 import type { UserSearchResult } from '../types/auth'
 
@@ -31,6 +37,7 @@ const strategies = ref<QuantStrategyConfig[]>([])
 const selectedStrategyId = ref<number | null>(null)
 const editingStrategy = ref<QuantStrategyConfig | null>(null)
 const equityCurve = ref<QuantEquityCurveResponse | null>(null)
+const optionTradeResult = ref<QuantOptionTradeResult | null>(null)
 const sequenceScanBacktest = ref<QuantSequenceScanBacktestResponse | null>(null)
 const sequenceScanResultId = ref('')
 const sequenceScanSelection = ref<QuantScanBacktestSelection>({
@@ -39,9 +46,17 @@ const sequenceScanSelection = ref<QuantScanBacktestSelection>({
 })
 const sequenceScanPage = ref(1)
 const sequenceScanPageSize = ref(100)
+const selectedScanEventId = ref<string | null>(null)
+const targetChart = ref<QuantStrategyTargetChartResponse | null>(null)
+const targetChartLoading = ref(false)
+const targetChartError = ref('')
+const targetChartFocusDate = ref<string | null>(null)
+let targetChartController: AbortController | null = null
 
 const loading = ref(false)
 const curveLoading = ref(false)
+const optionTradeLoading = ref(false)
+const optionTradeError = ref('')
 const scanPageLoading = ref(false)
 const curveRequested = ref(false)
 const error = ref('')
@@ -230,6 +245,9 @@ function cloneStrategy(strategy: QuantStrategyConfig): QuantStrategyConfig {
       ...DEFAULT_SCAN_TRADE_CONFIG,
       ...cloneJson(strategy.scan_trade_config ?? {}),
     },
+    research_option_template: strategy.research_option_template
+      ? cloneJson(strategy.research_option_template)
+      : null,
     blue_filter_groups: cloneJson(strategy.blue_filter_groups ?? []),
     red_filter_groups: cloneJson(strategy.red_filter_groups ?? []),
     blue_filters: cloneJson(strategy.blue_filters),
@@ -253,6 +271,7 @@ function toPayload(strategy: QuantStrategyConfig): QuantStrategyPayload {
     buy_sequence_groups: strategy.buy_sequence_groups,
     sell_sequence_groups: strategy.sell_sequence_groups,
     scan_trade_config: strategy.scan_trade_config,
+    research_option_template: strategy.research_option_template,
     blue_filter_groups: strategy.blue_filter_groups,
     red_filter_groups: strategy.red_filter_groups,
     blue_filters: strategy.blue_filters,
@@ -290,6 +309,76 @@ function resetSequenceScanState() {
   sequenceScanSelection.value = { use_all_events: true, excluded_event_ids: [] }
   sequenceScanPage.value = 1
   sequenceScanBacktest.value = null
+  selectedScanEventId.value = null
+  targetChartFocusDate.value = null
+  if (editingStrategy.value && isMarketScanStrategy(editingStrategy.value)) {
+    resetTargetChartState()
+  }
+}
+
+function resetTargetChartState() {
+  targetChartController?.abort()
+  targetChartController = null
+  targetChart.value = null
+  targetChartLoading.value = false
+  targetChartError.value = ''
+}
+
+function isCanceledRequest(cause: unknown) {
+  const name = (cause as { name?: string; code?: string } | null)?.name
+  const code = (cause as { name?: string; code?: string } | null)?.code
+  return name === 'CanceledError' || name === 'AbortError' || code === 'ERR_CANCELED'
+}
+
+async function loadTargetChart(strategy: QuantStrategyConfig, event: QuantScanEvent | null = null) {
+  targetChartController?.abort()
+  const controller = new AbortController()
+  targetChartController = controller
+  targetChartLoading.value = true
+  targetChartError.value = ''
+  if (event) targetChartFocusDate.value = event.signal_date
+
+  try {
+    const response = await fetchQuantStrategyTargetChart(strategy.id, {
+      scanResultId: event ? sequenceScanResultId.value : undefined,
+      targetCode: event?.target_code,
+      signal: controller.signal,
+    })
+    if (targetChartController !== controller || selectedStrategyId.value !== strategy.id) return
+    targetChart.value = response
+  } catch (cause) {
+    if (!isCanceledRequest(cause) && targetChartController === controller) {
+      targetChart.value = null
+      targetChartError.value = cause instanceof Error ? cause.message : '标的 K 线加载失败'
+    }
+  } finally {
+    if (targetChartController === controller) {
+      targetChartController = null
+      targetChartLoading.value = false
+    }
+  }
+}
+
+function selectScanEventForChart(event: QuantScanEvent) {
+  if (!editingStrategy.value || !isMarketScanStrategy(editingStrategy.value)) return
+  selectedScanEventId.value = event.event_id
+  targetChartFocusDate.value = event.signal_date
+  if (targetChart.value?.target_code === event.target_code) return
+  void loadTargetChart(editingStrategy.value, event)
+}
+
+function syncScanTargetChart(strategy: QuantStrategyConfig, events: QuantScanEvent[]) {
+  const event =
+    events.find((item) => item.event_id === selectedScanEventId.value)
+    ?? events[0]
+    ?? null
+  if (!event) {
+    selectedScanEventId.value = null
+    targetChartFocusDate.value = null
+    resetTargetChartState()
+    return
+  }
+  selectScanEventForChart(event)
 }
 
 async function loadStrategies(preferredId?: number | null) {
@@ -304,6 +393,7 @@ async function loadStrategies(preferredId?: number | null) {
       selectedStrategyId.value = null
       editingStrategy.value = null
       equityCurve.value = null
+      optionTradeResult.value = null
       resetSequenceScanState()
       curveRequested.value = false
     }
@@ -314,17 +404,34 @@ async function loadStrategies(preferredId?: number | null) {
   }
 }
 
-async function loadEquityCurve(strategyId: number) {
+async function loadEquityCurve(strategy: QuantStrategyConfig) {
   curveLoading.value = true
   error.value = ''
+  optionTradeError.value = ''
+  optionTradeResult.value = null
+  optionTradeLoading.value = false
+  if (strategy.research_option_template) {
+    equityCurve.value = null
+    optionTradeLoading.value = true
+    try {
+      optionTradeResult.value = await fetchQuantStrategyOptionTrades(strategy.id)
+    } catch (loadError) {
+      optionTradeError.value = loadError instanceof Error ? loadError.message : '期权回测加载失败'
+    } finally {
+      optionTradeLoading.value = false
+      curveLoading.value = false
+    }
+    return
+  }
   try {
-    equityCurve.value = await fetchQuantStrategyEquityCurve(strategyId)
+    equityCurve.value = await fetchQuantStrategyEquityCurve(strategy.id)
   } catch (loadError) {
     error.value = loadError instanceof Error ? loadError.message : '收益曲线加载失败'
     equityCurve.value = null
-  } finally {
     curveLoading.value = false
+    return
   }
+  curveLoading.value = false
 }
 
 async function loadSequenceScanBacktest(
@@ -357,6 +464,7 @@ async function loadSequenceScanBacktest(
     sequenceScanBacktest.value = response
     sequenceScanPage.value = response.page
     sequenceScanPageSize.value = response.page_size
+    syncScanTargetChart(strategy, response.matched_events)
   } catch (loadError) {
     error.value = loadError instanceof Error ? loadError.message : '扫描回测加载失败'
     if (!hasPreviousBacktest || resetScanResult) sequenceScanBacktest.value = null
@@ -371,13 +479,21 @@ function selectStrategy(strategyId: number) {
   if (!target) return
   selectedStrategyId.value = strategyId
   editingStrategy.value = cloneStrategy(target)
+  resetTargetChartState()
+  targetChartFocusDate.value = null
   equityCurve.value = null
+  optionTradeResult.value = null
+  optionTradeError.value = ''
+  optionTradeLoading.value = false
   resetSequenceScanState()
   curveRequested.value = false
   curveLoading.value = false
   scanPageLoading.value = false
   saveMessage.value = ''
   error.value = ''
+  if (!isMarketScanStrategy(target)) {
+    void loadTargetChart(target)
+  }
 }
 
 async function persistStrategy(showSavedMessage = true) {
@@ -418,7 +534,7 @@ async function confirmAndLoadCurve() {
     await loadSequenceScanBacktest(updated, 1, true)
     return
   }
-  await loadEquityCurve(updated.id)
+  await loadEquityCurve(updated)
 }
 
 async function toggleSequenceScanEvent(eventId: string, checked: boolean) {
@@ -586,6 +702,44 @@ function formatPrice(value: number | null | undefined) {
   return value.toFixed(2)
 }
 
+function formatOptionPrice(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  return Math.abs(value) < 10 ? value.toFixed(4) : value.toFixed(2)
+}
+
+function formatSignedPercent(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
+function formatSignedMoney(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  return `${value >= 0 ? '+' : '-'}¥${Math.abs(value).toFixed(2)}`
+}
+
+function optionExchangeLabel(value: QuantOptionTrade['exchange']) {
+  if (value === 'SSE') return '上交所'
+  if (value === 'SZSE') return '深交所'
+  return '中金所'
+}
+
+function optionTypeLabel(value: QuantOptionTrade['option_type']) {
+  return value === 'PUT' ? '认沽' : '认购'
+}
+
+function optionTradeStatus(trade: QuantOptionTrade) {
+  if (trade.status === 'completed') return { label: '已完成', tone: 'success' }
+  if (trade.status === 'pending') return { label: '持有期未结束', tone: 'info' }
+  if (trade.status === 'not_listed') return { label: '期权未上市', tone: 'muted' }
+  if (trade.status === 'direction_mismatch') return { label: '方向不符', tone: 'muted' }
+  return { label: '不可计算', tone: 'warning' }
+}
+
+function optionTradeProfitTone(trade: QuantOptionTrade) {
+  if (trade.return_pct === null || trade.return_pct === undefined) return ''
+  return trade.return_pct >= 0 ? 'is-profit' : 'is-loss'
+}
+
 function formatSellPlanSub(event: QuantScanEvent, strategy: QuantStrategyConfig) {
   const priceText = formatPrice(event.sell_price)
   if (event.sell_reason === 'trigger') {
@@ -659,19 +813,37 @@ function scanEventStatus(event: QuantScanEvent) {
 
 const curvePoints = computed(() => {
   if (sequenceScanBacktest.value) return sequenceScanBacktest.value.points
+  if (optionTradeResult.value) return optionTradeResult.value.points
   return equityCurve.value?.points ?? []
 })
 
 const curveDisplayMode = computed(() =>
-  editingStrategy.value && isMarketScanStrategy(editingStrategy.value) && sequenceScanBacktest.value ? 'capital' : 'nav',
+  optionTradeResult.value || (editingStrategy.value && isMarketScanStrategy(editingStrategy.value) && sequenceScanBacktest.value)
+    ? 'capital'
+    : 'nav',
 )
 
 const curveInitialCapital = computed(() => {
+  if (optionTradeResult.value) return optionTradeResult.value.initial_capital
+  const optionCapital = Number(editingStrategy.value?.research_option_template?.initial_capital)
+  if (Number.isFinite(optionCapital) && optionCapital > 0) return optionCapital
   const value = Number(editingStrategy.value?.scan_trade_config?.initial_capital)
   return Number.isFinite(value) && value > 0 ? value : 1
 })
 
+const activeBacktestMetrics = computed(() => {
+  if (optionTradeResult.value) return optionTradeResult.value
+  if (sequenceScanBacktest.value) return sequenceScanBacktest.value
+  return equityCurve.value
+})
+
 const scanEvents = computed<QuantScanEvent[]>(() => sequenceScanBacktest.value?.matched_events ?? [])
+const targetChartHighlightSummary = computed(() => ({
+  blue: targetChart.value?.highlight_bands.filter((item) => item.color === 'blue').length ?? 0,
+  red: targetChart.value?.highlight_bands.filter((item) => item.color === 'red').length ?? 0,
+  purple: targetChart.value?.highlight_bands.filter((item) => item.color === 'purple').length ?? 0,
+}))
+const optionTrades = computed<QuantOptionTrade[]>(() => optionTradeResult.value?.trades ?? [])
 const sequenceScanTotalPages = computed(() => {
   const total = sequenceScanBacktest.value?.total_event_count ?? 0
   const size = sequenceScanBacktest.value?.page_size ?? sequenceScanPageSize.value
@@ -685,6 +857,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  targetChartController?.abort()
+  targetChartController = null
   if (recipientSearchTimer !== null) {
     window.clearTimeout(recipientSearchTimer)
     recipientSearchTimer = null
@@ -740,19 +914,19 @@ onUnmounted(() => {
             <span class="quant-field-label">策略备注</span>
             <textarea v-model="editingStrategy.notes" class="input progress-textarea progress-textarea-compact" />
           </label>
-          <label v-if="editingStrategy.strategy_engine !== 'sequence'" class="quant-field">
+          <label v-if="editingStrategy.strategy_engine !== 'sequence' && !editingStrategy.research_option_template" class="quant-field">
             <span class="quant-field-label">买入信号颜色</span>
             <select v-model="editingStrategy.signal_buy_color" class="input">
               <option v-for="option in signalColorOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
-          <label v-if="editingStrategy.strategy_engine !== 'sequence'" class="quant-field">
+          <label v-if="editingStrategy.strategy_engine !== 'sequence' && !editingStrategy.research_option_template" class="quant-field">
             <span class="quant-field-label">卖出信号颜色</span>
             <select v-model="editingStrategy.signal_sell_color" class="input">
               <option v-for="option in signalColorOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
-          <label v-if="editingStrategy.strategy_engine !== 'sequence'" class="quant-field">
+          <label v-if="editingStrategy.strategy_engine !== 'sequence' && !editingStrategy.research_option_template" class="quant-field">
             <span class="quant-field-label">紫色冲突处理</span>
             <select v-model="editingStrategy.purple_conflict_mode" class="input">
               <option v-for="option in conflictModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -805,6 +979,26 @@ onUnmounted(() => {
               </select>
             </label>
           </template>
+          <template v-else-if="editingStrategy.research_option_template">
+            <div class="quant-scan-backtest-note quant-field-full">
+              <strong>期权专用回测</strong>
+              <p class="muted">
+                初始资金 {{ formatMoney(editingStrategy.research_option_template.initial_capital) }}，每次有效信号买入
+                {{ editingStrategy.research_option_template.contracts_per_trade }} 张真实期权合约。
+              </p>
+              <p class="muted">
+                {{ optionExchangeLabel(editingStrategy.research_option_template.exchange) }} ·
+                {{ editingStrategy.research_option_template.product_name }} ·
+                方向自动（认购 / 认沽） ·
+                {{ editingStrategy.research_option_template.expiry_bucket_label }} ·
+                {{ editingStrategy.research_option_template.moneyness_label }}
+              </p>
+              <p class="muted">
+                信号后下一交易日开盘买入，持有 {{ editingStrategy.research_option_template.holding_days }} 个交易日后按收盘价卖出；
+                买卖两端均计入 0.5% 滑点，持仓期间按真实期权每日收盘价计市值。
+              </p>
+            </div>
+          </template>
           <template v-else>
             <label class="quant-field">
               <span class="quant-field-label">策略开始日期</span>
@@ -831,24 +1025,66 @@ onUnmounted(() => {
           <button class="btn" @click="loadStrategyToAnalysis">{{ analysisButtonLabel(editingStrategy) }}</button>
           <button v-if="isRoot" class="btn" @click="openSendDialog">发送给用户</button>
           <button class="btn" @click="saveStrategy">保存策略</button>
-          <button class="btn primary" :disabled="curveLoading" @click="confirmAndLoadCurve">确定并加载收益曲线</button>
+          <button class="btn primary" :disabled="curveLoading || optionTradeLoading" @click="confirmAndLoadCurve">
+            {{ editingStrategy.research_option_template ? '确定并加载期权回测' : '确定并加载收益曲线' }}
+          </button>
           <button class="btn" @click="removeStrategy">删除策略</button>
         </div>
 
         <p v-if="saveMessage" class="muted">{{ saveMessage }}</p>
 
-        <div v-if="curveRequested && (equityCurve || sequenceScanBacktest)" class="summary quant-strategy-summary">
+        <section class="card quant-chart-card quant-strategy-target-chart-card">
+          <div class="progress-section-head">
+            <div class="progress-section-copy">
+              <h3>标的 K 线</h3>
+              <p v-if="targetChart" class="muted">
+                {{ targetChart.target_name }}（{{ targetChart.target_code }}）
+                <template v-if="isMarketScanStrategy(editingStrategy) && targetChartFocusDate">
+                  · 当前事件 {{ targetChartFocusDate }}
+                </template>
+              </p>
+              <p v-else-if="isMarketScanStrategy(editingStrategy)" class="muted">
+                执行扫描后默认显示首个事件标的；点击事件行可以切换标的和定位信号日。
+              </p>
+              <p v-else class="muted">显示策略标的行情及保存规则产生的全部红蓝命中日期。</p>
+            </div>
+            <div v-if="targetChart" class="quant-strategy-chart-legend" aria-label="命中日期图例">
+              <span class="quant-strategy-chart-legend-item tone-blue">蓝 {{ targetChartHighlightSummary.blue }}</span>
+              <span class="quant-strategy-chart-legend-item tone-red">红 {{ targetChartHighlightSummary.red }}</span>
+              <span class="quant-strategy-chart-legend-item tone-purple">紫 {{ targetChartHighlightSummary.purple }}</span>
+            </div>
+          </div>
+
+          <p v-if="targetChartLoading" class="muted">标的 K 线加载中...</p>
+          <p v-else-if="targetChartError" class="banner-error">{{ targetChartError }}</p>
+          <KlineChart
+            v-else-if="targetChart?.candles.length"
+            :candles="targetChart.candles"
+            :highlight-bands="targetChart.highlight_bands"
+            :symbol-name="targetChart.target_name"
+            :symbol-code="targetChart.target_code"
+            :focus-trade-date="targetChartFocusDate"
+            :default-visible-days="120"
+            :height="520"
+          />
+          <div v-else-if="!isMarketScanStrategy(editingStrategy)" class="quant-stock-empty quant-strategy-chart-empty">
+            <h3>暂无标的行情</h3>
+            <p class="muted">当前策略的标的 K 线或筛选快照暂时无法读取。</p>
+          </div>
+        </section>
+
+        <div v-if="curveRequested && activeBacktestMetrics" class="summary quant-strategy-summary">
           <div>
             <div class="label">累计收益</div>
-            <div class="value">{{ (sequenceScanBacktest?.cumulative_return_pct ?? equityCurve?.cumulative_return_pct ?? 0).toFixed(2) }}%</div>
+            <div class="value">{{ (activeBacktestMetrics?.cumulative_return_pct ?? 0).toFixed(2) }}%</div>
           </div>
           <div>
             <div class="label">年化收益</div>
-            <div class="value">{{ (sequenceScanBacktest?.annualized_return_pct ?? equityCurve?.annualized_return_pct ?? 0).toFixed(2) }}%</div>
+            <div class="value">{{ (activeBacktestMetrics?.annualized_return_pct ?? 0).toFixed(2) }}%</div>
           </div>
           <div>
             <div class="label">最大回撤</div>
-            <div class="value">{{ (sequenceScanBacktest?.max_drawdown_pct ?? equityCurve?.max_drawdown_pct ?? 0).toFixed(2) }}%</div>
+            <div class="value">{{ (activeBacktestMetrics?.max_drawdown_pct ?? 0).toFixed(2) }}%</div>
           </div>
           <div>
             <div class="label">回测交易日数</div>
@@ -870,7 +1106,7 @@ onUnmounted(() => {
             </div>
           </template>
 
-          <template v-else-if="equityCurve">
+          <template v-else-if="equityCurve && !editingStrategy.research_option_template">
             <div>
               <div class="label">当前执行价模式</div>
               <div class="value small">{{ editingStrategy.execution_price_mode }}</div>
@@ -934,13 +1170,19 @@ onUnmounted(() => {
                 <tr
                   v-for="event in scanEvents"
                   :key="`table-${event.event_id}`"
-                  :class="{ disabled: !event.tradable, inactive: !event.selected }"
+                  :class="{
+                    disabled: !event.tradable,
+                    inactive: !event.selected,
+                    selected: selectedScanEventId === event.event_id,
+                  }"
+                  @click="selectScanEventForChart(event)"
                 >
                   <td>
                     <input
                       type="checkbox"
                       :checked="Boolean(event.selected)"
                       :disabled="scanEventBusy || !event.tradable"
+                      @click.stop
                       @change="toggleSequenceScanEvent(event.event_id, ($event.target as HTMLInputElement).checked)"
                     />
                   </td>
@@ -1031,6 +1273,115 @@ onUnmounted(() => {
           :display-mode="curveDisplayMode"
           :initial-capital="curveInitialCapital"
         />
+
+        <section v-if="editingStrategy?.research_option_template" class="quant-option-trade-section">
+          <div class="progress-section-head">
+            <div class="progress-section-copy">
+              <h3>期权逐笔交易</h3>
+              <p class="muted">
+                {{ optionExchangeLabel(editingStrategy.research_option_template.exchange) }} ·
+                {{ editingStrategy.research_option_template.product_name }} ·
+                方向自动（认购 / 认沽） ·
+                {{ editingStrategy.research_option_template.expiry_bucket_label }} ·
+                {{ editingStrategy.research_option_template.moneyness_label }} ·
+                持有 {{ editingStrategy.research_option_template.holding_days }} 个交易日
+              </p>
+              <p class="muted">买入为信号后下一交易日开盘，卖出为持有期结束日收盘；买卖两端均计入 0.5% 滑点。</p>
+            </div>
+          </div>
+
+          <p v-if="optionTradeLoading" class="muted">期权逐笔交易加载中...</p>
+          <p v-else-if="optionTradeError" class="banner-error">{{ optionTradeError }}</p>
+
+          <div v-if="optionTradeResult" class="summary quant-option-trade-summary">
+            <div>
+              <div class="label">信号数</div>
+              <div class="value">{{ optionTradeResult.summary.signal_count }}</div>
+            </div>
+            <div>
+              <div class="label">完整交易</div>
+              <div class="value">{{ optionTradeResult.summary.completed_count }}</div>
+            </div>
+            <div>
+              <div class="label">等待完成</div>
+              <div class="value">{{ optionTradeResult.summary.pending_count }}</div>
+            </div>
+            <div>
+              <div class="label">期权未上市</div>
+              <div class="value">{{ optionTradeResult.summary.not_listed_count }}</div>
+            </div>
+            <div>
+              <div class="label">数据不足</div>
+              <div class="value">{{ optionTradeResult.summary.unavailable_count }}</div>
+            </div>
+          </div>
+
+          <div v-if="optionTrades.length" class="quant-scan-event-table-wrap quant-option-trade-table-wrap">
+            <table class="quant-scan-event-table quant-option-trade-table">
+              <thead>
+                <tr>
+                  <th>信号日</th>
+                  <th>方向依据</th>
+                  <th>买入合约</th>
+                  <th>买入</th>
+                  <th>卖出</th>
+                  <th>每张盈亏</th>
+                  <th>收益率</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="trade in optionTrades" :key="`${trade.signal_date}-${trade.contract_code || trade.status}`">
+                  <td>
+                    <div class="quant-scan-cell-main">{{ trade.signal_date }}</div>
+                    <div class="quant-scan-cell-sub">
+                      20D {{ formatSignedPercent(trade.prior_20d_return_pct) }} /
+                      40D {{ formatSignedPercent(trade.prior_40d_return_pct) }}
+                    </div>
+                  </td>
+                  <td>
+                    <div class="quant-scan-cell-main">{{ optionTypeLabel(trade.option_type) }}</div>
+                    <div class="quant-scan-cell-sub quant-option-direction-reason">{{ trade.direction_reason }}</div>
+                  </td>
+                  <td>
+                    <div class="quant-scan-cell-main">{{ trade.contract_code || '-' }}</div>
+                    <div class="quant-scan-cell-sub">
+                      {{ trade.contract_month_label || trade.expiry_bucket_label }} · {{ trade.moneyness_label }}
+                    </div>
+                    <div class="quant-scan-cell-sub">
+                      行权价 {{ formatOptionPrice(trade.strike_price) }} · 一张 {{ trade.contract_unit ? trade.contract_unit.toFixed(0) : '-' }} 单位
+                    </div>
+                  </td>
+                  <td>
+                    <div class="quant-scan-cell-main">{{ trade.buy_date || '-' }}</div>
+                    <div class="quant-scan-cell-sub">{{ formatOptionPrice(trade.buy_price) }}</div>
+                    <div class="quant-scan-cell-sub">
+                      {{ trade.contract_quantity ? `${trade.contract_quantity} 张` : '-' }} · {{ formatMoney(trade.buy_amount) }}
+                    </div>
+                  </td>
+                  <td>
+                    <div class="quant-scan-cell-main">{{ trade.sell_date || '-' }}</div>
+                    <div class="quant-scan-cell-sub">{{ formatOptionPrice(trade.sell_price) }}</div>
+                    <div class="quant-scan-cell-sub">{{ formatMoney(trade.sell_amount) }}</div>
+                  </td>
+                  <td :class="optionTradeProfitTone(trade)">
+                    <div class="quant-scan-cell-main">{{ formatSignedMoney(trade.profit_per_contract) }}</div>
+                  </td>
+                  <td :class="optionTradeProfitTone(trade)">
+                    <div class="quant-scan-cell-main">{{ formatSignedPercent(trade.return_pct) }}</div>
+                  </td>
+                  <td>
+                    <div class="quant-scan-status" :class="`tone-${optionTradeStatus(trade).tone}`">
+                      {{ optionTradeStatus(trade).label }}
+                    </div>
+                    <div class="quant-scan-cell-sub">{{ trade.status_reason }}</div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else-if="optionTradeResult" class="muted">当前策略还没有可列出的期权信号。</p>
+        </section>
       </template>
 
       <template v-else>

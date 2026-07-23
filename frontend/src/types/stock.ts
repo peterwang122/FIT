@@ -76,6 +76,13 @@ export interface IndexVixPoint {
   close_price: number
 }
 
+export interface IndexRelatedVixSeries {
+  source_key: 'reference-vix-hs300-high' | 'reference-vix-csi500-high'
+  source_name: string
+  qvix_code: string
+  points: IndexVixPoint[]
+}
+
 export interface IndexUsVixPoint {
   trade_date: string
   open_value: number
@@ -150,8 +157,27 @@ export interface IndexCnOptionVixPoint {
   near_risk_free_rate: number | null
   next_risk_free_rate: number | null
   calculation_method: string | null
+  uses_minute_ohlc: boolean
+  minute_count: number | null
+  minute_mid_quote_count: number | null
   price_basis_counts: Record<string, number>
   pre_settle_sources: string[]
+  reference_qvix_code: string | null
+  reference_match_type: 'direct_product' | 'same_index_proxy' | null
+  reference_vix_open: number | null
+  reference_vix_high: number | null
+  reference_vix_low: number | null
+  reference_vix_close: number | null
+  open_error: number | null
+  high_error: number | null
+  low_error: number | null
+  close_error: number | null
+  open_error_pct: number | null
+  high_error_pct: number | null
+  low_error_pct: number | null
+  close_error_pct: number | null
+  ohlc_mean_abs_error: number | null
+  ohlc_mean_abs_pct_error: number | null
 }
 
 export interface IndexCnOptionSeries {
@@ -201,6 +227,21 @@ export interface IndexBasisDeltaPoint {
   month_delta_120d: number | null
 }
 
+export interface IndexFundPurchaseLimitPoint {
+  trade_date: string
+  limited_fund_count: number
+  total_fund_count: number
+  limited_fund_pct: number
+}
+
+export interface IndexMarginTradingPoint {
+  trade_date: string
+  financing_balance: number | null
+  securities_lending_balance: number | null
+  total_balance: number | null
+  financing_net_buy_amount: number | null
+}
+
 export interface IndexUsTreasuryYieldPoint {
   trade_date: string
   yield_3m: number | null
@@ -229,6 +270,7 @@ export interface IndexDashboardResponse {
   basis_points: IndexDashboardBasisPoint[]
   breadth_points: IndexBreadthPoint[]
   vix_points: IndexVixPoint[]
+  related_vix_series?: IndexRelatedVixSeries[]
   us_vix_points: IndexUsVixPoint[]
   us_fear_greed_points: IndexUsFearGreedPoint[]
   us_hedge_proxy_points: IndexUsHedgeProxyPoint[]
@@ -238,6 +280,8 @@ export interface IndexDashboardResponse {
   cn_option_series: IndexCnOptionSeries[]
   cffex_net_short_delta_points: IndexCffexNetShortDeltaPoint[]
   basis_delta_points: IndexBasisDeltaPoint[]
+  fund_purchase_limit_points: IndexFundPurchaseLimitPoint[]
+  margin_trading_points: IndexMarginTradingPoint[]
   us_treasury_yield_points: IndexUsTreasuryYieldPoint[]
   us_credit_spread_points: IndexUsCreditSpreadPoint[]
 }

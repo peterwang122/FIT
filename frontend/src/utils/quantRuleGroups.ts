@@ -142,6 +142,12 @@ export function normalizeRuleGroups(
         return
       }
 
+      if (condition.operator === 'episode_start') {
+        conditionErrors[condition.id] = '首次达到只适用于数值指标'
+        hasConditionError = true
+        return
+      }
+
       const mode = isBollIntradayTarget(condition.target) ? 'intraday' : 'close'
       conditions.push({
         type: 'boll',
@@ -168,11 +174,25 @@ export function normalizeRuleGroups(
   }
 }
 
-export function matchRuleCondition(snapshot: QuantDailyIndicatorSnapshot, condition: QuantRuleCondition): boolean {
+export function matchRuleCondition(
+  snapshot: QuantDailyIndicatorSnapshot,
+  condition: QuantRuleCondition,
+  previousSnapshots: QuantDailyIndicatorSnapshot[] = [],
+): boolean {
   if (condition.type === 'numeric') {
     const value = snapshot.values[condition.field]
     if (value === null || value === undefined) return false
+    if (condition.operator === 'episode_start') {
+      const previousValues = previousSnapshots.slice(-3).map((item) => item.values[condition.field])
+      return (
+        value >= condition.value &&
+        previousValues.length === 3 &&
+        previousValues.every((item) => item !== null && item !== undefined && item < condition.value)
+      )
+    }
     if (condition.operator === 'gt') return value > condition.value
+    if (condition.operator === 'gte') return value >= condition.value
+    if (condition.operator === 'lte') return value <= condition.value
     return value < condition.value
   }
 
@@ -181,26 +201,37 @@ export function matchRuleCondition(snapshot: QuantDailyIndicatorSnapshot, condit
 
   if (condition.mode === 'close') {
     if (snapshot.close === null || snapshot.close === undefined) return false
-    return condition.operator === 'gt' ? snapshot.close > reference : snapshot.close < reference
+    if (condition.operator === 'gt' || condition.operator === 'gte') {
+      return condition.operator === 'gte' ? snapshot.close >= reference : snapshot.close > reference
+    }
+    return condition.operator === 'lte' ? snapshot.close <= reference : snapshot.close < reference
   }
 
-  if (condition.operator === 'gt') {
+  if (condition.operator === 'gt' || condition.operator === 'gte') {
     if (snapshot.high === null || snapshot.high === undefined) return false
-    return snapshot.high > reference
+    return condition.operator === 'gte' ? snapshot.high >= reference : snapshot.high > reference
   }
 
   if (snapshot.low === null || snapshot.low === undefined) return false
-  return snapshot.low < reference
+  return condition.operator === 'lte' ? snapshot.low <= reference : snapshot.low < reference
 }
 
-export function matchRuleGroup(snapshot: QuantDailyIndicatorSnapshot, group: QuantRuleGroup): boolean {
-  return group.conditions.every((condition) => matchRuleCondition(snapshot, condition))
+export function matchRuleGroup(
+  snapshot: QuantDailyIndicatorSnapshot,
+  group: QuantRuleGroup,
+  previousSnapshots: QuantDailyIndicatorSnapshot[] = [],
+): boolean {
+  return group.conditions.every((condition) => matchRuleCondition(snapshot, condition, previousSnapshots))
 }
 
-export function matchRuleGroupIndexes(snapshot: QuantDailyIndicatorSnapshot, groups: QuantFilterGroupSet): number[] {
+export function matchRuleGroupIndexes(
+  snapshot: QuantDailyIndicatorSnapshot,
+  groups: QuantFilterGroupSet,
+  previousSnapshots: QuantDailyIndicatorSnapshot[] = [],
+): number[] {
   if (!groups.length) return []
   return groups.reduce<number[]>((matches, group, index) => {
-    if (matchRuleGroup(snapshot, group)) {
+    if (matchRuleGroup(snapshot, group, previousSnapshots)) {
       matches.push(index + 1)
     }
     return matches

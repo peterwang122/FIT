@@ -23,6 +23,7 @@ class QuantStrategyConfig(Base):
     buy_sequence_groups: Mapped[list[dict]] = mapped_column(JSON, default=list)
     sell_sequence_groups: Mapped[list[dict]] = mapped_column(JSON, default=list)
     scan_trade_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    research_option_template: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     blue_filter_groups: Mapped[list[dict]] = mapped_column(JSON, default=list)
     red_filter_groups: Mapped[list[dict]] = mapped_column(JSON, default=list)
     blue_filters: Mapped[dict] = mapped_column(JSON, default=dict)

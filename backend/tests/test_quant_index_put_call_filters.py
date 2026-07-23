@@ -406,6 +406,103 @@ def test_option_vix_series_returns_open_close_and_contract_metadata():
     assert cffex["vix_points"][0]["next_strike_count"] == 23
 
 
+def test_option_vix_minute_candle_is_validated_against_collected_qvix():
+    service = _service()
+    rows = [
+        {
+            "trade_date": date(2026, 7, 13),
+            "option_vix_json": {
+                "sse:510300": {
+                    "vix_open": 21,
+                    "vix_high": 25,
+                    "vix_low": 19,
+                    "vix_close": 22,
+                    "uses_minute_ohlc": True,
+                    "minute_count": 242,
+                    "minute_mid_quote_count": 240,
+                    "calculation_method": "ivix_30d_minute_mid_quote",
+                },
+                "cffex:IO": {
+                    "vix_open": 21,
+                    "vix_high": 25,
+                    "vix_low": 19,
+                    "vix_close": 22,
+                    "uses_minute_ohlc": True,
+                    "minute_count": 242,
+                    "minute_mid_quote_count": 242,
+                    "calculation_method": "ivix_30d_minute_mid_quote",
+                },
+            },
+        }
+    ]
+    qvix_rows = [
+        {
+            "trade_date": date(2026, 7, 13),
+            "open_price": 20,
+            "high_price": 24,
+            "low_price": 18,
+            "close_price": 20,
+        }
+    ]
+
+    series = service._build_cn_option_series(
+        rows,
+        "沪深300",
+        qvix_rows=qvix_rows,
+        qvix_code="300ETF_QVIX",
+    )
+    direct = next(item for item in series if item["source_key"] == "sse:510300")["vix_points"][0]
+    proxy = next(item for item in series if item["source_key"] == "cffex:IO")["vix_points"][0]
+
+    assert direct["reference_match_type"] == "direct_product"
+    assert proxy["reference_match_type"] == "same_index_proxy"
+    assert direct["reference_vix_close"] == 20
+    assert direct["close_error"] == 2
+    assert direct["close_error_pct"] == 10
+    assert direct["ohlc_mean_abs_error"] == 1.25
+    assert direct["minute_mid_quote_count"] == 240
+
+
+def test_option_vix_daily_candle_is_not_presented_as_minute_validation():
+    service = _service()
+    rows = [
+        {
+            "trade_date": date(2026, 7, 10),
+            "option_vix_json": {
+                "sse:510300": {
+                    "vix_open": 21,
+                    "vix_high": 23,
+                    "vix_low": 20,
+                    "vix_close": 22,
+                    "calculation_method": "ivix_30d_option_open_and_close",
+                },
+            },
+        }
+    ]
+
+    point = next(
+        item for item in service._build_cn_option_series(
+            rows,
+            "沪深300",
+            qvix_rows=[
+                {
+                    "trade_date": date(2026, 7, 10),
+                    "open_price": 20,
+                    "high_price": 24,
+                    "low_price": 19,
+                    "close_price": 21,
+                }
+            ],
+            qvix_code="300ETF_QVIX",
+        )
+        if item["source_key"] == "sse:510300"
+    )["vix_points"][0]
+
+    assert point["uses_minute_ohlc"] is False
+    assert point["reference_qvix_code"] is None
+    assert point["ohlc_mean_abs_error"] is None
+
+
 def test_option_vix_strategy_rejects_other_index_source():
     service = _service()
     payload = _put_call_rule_payload("中证500", "sh000905")

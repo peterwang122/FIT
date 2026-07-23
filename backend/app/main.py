@@ -197,6 +197,10 @@ def ensure_runtime_tables() -> None:
         strategy_alter_statements.append(
             f"ALTER TABLE `{QuantStrategyConfig.__tablename__}` ADD COLUMN `scan_trade_config` JSON NULL"
         )
+    if "research_option_template" not in existing_strategy_columns:
+        strategy_alter_statements.append(
+            f"ALTER TABLE `{QuantStrategyConfig.__tablename__}` ADD COLUMN `research_option_template` JSON NULL"
+        )
     if "scan_start_date" not in existing_strategy_columns:
         strategy_alter_statements.append(
             f"ALTER TABLE `{QuantStrategyConfig.__tablename__}` ADD COLUMN `scan_start_date` DATE NULL"
@@ -425,16 +429,38 @@ def ensure_runtime_tables() -> None:
             root_user,
             collector_key="douyin_coze_emotion_daily",
             name="抖音四大指数情绪日更",
-            schedule_time="20:55",
+            schedule_time="19:00",
             market_scope="cn_stock",
+            enforce_schedule_time=True,
         )
         _ensure_default_collection_task(
             db,
             root_user,
             collector_key="exchange_option_daily",
-            name="沪深交易所期权日更",
+            name="沪深交易所期权行情日更",
             schedule_time="17:00",
             market_scope="cn_stock",
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="exchange_option_stats_daily",
+            name="沪深交易所期权官方统计补齐",
+            schedule_time="21:10",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="option_minute_daily",
+            name="期权分钟行情采集",
+            schedule_time="09:25",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
         )
         _ensure_default_collection_task(
             db,
@@ -444,6 +470,72 @@ def ensure_runtime_tables() -> None:
             schedule_time="16:40",
             market_scope="cn_stock",
         )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="cn_macro_daily",
+            name="A股宏观指标日更",
+            schedule_time="21:30",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="margin_trading_daily",
+            name="A股融资融券日更",
+            schedule_time="09:20",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="fund_purchase_limit_daily",
+            name="A股公募基金限购日更",
+            schedule_time="22:15",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="quant_index_daily",
+            name="看板数据计算",
+            schedule_time="22:30",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        for collector_key, name, schedule_time, legacy_names in (
+            ("index_us_credit_spread_daily", "美股高收益债利差日更", "00:45", ("美债收益债利差采集",)),
+            ("index_us_treasury_yield_daily", "美债收益率日更", "05:30", ("美债收益率采集",)),
+            ("index_us_daily", "美股指数日更", "06:00", ("美股指数采集",)),
+            ("index_us_vix_daily", "美股 VIX 日更", "06:10", ("美股VIX采集",)),
+            ("index_us_fear_greed_daily", "美股恐贪指数日更", "06:20", ("美股恐贪指数采集",)),
+            ("index_us_put_call_ratio_daily", "美股 Put/Call Ratio 日更", "06:30", ()),
+            ("us_index_futures_daily", "美股股指期货日更", "06:45", ("美股期货数据采集",)),
+            ("index_us_hedge_proxy_daily", "OFR 美股持仓代理月更", "09:30", ("美股持仓采集",)),
+            (
+                "us_index_futures_official_daily",
+                "CME 美股股指期货官方结算日更",
+                "14:30",
+                ("美股期货合约采集",),
+            ),
+        ):
+            _ensure_default_collection_task(
+                db,
+                root_user,
+                collector_key=collector_key,
+                name=name,
+                schedule_time=schedule_time,
+                market_scope="us_index",
+                enforce_schedule_time=True,
+                enforce_name=True,
+                legacy_names=legacy_names,
+            )
         db.commit()
 
 
@@ -502,6 +594,9 @@ def _ensure_default_collection_task(
     name: str,
     schedule_time: str,
     market_scope: str = "cn_stock",
+    enforce_schedule_time: bool = False,
+    enforce_name: bool = False,
+    legacy_names: tuple[str, ...] = (),
 ) -> ScheduledTask:
     existing_items = (
         db.query(ScheduledTask)
@@ -513,7 +608,20 @@ def _ensure_default_collection_task(
         .all()
     )
     for item in existing_items:
-        if str((item.config_json or {}).get("collector_key") or "").strip().lower() == collector_key:
+        item_config = dict(item.config_json or {})
+        item_collector_key = str(item_config.get("collector_key") or "").strip().lower()
+        matches_legacy_name = not item_collector_key and item.name in legacy_names
+        if item_collector_key == collector_key or matches_legacy_name:
+            if matches_legacy_name:
+                item_config["collector_key"] = collector_key
+                item.config_json = item_config
+                db.add(item)
+            if enforce_schedule_time and item.schedule_time != schedule_time:
+                item.schedule_time = schedule_time
+                db.add(item)
+            if enforce_name and item.name != name:
+                item.name = name
+                db.add(item)
             return item
 
     item = ScheduledTask(

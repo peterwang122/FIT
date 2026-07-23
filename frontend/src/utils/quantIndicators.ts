@@ -19,6 +19,9 @@ import type {
   IndexCnOptionPutCallPoint,
   IndexCnOptionSeries,
   IndexEmotionPoint,
+  IndexFundPurchaseLimitPoint,
+  IndexMarginTradingPoint,
+  IndexRelatedVixSeries,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
@@ -60,6 +63,8 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'vix-high',
   'vix-low',
   'vix-close',
+  'reference-vix-hs300-high',
+  'reference-vix-csi500-high',
   'cn-option-put-call-current',
   'cn-option-put-call-next',
   'cn-option-put-call-quarter-1',
@@ -95,6 +100,12 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'cffex-net-short-citic-delta-30d',
   'cffex-net-short-citic-delta-60d',
   'cffex-net-short-citic-delta-120d',
+  'fund-purchase-limit-count',
+  'fund-purchase-limit-pct',
+  'margin-financing-balance',
+  'margin-securities-lending-balance',
+  'margin-total-balance',
+  'margin-financing-net-buy',
   'rsi',
   'wr',
   'macd-dif',
@@ -820,10 +831,13 @@ type IndexDatasetOptions = {
   basisAdjustedLabel?: string
   basisMonthLabel?: string
   includeCnVix?: boolean
+  relatedVixSeries?: IndexRelatedVixSeries[]
   includeCnOptionPutCall?: boolean
   includeCnOptionFlowPutCall?: boolean
   includeCffexNetShortDelta?: boolean
   includeBasisDelta?: boolean
+  includeFundPurchaseLimit?: boolean
+  includeMarginTrading?: boolean
   includeUsVix?: boolean
   includeUsFearGreed?: boolean
   includeUsHedge?: boolean
@@ -839,6 +853,8 @@ type IndexDatasetOptions = {
   cnOptionSeries?: IndexCnOptionSeries[]
   cffexNetShortDeltaPoints?: IndexCffexNetShortDeltaPoint[]
   basisDeltaPoints?: IndexBasisDeltaPoint[]
+  fundPurchaseLimitPoints?: IndexFundPurchaseLimitPoint[]
+  marginTradingPoints?: IndexMarginTradingPoint[]
   usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints?: IndexUsCreditSpreadPoint[]
 }
@@ -858,6 +874,8 @@ function buildIndexQuantFilterFields(
     includeCnOptionFlowPutCall: boolean
     includeCffexNetShortDelta: boolean
     includeBasisDelta: boolean
+    includeFundPurchaseLimit: boolean
+    includeMarginTrading: boolean
     includeUsVix: boolean
     includeUsFearGreed: boolean
     includeUsHedge: boolean
@@ -865,6 +883,7 @@ function buildIndexQuantFilterFields(
     includeUsTreasuryYield: boolean
     includeUsCreditSpread: boolean
     cnOptionSeries: IndexCnOptionSeries[]
+    relatedVixSeries: IndexRelatedVixSeries[]
   },
 ): QuantFilterFieldMeta[] {
   const fields: QuantFilterFieldMeta[] = [
@@ -903,6 +922,13 @@ function buildIndexQuantFilterFields(
       { key: 'vix-low', group: 'vix', label: 'VIX低' },
       { key: 'vix-close', group: 'vix', label: 'VIX收' },
     )
+  }
+  for (const series of options.relatedVixSeries) {
+    fields.unshift({
+      key: series.source_key,
+      group: 'vix',
+      label: `${series.source_name} VIX高`,
+    })
   }
   if (options.includeCnOptionPutCall) {
     fields.unshift(
@@ -1009,6 +1035,20 @@ function buildIndexQuantFilterFields(
       { key: 'cffex-net-short-citic-delta-30d', group: 'net-short', label: '中信净空增量 30D' },
       { key: 'cffex-net-short-citic-delta-60d', group: 'net-short', label: '中信净空增量 60D' },
       { key: 'cffex-net-short-citic-delta-120d', group: 'net-short', label: '中信净空增量 120D' },
+    )
+  }
+  if (options.includeFundPurchaseLimit) {
+    fields.unshift(
+      { key: 'fund-purchase-limit-count', group: 'fund-limit', label: 'A股公募基金大额限购家数' },
+      { key: 'fund-purchase-limit-pct', group: 'fund-limit', label: 'A股公募基金大额限购比例(%)' },
+    )
+  }
+  if (options.includeMarginTrading) {
+    fields.unshift(
+      { key: 'margin-financing-balance', group: 'margin-trading', label: '融资余额' },
+      { key: 'margin-securities-lending-balance', group: 'margin-trading', label: '融券余额' },
+      { key: 'margin-total-balance', group: 'margin-trading', label: '两融余额' },
+      { key: 'margin-financing-net-buy', group: 'margin-trading', label: '融资净买入额' },
     )
   }
   if (options.includeUsVix) {
@@ -1131,6 +1171,8 @@ export function buildIndexQuantFilterDataset(
   const includeCnOptionFlowPutCall = options.includeCnOptionFlowPutCall ?? false
   const includeCffexNetShortDelta = options.includeCffexNetShortDelta ?? includeCnAuxiliary
   const includeBasisDelta = options.includeBasisDelta ?? includeCnAuxiliary
+  const includeFundPurchaseLimit = options.includeFundPurchaseLimit ?? false
+  const includeMarginTrading = options.includeMarginTrading ?? false
   const includeUsVix = options.includeUsVix ?? false
   const includeUsFearGreed = options.includeUsFearGreed ?? false
   const includeUsHedge = options.includeUsHedge ?? false
@@ -1146,8 +1188,11 @@ export function buildIndexQuantFilterDataset(
   const cnOptionSeries = options.cnOptionSeries ?? []
   const cffexNetShortDeltaPoints = options.cffexNetShortDeltaPoints ?? []
   const basisDeltaPoints = options.basisDeltaPoints ?? []
+  const fundPurchaseLimitPoints = options.fundPurchaseLimitPoints ?? []
+  const marginTradingPoints = options.marginTradingPoints ?? []
   const usTreasuryYieldPoints = options.usTreasuryYieldPoints ?? []
   const usCreditSpreadPoints = options.usCreditSpreadPoints ?? []
+  const relatedVixSeries = options.relatedVixSeries ?? []
 
   const emotion = includeCnAuxiliary ? calculateQuantEmotionSeries(candles, symbolName, emotionPoints) : null
   const basis = includeBasis ? calculateQuantFuturesBasisSeries(candles, symbolName, basisPoints) : null
@@ -1187,6 +1232,14 @@ export function buildIndexQuantFilterDataset(
       },
     ]),
   )
+  const relatedVixValuesByDate = new Map<string, Partial<Record<QuantFilterFieldKey, number | null>>>()
+  for (const series of relatedVixSeries) {
+    for (const point of series.points) {
+      const values = relatedVixValuesByDate.get(point.trade_date) ?? {}
+      values[series.source_key] = Number.isFinite(Number(point.high_price)) ? Number(point.high_price) : null
+      relatedVixValuesByDate.set(point.trade_date, values)
+    }
+  }
   const usVixByDate = new Map(
     usVixPoints.map((item) => [
       item.trade_date,
@@ -1316,6 +1369,26 @@ export function buildIndexQuantFilterDataset(
       },
     ]),
   )
+  const fundPurchaseLimitByDate = new Map(
+    fundPurchaseLimitPoints.map((item) => [
+      item.trade_date,
+      {
+        'fund-purchase-limit-count': toFiniteNullableNumber(item.limited_fund_count),
+        'fund-purchase-limit-pct': toFiniteNullableNumber(item.limited_fund_pct),
+      },
+    ]),
+  )
+  const marginTradingByDate = new Map(
+    marginTradingPoints.map((item) => [
+      item.trade_date,
+      {
+        'margin-financing-balance': toFiniteNullableNumber(item.financing_balance),
+        'margin-securities-lending-balance': toFiniteNullableNumber(item.securities_lending_balance),
+        'margin-total-balance': toFiniteNullableNumber(item.total_balance),
+        'margin-financing-net-buy': toFiniteNullableNumber(item.financing_net_buy_amount),
+      },
+    ]),
+  )
   const usTreasuryByDate = new Map(
     usTreasuryYieldPoints.map((item) => [
       item.trade_date,
@@ -1375,6 +1448,7 @@ export function buildIndexQuantFilterDataset(
       'vix-high': vixByDate.get(snapshot.tradeDate)?.['vix-high'] ?? null,
       'vix-low': vixByDate.get(snapshot.tradeDate)?.['vix-low'] ?? null,
       'vix-close': vixByDate.get(snapshot.tradeDate)?.['vix-close'] ?? null,
+      ...(relatedVixValuesByDate.get(snapshot.tradeDate) ?? {}),
       'cn-option-put-call-current': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-current'] ?? null,
       'cn-option-put-call-next': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-next'] ?? null,
       'cn-option-put-call-quarter-1': cnOptionPutCallByDate.get(snapshot.tradeDate)?.['cn-option-put-call-quarter-1'] ?? null,
@@ -1412,6 +1486,12 @@ export function buildIndexQuantFilterDataset(
       'basis-month-delta-30d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-30d'] ?? null,
       'basis-month-delta-60d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-60d'] ?? null,
       'basis-month-delta-120d': basisDeltaByDate.get(snapshot.tradeDate)?.['basis-month-delta-120d'] ?? null,
+      'fund-purchase-limit-count': fundPurchaseLimitByDate.get(snapshot.tradeDate)?.['fund-purchase-limit-count'] ?? null,
+      'fund-purchase-limit-pct': fundPurchaseLimitByDate.get(snapshot.tradeDate)?.['fund-purchase-limit-pct'] ?? null,
+      'margin-financing-balance': marginTradingByDate.get(snapshot.tradeDate)?.['margin-financing-balance'] ?? null,
+      'margin-securities-lending-balance': marginTradingByDate.get(snapshot.tradeDate)?.['margin-securities-lending-balance'] ?? null,
+      'margin-total-balance': marginTradingByDate.get(snapshot.tradeDate)?.['margin-total-balance'] ?? null,
+      'margin-financing-net-buy': marginTradingByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy'] ?? null,
       'us-vix-open': usVixByDate.get(snapshot.tradeDate)?.['us-vix-open'] ?? null,
       'us-vix-high': usVixByDate.get(snapshot.tradeDate)?.['us-vix-high'] ?? null,
       'us-vix-low': usVixByDate.get(snapshot.tradeDate)?.['us-vix-low'] ?? null,
@@ -1459,6 +1539,8 @@ export function buildIndexQuantFilterDataset(
       includeCnOptionFlowPutCall,
       includeCffexNetShortDelta,
       includeBasisDelta,
+      includeFundPurchaseLimit,
+      includeMarginTrading,
       includeUsVix,
       includeUsFearGreed,
       includeUsHedge,
@@ -1466,6 +1548,7 @@ export function buildIndexQuantFilterDataset(
       includeUsTreasuryYield,
       includeUsCreditSpread,
       cnOptionSeries,
+      relatedVixSeries,
     }),
     snapshots,
   }

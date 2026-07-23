@@ -25,13 +25,28 @@ HK_INDEX_ALL_CODE = "ALL_HK_INDEX"
 US_INDEX_ALL_CODE = "ALL_US_INDEX"
 HK_INDEX_ALL_NAME = "港股指数全市场"
 US_INDEX_ALL_NAME = "美股指数全市场"
+DOUYIN_POLL_TERMINAL_SUMMARY_PREFIX = "已发现当天新作品"
 
 
 class TaskRunSkipped(RuntimeError):
     pass
 
 
-COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
+class TaskRunTerminalFailure(RuntimeError):
+    pass
+
+
+class TaskRunRetryableFailure(RuntimeError):
+    pass
+
+
+class TaskRunPollingPending(RuntimeError):
+    def __init__(self, message: str, countdown_seconds: int = 60):
+        super().__init__(message)
+        self.countdown_seconds = max(1, int(countdown_seconds))
+
+
+COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
     "stock_hfq_single": {
         "label": "A股股票单只 HFQ 采集",
         "market_scope": "cn_stock",
@@ -110,11 +125,25 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "endpoint": "/collect-option-daily",
     },
     "exchange_option_daily": {
-        "label": "沪深交易所期权日更",
+        "label": "沪深交易所期权行情日更",
         "market_scope": "cn_stock",
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-exchange-option-daily",
+    },
+    "exchange_option_stats_daily": {
+        "label": "沪深交易所期权官方统计补齐",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-exchange-option-stats-daily",
+    },
+    "option_minute_daily": {
+        "label": "期权分钟行情采集",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-option-minute-daily",
     },
     "cn_risk_free_rate_daily": {
         "label": "人民币无风险利率日更",
@@ -122,6 +151,30 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-cn-risk-free-rate-daily",
+    },
+    "cn_macro_daily": {
+        "label": "A股宏观指标日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-cn-macro-daily",
+    },
+    "margin_trading_daily": {
+        "label": "A股融资融券日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-margin-trading-daily",
+        "poll_end_time": "09:35",
+        "poll_interval_minutes": 1,
+        "poll_inside_run": True,
+    },
+    "fund_purchase_limit_daily": {
+        "label": "A股公募基金限购日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-fund-purchase-limit-daily",
     },
     "quant_index_daily": {
         "label": "量化指数看板日更",
@@ -164,6 +217,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-us-index-futures-official-daily",
+        "validation_trading_day_lag": 1,
     },
     "index_qvix_daily": {
         "label": "QVIX 日更",
@@ -194,6 +248,9 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "requires_target": False,
         "endpoint": "/collect-douyin-coze-emotion-daily",
         "calendar_daily": True,
+        "poll_end_time": "21:00",
+        "poll_interval_minutes": 1,
+        "poll_inside_run": True,
     },
     "index_us_vix_daily": {
         "label": "美股 VIX 日更",
@@ -210,11 +267,12 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "endpoint": "/collect-index-us-fear-greed-daily",
     },
     "index_us_hedge_proxy_daily": {
-        "label": "美股对冲基金代理日更",
+        "label": "OFR 美股持仓代理月更",
         "market_scope": "us_index",
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-index-us-hedge-proxy-daily",
+        "latest_release_max_age_days": 45,
     },
     "index_us_put_call_ratio_daily": {
         "label": "美股 Put/Call Ratio 日更",
@@ -229,6 +287,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-index-us-treasury-yield-daily",
+        "validation_trading_day_lag": 1,
     },
     "index_us_credit_spread_daily": {
         "label": "美股高收益债利差日更",
@@ -236,6 +295,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-index-us-credit-spread-daily",
+        "validation_trading_day_lag": 1,
     },
 }
 
@@ -251,8 +311,12 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "futures_daily": "中金所期货日更",
     "etf_daily": "ETF 日更",
     "option_daily": "中金所期权日更",
-    "exchange_option_daily": "沪深交易所期权日更",
+    "exchange_option_daily": "沪深交易所期权行情日更",
+    "exchange_option_stats_daily": "沪深交易所期权官方统计补齐",
+    "option_minute_daily": "期权分钟行情采集",
     "cn_risk_free_rate_daily": "人民币无风险利率日更",
+    "cn_macro_daily": "A股宏观指标日更",
+    "margin_trading_daily": "A股融资融券日更",
     "quant_index_daily": "量化指数看板日更",
     "index_hk_daily": "港股指数日更",
     "index_us_daily": "美股指数日更",
@@ -265,7 +329,7 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "douyin_coze_emotion_daily": "抖音四大指数情绪日更",
     "index_us_vix_daily": "美股 VIX 日更",
     "index_us_fear_greed_daily": "美股恐贪指数日更",
-    "index_us_hedge_proxy_daily": "美股对冲基金代理日更",
+    "index_us_hedge_proxy_daily": "OFR 美股持仓代理月更",
     "index_us_put_call_ratio_daily": "美股 Put/Call Ratio 日更",
     "index_us_treasury_yield_daily": "美债收益率日更",
     "index_us_credit_spread_daily": "美股高收益债利差日更",
@@ -283,6 +347,8 @@ class CollectionDataProbe:
     where_sql: str = ""
     params: dict[str, object] = field(default_factory=dict)
     minimum_rows: int = 1
+    distinct_count_column: str | None = None
+    warning_below_rows: int | None = None
 
 
 def _quoted_identifier(value: str) -> str:
@@ -431,22 +497,6 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
     ],
     "exchange_option_daily": [
         CollectionDataProbe(
-            "option_exchange_daily_stats",
-            "trade_date",
-            "上交所期权产品",
-            where_sql="AND exchange = :exchange",
-            params={"exchange": "SSE"},
-            minimum_rows=5,
-        ),
-        CollectionDataProbe(
-            "option_exchange_daily_stats",
-            "trade_date",
-            "深交所期权产品",
-            where_sql="AND exchange = :exchange",
-            params={"exchange": "SZSE"},
-            minimum_rows=4,
-        ),
-        CollectionDataProbe(
             "option_exchange_contract_daily_data",
             "trade_date",
             "上交所期权合约官方量额",
@@ -471,12 +521,110 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
             params={"exchange": "SZSE"},
         ),
     ],
+    "exchange_option_stats_daily": [
+        CollectionDataProbe(
+            "option_exchange_daily_stats",
+            "trade_date",
+            "上交所期权产品",
+            where_sql="AND exchange = :exchange",
+            params={"exchange": "SSE"},
+            minimum_rows=5,
+        ),
+        CollectionDataProbe(
+            "option_exchange_daily_stats",
+            "trade_date",
+            "深交所期权产品",
+            where_sql="AND exchange = :exchange",
+            params={"exchange": "SZSE"},
+            minimum_rows=4,
+        ),
+    ],
+    "option_minute_daily": [
+        *[
+            CollectionDataProbe(
+                "option_contract_minute_data",
+                "trade_date",
+                f"{source_key}原始分钟",
+                where_sql="AND exchange = :exchange AND underlying_code = :underlying_code",
+                params={
+                    "exchange": source_key.split(":", 1)[0].upper(),
+                    "underlying_code": source_key.split(":", 1)[1],
+                },
+                minimum_rows=220,
+                distinct_count_column="bar_time",
+            )
+            for source_key in (
+                "cffex:HO",
+                "cffex:IO",
+                "cffex:MO",
+                "sse:510050",
+                "sse:510300",
+                "sse:510500",
+                "sse:588000",
+                "sse:588080",
+                "szse:159919",
+                "szse:159922",
+            )
+        ],
+        *[
+            CollectionDataProbe(
+                "option_vix_minute_data",
+                "trade_date",
+                f"{source_key}分钟VIX",
+                where_sql="AND source_key = :source_key",
+                params={"source_key": source_key},
+                minimum_rows=100,
+                warning_below_rows=220,
+            )
+            for source_key in (
+                "cffex:HO",
+                "cffex:IO",
+                "cffex:MO",
+                "sse:510050",
+                "sse:510300",
+                "sse:510500",
+                "sse:588000",
+                "sse:588080",
+                "szse:159919",
+                "szse:159922",
+            )
+        ],
+    ],
     "cn_risk_free_rate_daily": [
         CollectionDataProbe(
             "cn_risk_free_rate_daily",
             "trade_date",
             "人民币无风险利率曲线",
             minimum_rows=8,
+        ),
+    ],
+    "cn_macro_daily": [
+        CollectionDataProbe(
+            "cn_macro_indicator_daily",
+            "trade_date",
+            "A股宏观指标",
+            where_sql=(
+                "AND hs300_equity_bond_spread_pp IS NOT NULL "
+                "AND csi1000_equity_bond_spread_pp IS NOT NULL "
+                "AND buffett_indicator_pct IS NOT NULL "
+                "AND household_deposit_market_cap_ratio_pct IS NOT NULL"
+            ),
+        ),
+    ],
+    "margin_trading_daily": [
+        CollectionDataProbe(
+            "margin_trading_daily_data",
+            "trade_date",
+            "沪深北融资融券汇总",
+            minimum_rows=3,
+        ),
+    ],
+    "fund_purchase_limit_daily": [
+        CollectionDataProbe(
+            "fund_purchase_limit_daily_data",
+            "trade_date",
+            "A股权益类公募基金申购状态",
+            minimum_rows=1000,
         ),
     ],
     "quant_index_daily": [
@@ -704,6 +852,8 @@ class TaskService:
                 return "index_news_sentiment_daily"
             if "量化" in normalized_name and "看板" in normalized_name:
                 return "quant_index_daily"
+            if "期权" in normalized_name and "分钟" in normalized_name:
+                return "option_minute_daily"
             if "期权" in normalized_name:
                 return "option_daily"
             if "会员持仓" in normalized_name:
@@ -774,6 +924,97 @@ class TaskService:
             return False
         return self._is_calendar_daily_collection(collector_key)
 
+    def _polling_window_for_task(
+        self,
+        task: ScheduledTask,
+        *,
+        include_internal: bool = False,
+    ) -> tuple[time, time, int] | None:
+        if task.task_type != "collection":
+            return None
+        config = task.config_json or {}
+        try:
+            collector_key = self._normalize_collector_key(
+                config.get("collector_key"),
+                task.market_scope,
+                config.get("target_type"),
+                config.get("target_code") or config.get("stock_code"),
+                config.get("target_name"),
+                task.name,
+            )
+        except ValueError:
+            return None
+        definition = COLLECTION_TASK_DEFINITIONS.get(collector_key) or {}
+        if definition.get("poll_inside_run") and not include_internal:
+            return None
+        end_time_text = str(definition.get("poll_end_time") or "").strip()
+        if not end_time_text:
+            return None
+        start_hour, start_minute = self._parse_schedule_parts(task.schedule_time)
+        end_hour, end_minute = self._parse_schedule_parts(end_time_text)
+        start_time = time(hour=start_hour, minute=start_minute)
+        end_time = time(hour=end_hour, minute=end_minute)
+        if end_time <= start_time:
+            raise ValueError("poll_end_time must be later than schedule_time")
+        try:
+            interval_minutes = max(1, int(definition.get("poll_interval_minutes") or 1))
+        except (TypeError, ValueError):
+            interval_minutes = 1
+        return start_time, end_time, interval_minutes
+
+    def _uses_internal_polling(self, task: ScheduledTask) -> bool:
+        if task.task_type != "collection":
+            return False
+        config = task.config_json or {}
+        try:
+            collector_key = self._normalize_collector_key(
+                config.get("collector_key"),
+                task.market_scope,
+                config.get("target_type"),
+                config.get("target_code") or config.get("stock_code"),
+                config.get("target_name"),
+                task.name,
+            )
+        except ValueError:
+            return False
+        definition = COLLECTION_TASK_DEFINITIONS.get(collector_key) or {}
+        return bool(definition.get("poll_inside_run"))
+
+    def _polling_run_state_for_date(self, task: ScheduledTask, target_date: date) -> tuple[bool, bool]:
+        day_start = datetime.combine(target_date, time.min)
+        day_end = day_start + timedelta(days=1)
+        runs = (
+            self.db.query(ScheduledTaskRun)
+            .filter(
+                ScheduledTaskRun.scheduled_task_id == task.id,
+                ScheduledTaskRun.trigger_type == "schedule",
+                ScheduledTaskRun.scheduled_for >= day_start,
+                ScheduledTaskRun.scheduled_for < day_end,
+                ScheduledTaskRun.status.in_(("queued", "running", "success", "failed")),
+            )
+            .order_by(ScheduledTaskRun.id.desc())
+            .limit(5)
+            .all()
+        )
+        has_success = False
+        has_active = False
+        for run in runs:
+            scheduled_for = getattr(run, "scheduled_for", None)
+            if (
+                getattr(run, "scheduled_task_id", None) != task.id
+                or getattr(run, "trigger_type", None) != "schedule"
+                or not isinstance(scheduled_for, datetime)
+                or scheduled_for.date() != target_date
+            ):
+                continue
+            status = str(getattr(run, "status", "") or "").strip().lower()
+            summary = str(getattr(run, "summary", "") or "").strip()
+            has_success = has_success or status == "success" or (
+                status == "failed" and summary.startswith(DOUYIN_POLL_TERMINAL_SUMMARY_PREFIX)
+            )
+            has_active = has_active or status in {"queued", "running"}
+        return has_success, has_active
+
     def _is_single_stock_collection(self, task: ScheduledTask | None = None, config: dict | None = None) -> bool:
         target_config = config if config is not None else (task.config_json if task is not None else {}) or {}
         market_scope = task.market_scope if task is not None else None
@@ -810,6 +1051,28 @@ class TaskService:
             return None
         if not task.enabled:
             return None
+
+        if self._uses_internal_polling(task):
+            internal_window = self._polling_window_for_task(task, include_internal=True)
+            if internal_window is not None:
+                start_time, end_time, _interval_minutes = internal_window
+                if now.time() < start_time or now.time() > end_time:
+                    return None
+
+        polling_window = self._polling_window_for_task(task)
+        if polling_window is not None:
+            start_time, end_time, interval_minutes = polling_window
+            start_at = datetime.combine(now.date(), start_time)
+            end_at = datetime.combine(now.date(), end_time)
+            if now < start_at or now > end_at:
+                return None
+            has_success, has_active = self._polling_run_state_for_date(task, now.date())
+            if has_success or has_active:
+                return None
+            elapsed_minutes = max(0, int((now - start_at).total_seconds() // 60))
+            slot_minutes = (elapsed_minutes // interval_minutes) * interval_minutes
+            scheduled_for = start_at + timedelta(minutes=slot_minutes)
+            return scheduled_for if scheduled_for <= end_at else None
 
         scheduled_for = self._scheduled_for_today(task.schedule_time, now)
         if scheduled_for > now:
@@ -933,6 +1196,29 @@ class TaskService:
             return None
         if not item.enabled:
             return None
+        if self._uses_internal_polling(item):
+            internal_window = self._polling_window_for_task(item, include_internal=True)
+            if internal_window is not None:
+                start_time, _end_time, _interval_minutes = internal_window
+                now = self._now()
+                start_at = datetime.combine(now.date(), start_time)
+                return start_at if now < start_at else datetime.combine(
+                    now.date() + timedelta(days=1),
+                    start_time,
+                )
+        polling_window = self._polling_window_for_task(item)
+        if polling_window is not None:
+            start_time, end_time, interval_minutes = polling_window
+            now = self._now()
+            start_at = datetime.combine(now.date(), start_time)
+            end_at = datetime.combine(now.date(), end_time)
+            has_success, _has_active = self._polling_run_state_for_date(item, now.date())
+            if has_success or now >= end_at:
+                return datetime.combine(now.date() + timedelta(days=1), start_time)
+            if now < start_at:
+                return start_at
+            next_slot = now.replace(second=0, microsecond=0) + timedelta(minutes=interval_minutes)
+            return next_slot if next_slot <= end_at else datetime.combine(now.date() + timedelta(days=1), start_time)
         if self._is_calendar_daily_task(item):
             hour, minute = self._parse_schedule_parts(item.schedule_time)
             now = self._now()
@@ -1315,14 +1601,34 @@ class TaskService:
 
     def list_runs(self, task_id: int, owner_user_id: int, limit: int = 20) -> list[dict]:
         task = self._get_owned_task(task_id, owner_user_id)
+        is_douyin_polling_task = (
+            task.task_type == "collection"
+            and str((task.config_json or {}).get("collector_key") or "").strip().lower()
+            == "douyin_coze_emotion_daily"
+        )
+        query_limit = max(limit * 200, 2000) if is_douyin_polling_task else max(limit, 1)
         items = (
             self.db.query(ScheduledTaskRun)
             .filter(ScheduledTaskRun.scheduled_task_id == task.id)
             .order_by(ScheduledTaskRun.created_at.desc(), ScheduledTaskRun.id.desc())
-            .limit(max(limit, 1))
+            .limit(query_limit)
             .all()
         )
-        return [self._serialize_run(item) for item in items]
+        if not is_douyin_polling_task:
+            return [self._serialize_run(item) for item in items]
+
+        visible_items: list[ScheduledTaskRun] = []
+        scheduled_dates: set[date] = set()
+        for item in items:
+            if item.trigger_type == "schedule":
+                scheduled_date = item.scheduled_for.date()
+                if scheduled_date in scheduled_dates:
+                    continue
+                scheduled_dates.add(scheduled_date)
+            visible_items.append(item)
+            if len(visible_items) >= max(limit, 1):
+                break
+        return [self._serialize_run(item) for item in visible_items]
 
     def _create_run(self, task: ScheduledTask, trigger_type: str, scheduled_for: datetime) -> ScheduledTaskRun:
         item = ScheduledTaskRun(
@@ -1429,7 +1735,7 @@ class TaskService:
         finished_at: datetime | None = None,
     ) -> None:
         run.status = status
-        if started_at is not None:
+        if started_at is not None and run.started_at is None:
             run.started_at = started_at
         if finished_at is not None:
             run.finished_at = finished_at
@@ -1550,6 +1856,22 @@ class TaskService:
             return self._normalize_market_scope(override_scope)
         return self._collection_market_scope(collector_key)
 
+    def _collection_validation_lagged_date(
+        self,
+        collector_key: str,
+        market_scope: str,
+        target_trade_date: date,
+    ) -> date:
+        definition = COLLECTION_TASK_DEFINITIONS.get(collector_key) or {}
+        try:
+            lag_days = max(0, int(definition.get("validation_trading_day_lag") or 0))
+        except (TypeError, ValueError):
+            lag_days = 0
+        lagged_date = target_trade_date
+        for _ in range(lag_days):
+            lagged_date = self.market_calendar.previous_trading_day(market_scope, lagged_date)
+        return lagged_date
+
     def _collection_target_trade_date(self, collector_key: str, reference_dt: datetime | None = None) -> date:
         if self._is_calendar_daily_collection(collector_key):
             reference = reference_dt or self._now()
@@ -1562,8 +1884,14 @@ class TaskService:
         market_scope = self._collection_validation_market_scope(collector_key)
         market_date = self.market_calendar.current_market_date(market_scope, reference_dt or self._now())
         if self.market_calendar.is_trading_day(market_scope, market_date):
-            return market_date
-        return self.market_calendar.previous_trading_day(market_scope, market_date)
+            target_trade_date = market_date
+        else:
+            target_trade_date = self.market_calendar.previous_trading_day(market_scope, market_date)
+        return self._collection_validation_lagged_date(
+            collector_key,
+            market_scope,
+            target_trade_date,
+        )
 
     def _collection_target_trade_date_for_task(
         self,
@@ -1575,19 +1903,41 @@ class TaskService:
         reference = reference_dt or self._now()
         market_date = self.market_calendar.current_market_date(market_scope, reference)
         if not self.market_calendar.is_trading_day(market_scope, market_date):
-            return self.market_calendar.previous_trading_day(market_scope, market_date)
-
-        reference_local = reference.replace(tzinfo=SHANGHAI_TZ) if reference.tzinfo is None else reference.astimezone(SHANGHAI_TZ)
-        hour, minute = self._parse_schedule_parts(task.schedule_time)
-        if reference_local.time() < time(hour=hour, minute=minute):
-            return self.market_calendar.previous_trading_day(market_scope, market_date)
-        return market_date
+            target_trade_date = self.market_calendar.previous_trading_day(market_scope, market_date)
+        elif collector_key == "margin_trading_daily":
+            target_trade_date = self.market_calendar.previous_trading_day(market_scope, market_date)
+        else:
+            reference_local = (
+                reference.replace(tzinfo=SHANGHAI_TZ)
+                if reference.tzinfo is None
+                else reference.astimezone(SHANGHAI_TZ)
+            )
+            hour, minute = self._parse_schedule_parts(task.schedule_time)
+            if reference_local.time() < time(hour=hour, minute=minute):
+                target_trade_date = self.market_calendar.previous_trading_day(market_scope, market_date)
+            else:
+                target_trade_date = market_date
+        return self._collection_validation_lagged_date(
+            collector_key,
+            market_scope,
+            target_trade_date,
+        )
 
     def _collection_probe_snapshot(self, probe: CollectionDataProbe, target_trade_date: date) -> tuple[int, object]:
         date_column = _quoted_identifier(probe.date_column)
+        if probe.distinct_count_column:
+            target_count_sql = (
+                "COUNT(DISTINCT CASE "
+                f"WHEN {date_column} = :target_trade_date "
+                f"THEN {_quoted_identifier(probe.distinct_count_column)} END)"
+            )
+        else:
+            target_count_sql = (
+                f"SUM(CASE WHEN {date_column} = :target_trade_date THEN 1 ELSE 0 END)"
+            )
         sql = (
             f"SELECT "
-            f"SUM(CASE WHEN {date_column} = :target_trade_date THEN 1 ELSE 0 END) AS target_count, "
+            f"{target_count_sql} AS target_count, "
             f"MAX({date_column}) AS latest_date "
             f"FROM {_quoted_identifier(probe.table_name)} "
             f"WHERE 1 = 1 "
@@ -1684,6 +2034,59 @@ class TaskService:
         target_trade_date = target_trade_date or self._collection_target_trade_date(collector_key, reference_dt)
         failures: list[str] = []
         successes: list[str] = []
+        definition = COLLECTION_TASK_DEFINITIONS.get(collector_key) or {}
+        try:
+            latest_release_max_age_days = max(
+                0,
+                int(definition.get("latest_release_max_age_days") or 0),
+            )
+        except (TypeError, ValueError):
+            latest_release_max_age_days = 0
+
+        if latest_release_max_age_days:
+            reference = reference_dt or self._now()
+            reference_local = (
+                reference.replace(tzinfo=SHANGHAI_TZ)
+                if reference.tzinfo is None
+                else reference.astimezone(SHANGHAI_TZ)
+            )
+            for probe in probes:
+                _, latest_date = self._collection_probe_snapshot(probe, target_trade_date)
+                if latest_date is None:
+                    failures.append(f"{probe.label}尚无任何已发布数据")
+                    continue
+                normalized_latest_date = (
+                    latest_date.date()
+                    if isinstance(latest_date, datetime)
+                    else latest_date
+                )
+                if not isinstance(normalized_latest_date, date):
+                    normalized_latest_date = date.fromisoformat(str(latest_date))
+                latest_count, _ = self._collection_probe_snapshot(probe, normalized_latest_date)
+                age_days = (reference_local.date() - normalized_latest_date).days
+                if latest_count < probe.minimum_rows:
+                    failures.append(
+                        f"{probe.label}最新发布日{normalized_latest_date.isoformat()}仅"
+                        f"{latest_count}行（要求至少{probe.minimum_rows}行）"
+                    )
+                elif age_days > latest_release_max_age_days:
+                    failures.append(
+                        f"{probe.label}最新发布日{normalized_latest_date.isoformat()}，"
+                        f"已超过{latest_release_max_age_days}天未更新"
+                    )
+                else:
+                    successes.append(
+                        f"{probe.label}最新月度发布"
+                        f"{normalized_latest_date.isoformat()}共{latest_count}行"
+                    )
+            if failures:
+                upstream_result = self._compact_upstream_result(result)
+                raise RuntimeError(
+                    f"{label}入库校验失败：{'；'.join(failures)}；"
+                    f"上游返回：{upstream_result}"
+                )
+            return f"已确认月度源有效：{'，'.join(successes)}。"
+
         for probe in probes:
             target_count, latest_date = self._collection_probe_snapshot(probe, target_trade_date)
             if target_count < probe.minimum_rows:
@@ -1692,7 +2095,14 @@ class TaskService:
                     f"（要求至少{probe.minimum_rows}行，当前最新{latest_date or '-'}）"
                 )
             else:
-                successes.append(f"{probe.label}{target_count}行")
+                suffix = "分钟" if probe.distinct_count_column else "行"
+                success = f"{probe.label}{target_count}{suffix}"
+                if probe.warning_below_rows and target_count < probe.warning_below_rows:
+                    success += (
+                        f"（质量告警：可计算点少于{probe.warning_below_rows}，"
+                        "原始分钟完整但部分时点方差无效）"
+                    )
+                successes.append(success)
 
         if collector_key == "index_qvix_daily" and not failures:
             qvix_gap_failure = self._qvix_recent_gap_failure(target_trade_date)
@@ -1708,7 +2118,12 @@ class TaskService:
 
         return f"已确认 {target_trade_date.isoformat()} 数据入库：{'，'.join(successes)}。"
 
-    def _execute_collection_task(self, task: ScheduledTask, reference_dt: datetime | None = None) -> str:
+    def _execute_collection_task(
+        self,
+        task: ScheduledTask,
+        reference_dt: datetime | None = None,
+        trigger_type: str | None = None,
+    ) -> str:
         config = task.config_json or {}
         collector_key = self._normalize_collector_key(
             config.get("collector_key"),
@@ -1739,16 +2154,45 @@ class TaskService:
         if collector_key in {
             "stock_exchange_official_daily",
             "exchange_option_daily",
+            "exchange_option_stats_daily",
+            "option_minute_daily",
             "cn_risk_free_rate_daily",
+            "cn_macro_daily",
+            "margin_trading_daily",
+            "fund_purchase_limit_daily",
             "quant_index_daily",
             "index_qvix_daily",
         }:
             explicit_target_trade_date = self._collection_target_trade_date_for_task(collector_key, task, reference_dt)
-            if collector_key in {"stock_exchange_official_daily", "exchange_option_daily", "cn_risk_free_rate_daily"}:
+            if collector_key in {
+                "stock_exchange_official_daily",
+                "exchange_option_daily",
+                "exchange_option_stats_daily",
+                "option_minute_daily",
+                "cn_risk_free_rate_daily",
+                "cn_macro_daily",
+                "margin_trading_daily",
+                "fund_purchase_limit_daily",
+            }:
                 collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
         elif collector_key == "douyin_coze_emotion_daily":
             explicit_target_trade_date = self._collection_target_trade_date(collector_key, reference_dt)
             collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, _interval_minutes = polling_window
+                checked_at = self._now()
+                close_at = datetime.combine(checked_at.date(), end_time)
+                collection_payload.update(
+                    {
+                        "keep_browser_open": checked_at < close_at,
+                        "browser_close_at": close_at.isoformat(),
+                    }
+                )
 
         if collector_key == "index_hk_daily":
             result = run_index_daily_collection_request("hk")
@@ -1776,11 +2220,132 @@ class TaskService:
             if isinstance(result_value, dict)
             else ""
         )
+        if collector_key == "margin_trading_daily" and result_status == "SOURCE_NOT_READY":
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            latest_complete = str(result_value.get("latest_complete_date") or "-")
+            available = ", ".join(result_value.get("available_exchanges") or []) or "-"
+            expected = ", ".join(result_value.get("expected_exchanges") or []) or "-"
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, interval_minutes = polling_window
+                checked_at = self._now()
+                end_at = datetime.combine(checked_at.date(), end_time)
+                if checked_at < end_at:
+                    raise TaskRunPollingPending(
+                        f"{label}官方源尚未完整：目标交易日 {target_date}，"
+                        f"已发布 {available}，应有 {expected}；"
+                        f"将在同一条运行记录内继续检查。",
+                        countdown_seconds=interval_minutes * 60,
+                    )
+            raise TaskRunSkipped(
+                f"{label}官方源尚未发布完整：目标交易日 {target_date}，"
+                f"已发布 {available}，应有 {expected}，最近完整日期 {latest_complete}。"
+            )
+        douyin_processing_error = (
+            str(result_value.get("error") or "").strip()
+            if isinstance(result_value, dict)
+            else ""
+        )
+        douyin_incomplete_extraction = (
+            collector_key == "douyin_coze_emotion_daily"
+            and result_status == "UPDATE_FOUND_FAILED"
+            and any(
+                marker in douyin_processing_error
+                for marker in (
+                    "文案缺少",
+                    "图文 OCR 缺少情绪指标",
+                    "情绪指标存在歧义",
+                    "正式情绪表仅有",
+                )
+            )
+        )
+        if (
+            collector_key == "douyin_coze_emotion_daily"
+            and result_status == "UPDATE_FOUND_FAILED"
+            and not douyin_incomplete_extraction
+        ):
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            video_id = str(result_value.get("video_id") or "-")
+            error_message = douyin_processing_error or "作品处理失败"
+            raise TaskRunTerminalFailure(
+                f"{DOUYIN_POLL_TERMINAL_SUMMARY_PREFIX}：日期 {target_date}，作品 {video_id}；"
+                f"后续情绪提取失败：{error_message}。今日轮询已停止。"
+            )
+        if (
+            collector_key == "douyin_coze_emotion_daily"
+            and (
+                result_status == "UPDATE_FOUND_RETRYABLE"
+                or douyin_incomplete_extraction
+            )
+        ):
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            video_id = str(result_value.get("video_id") or "-")
+            error_message = douyin_processing_error or "作品处理暂时失败"
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, interval_minutes = polling_window
+                checked_at = self._now()
+                end_at = datetime.combine(checked_at.date(), end_time)
+                if checked_at < end_at:
+                    raise TaskRunPollingPending(
+                        f"已发现今日作品 {video_id}，但处理暂未完成：{error_message}；"
+                        f"将在同一条运行记录内继续重试。",
+                        countdown_seconds=interval_minutes * 60,
+                    )
+            raise TaskRunRetryableFailure(
+                f"作品处理可重试：日期 {target_date}，作品 {video_id}；"
+                f"本轮自动重试后仍未完成：{error_message}。下一轮将继续重试。"
+            )
         if collector_key == "douyin_coze_emotion_daily" and result_status == "NO_UPDATE":
             latest_video_date = str(result_value.get("latest_video_date") or "-")
             target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            minimum_publish_time = str(result_value.get("minimum_publish_time") or "15:00").strip()
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, interval_minutes = polling_window
+                checked_at = self._now()
+                end_at = datetime.combine(checked_at.date(), end_time)
+                scheduled_at = reference_dt or checked_at
+                if checked_at >= end_at or scheduled_at.time() >= end_time:
+                    raise TaskRunSkipped(
+                        f"{label}截至 {end_time.strftime('%H:%M')} 仍未发现 "
+                        f"{minimum_publish_time} 后发布的新作品，"
+                        f"当前最新作品日期为 {latest_video_date}，今日轮询已结束。"
+                    )
+                next_check = min(
+                    checked_at.replace(second=0, microsecond=0) + timedelta(minutes=interval_minutes),
+                    end_at,
+                )
+                if (
+                    (COLLECTION_TASK_DEFINITIONS.get(collector_key) or {}).get("poll_inside_run")
+                ):
+                    raise TaskRunPollingPending(
+                        f"{label}已检查：目标日期 {target_date} 的 {minimum_publish_time} 后"
+                        f"暂未发布新作品，当前最新作品日期为 {latest_video_date}；"
+                        f"将在同一条运行记录内于 {next_check.strftime('%H:%M')} 继续检查。",
+                        countdown_seconds=interval_minutes * 60,
+                    )
+                raise TaskRunSkipped(
+                    f"{label}已检查：目标日期 {target_date} 的 {minimum_publish_time} 后"
+                    f"暂未发布新作品，"
+                    f"当前最新作品日期为 {latest_video_date}；"
+                    f"将在 {next_check.strftime('%H:%M')} 继续检查。"
+                )
             raise TaskRunSkipped(
-                f"{label}已检查：目标日期 {target_date} 当天未发布新作品，"
+                f"{label}已检查：目标日期 {target_date} 当天 {minimum_publish_time} 后"
+                f"未发布新作品，"
                 f"当前最新作品日期为 {latest_video_date}。"
             )
 
@@ -1831,7 +2396,11 @@ class TaskService:
 
         try:
             if task.task_type == "collection":
-                summary = self._execute_collection_task(task, reference_dt=run.scheduled_for or started_at)
+                summary = self._execute_collection_task(
+                    task,
+                    reference_dt=run.scheduled_for or started_at,
+                    trigger_type=run.trigger_type,
+                )
             elif task.task_type == "notification":
                 summary = self._execute_notification_task(
                     task,
@@ -1852,6 +2421,41 @@ class TaskService:
             )
             self.db.refresh(run)
             return self._serialize_run(run)
+        except TaskRunTerminalFailure as exc:
+            finished_at = self._now()
+            summary = str(exc)
+            self._mark_run_state(
+                run,
+                task,
+                status="failed",
+                summary=summary,
+                error_message=summary,
+                finished_at=finished_at,
+            )
+            self.db.refresh(run)
+            return self._serialize_run(run)
+        except TaskRunRetryableFailure as exc:
+            finished_at = self._now()
+            summary = str(exc)
+            self._mark_run_state(
+                run,
+                task,
+                status="failed",
+                summary=summary,
+                error_message=summary,
+                finished_at=finished_at,
+            )
+            self.db.refresh(run)
+            return self._serialize_run(run)
+        except TaskRunPollingPending as exc:
+            self._mark_run_state(
+                run,
+                task,
+                status="running",
+                summary=str(exc),
+                error_message="",
+            )
+            raise
         except Exception as exc:
             finished_at = self._now()
             self._mark_run_state(

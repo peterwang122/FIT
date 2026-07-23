@@ -4,7 +4,7 @@ import argparse
 import json
 import math
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -24,7 +24,9 @@ ROLLING_WINDOW = 252
 ROLLING_MIN_PERIODS = 126
 ROLLING_QUANTILES = (0.90, 0.95, 0.975)
 HOLDING_DAYS = (1, 2, 3, 5, 10, 15, 20, 30)
-MONEYNESS_TARGETS = (-0.10, -0.05, -0.025, 0.0, 0.025, 0.05, 0.10)
+STRIKE_BUCKETS = ("itm_3", "itm_2", "itm_1", "atm", "otm_1", "otm_2", "otm_3")
+THRESHOLD_QUANTILE_GRID = tuple(np.arange(0.60, 0.981, 0.02))
+MIN_THRESHOLD_TRADE_DATES = 5
 REFERENCE_SIGNAL_DATES = (
     pd.Timestamp("2024-10-08"),
     pd.Timestamp("2025-04-07"),
@@ -36,6 +38,11 @@ EXPIRY_BUCKETS = (
     ("quarter_1", "季月1"),
     ("quarter_2", "季月2"),
 )
+EXCHANGE_LABELS = {
+    "SSE": "上交所",
+    "SZSE": "深交所",
+    "CFFEX": "中金所",
+}
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,17 @@ INDEX_SPECS = (
     ),
 )
 
+CSI1000_OPTION_PRODUCT = ProductSpec("MO", "CFFEX", "中证1000股指期权", "cffex", "sh000852")
+CSI1000_OPTION_SPEC = IndexSpec(
+    "中证1000",
+    "sh000852",
+    "",
+    0,
+    (),
+    (CSI1000_OPTION_PRODUCT,),
+)
+INDEX_SPECS = (*INDEX_SPECS, CSI1000_OPTION_SPEC)
+
 
 def _number(value: object) -> float | None:
     try:
@@ -132,36 +150,20 @@ def sanitize_record(record: dict) -> dict:
     return _json_value(record)
 
 
-def format_moneyness(value: float) -> str:
-    if abs(value) < 1e-9:
-        return "平值附近"
-    magnitude = f"{abs(value) * 100:g}%"
-    side = "高行权价" if value > 0 else "低行权价"
-    return f"{side}约{magnitude}"
-
-
-def format_option_moneyness(value: float, option_type: str) -> str:
-    if abs(value) < 1e-9:
-        return "平值附近"
-    magnitude = f"{abs(value) * 100:g}%"
-    is_call = option_type.upper() == "CALL"
-    is_itm = value < 0 if is_call else value > 0
-    side = "高行权价" if value > 0 else "低行权价"
-    return f"{side}约{magnitude}（{'实值' if is_itm else '虚值'}）"
-
-
-def format_actual_strike_bucket(underlying_price: object, strike_price: object, option_type: str) -> str:
-    underlying = _number(underlying_price)
-    strike = _number(strike_price)
-    if underlying is None or underlying <= 0 or strike is None or strike <= 0:
+def format_strike_bucket(value: str) -> str:
+    if value == "atm":
+        return "平值"
+    prefix, _, rank = value.partition("_")
+    if prefix not in {"itm", "otm"} or not rank.isdigit():
         return "-"
-    distance = strike / underlying - 1
-    if abs(distance) < 0.005:
-        return "平值附近"
-    side = "高行权价" if distance > 0 else "低行权价"
-    is_call = option_type.upper() == "CALL"
-    is_itm = distance < 0 if is_call else distance > 0
-    return f"{side}{abs(distance) * 100:.1f}%（{'实值' if is_itm else '虚值'}）"
+    number_labels = {"1": "一", "2": "二", "3": "三"}
+    return f"{'实' if prefix == 'itm' else '虚'}{number_labels.get(rank, rank)}档"
+
+
+def product_display_name(exchange: object, product_name: object) -> str:
+    exchange_label = EXCHANGE_LABELS.get(str(exchange or "").upper(), str(exchange or "").strip())
+    name = str(product_name or "").strip()
+    return " ".join(part for part in (exchange_label, name) if part) or "-"
 
 
 def strategy_label(value: str | None) -> str:
@@ -381,6 +383,73 @@ def build_vix_events(qvix: pd.DataFrame, spec: IndexSpec) -> pd.DataFrame:
     return frame.sort_values(["signal_date", "rule_id"]).reset_index(drop=True)
 
 
+def detect_high_vix_episode_events(qvix: pd.DataFrame, threshold: float) -> pd.DataFrame:
+    """Build executable first-cross and hindsight peak rows for each high-VIX episode."""
+    if qvix.empty or "high_price" not in qvix.columns:
+        return pd.DataFrame()
+    high = pd.to_numeric(qvix["high_price"], errors="coerce")
+    close = pd.to_numeric(qvix.get("close_price"), errors="coerce")
+    episodes: list[list[pd.Timestamp]] = []
+    current_dates: list[pd.Timestamp] = []
+    below_count = 0
+    for trade_date, value in high.items():
+        parsed = _number(value)
+        if parsed is not None and parsed >= threshold:
+            current_dates.append(pd.Timestamp(trade_date))
+            below_count = 0
+            continue
+        if not current_dates:
+            continue
+        below_count += 1
+        if below_count >= 3:
+            episodes.append(current_dates)
+            current_dates = []
+            below_count = 0
+    if current_dates:
+        episodes.append(current_dates)
+
+    rows: list[dict] = []
+    for sequence, dates in enumerate(episodes, start=1):
+        first_date = dates[0]
+        peak_date = max(dates, key=lambda item: float(high.loc[item]))
+        episode_id = f"{threshold:g}:{first_date.date().isoformat()}:{sequence}"
+        for event_type, event_label, signal_date in (
+            ("first_cross", "首次突破", first_date),
+            ("range_peak", "区间最高", peak_date),
+        ):
+            rows.append(
+                {
+                    "signal_date": signal_date,
+                    "episode_id": episode_id,
+                    "episode_start_date": first_date,
+                    "episode_peak_date": peak_date,
+                    "event_type": event_type,
+                    "event_type_label": event_label,
+                    "rule_id": f"absolute-high-{threshold:g}",
+                    "rule_label": f"采集VIX最高价达到{threshold:g}",
+                    "vix_high": float(high.loc[signal_date]),
+                    "vix_close": _number(close.loc[signal_date]),
+                    "threshold_value": float(threshold),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_absolute_threshold_candidates(qvix: pd.DataFrame, minimum_value: float) -> list[float]:
+    if qvix.empty or "high_price" not in qvix.columns:
+        return []
+    high = pd.to_numeric(qvix["high_price"], errors="coerce")
+    high = high[(high > 0) & np.isfinite(high)]
+    if high.empty:
+        return []
+    candidates = {
+        round(max(float(minimum_value), float(high.quantile(quantile))) * 2) / 2
+        for quantile in THRESHOLD_QUANTILE_GRID
+    }
+    candidates.add(round(float(minimum_value) * 2) / 2)
+    return sorted(value for value in candidates if value <= float(high.max()))
+
+
 def compute_bottom_metrics(signal_date: pd.Timestamp, prices: pd.Series) -> dict:
     prices = prices.dropna().sort_index()
     if signal_date not in prices.index:
@@ -474,7 +543,7 @@ def select_contract(
     entry_rows: pd.DataFrame,
     entry_date: pd.Timestamp,
     underlying_price: float,
-    moneyness: float,
+    strike_bucket: str,
     expiry_bucket: str,
     minimum_expiry: pd.Timestamp,
     option_type: str = "CALL",
@@ -494,8 +563,37 @@ def select_contract(
     eligible = eligible[eligible["expiry_bucket"] == expiry_bucket].copy()
     if eligible.empty:
         return None
-    target_strike = underlying_price * (1 + moneyness)
-    eligible["strike_distance"] = (eligible["strike_price"] - target_strike).abs() / underlying_price
+
+    strikes = sorted(float(value) for value in eligible["strike_price"].dropna().unique() if float(value) > 0)
+    if not strikes:
+        return None
+    atm_strike = min(strikes, key=lambda value: (abs(value - underlying_price), value))
+    if strike_bucket == "atm":
+        target_strike = atm_strike
+    else:
+        prefix, _, rank_text = strike_bucket.partition("_")
+        if prefix not in {"itm", "otm"} or not rank_text.isdigit():
+            return None
+        rank = int(rank_text)
+        if rank <= 0:
+            return None
+        if option_type.upper() == "CALL":
+            candidates = (
+                sorted((value for value in strikes if value < atm_strike), reverse=True)
+                if prefix == "itm"
+                else sorted(value for value in strikes if value > atm_strike)
+            )
+        else:
+            candidates = (
+                sorted(value for value in strikes if value > atm_strike)
+                if prefix == "itm"
+                else sorted((value for value in strikes if value < atm_strike), reverse=True)
+            )
+        if len(candidates) < rank:
+            return None
+        target_strike = candidates[rank - 1]
+    eligible = eligible[eligible["strike_price"] == target_strike].copy()
+    eligible["strike_distance"] = (eligible["strike_price"] - underlying_price).abs() / underlying_price
     eligible = eligible.sort_values(
         ["strike_distance", "dte", "volume", "open_interest"],
         ascending=[True, True, False, False],
@@ -845,12 +943,12 @@ class VixOptionAnalyzer:
                 exit_date = calendar[exit_position]
                 minimum_expiry = exit_date + pd.Timedelta(days=3)
                 for expiry_bucket, expiry_label in EXPIRY_BUCKETS:
-                    for moneyness in MONEYNESS_TARGETS:
+                    for strike_bucket in STRIKE_BUCKETS:
                         long_row = select_contract(
                             entry_rows,
                             entry_date,
                             underlying_price,
-                            moneyness,
+                            strike_bucket,
                             expiry_bucket,
                             minimum_expiry,
                             option_type,
@@ -871,19 +969,15 @@ class VixOptionAnalyzer:
                             "expiry_bucket": expiry_bucket,
                             "expiry_bucket_label": expiry_label,
                             "entry_dte": int(long_row["dte"]),
-                            "moneyness": moneyness,
-                            "moneyness_label": format_option_moneyness(moneyness, option_type),
+                            "moneyness": strike_bucket,
+                            "moneyness_label": format_strike_bucket(strike_bucket),
                             "holding_days": holding_days,
                             "long_contract_code": long_code,
                             "long_contract_month": str(long_row["contract_month"]),
                             "contract_month_label": contract_month_label(entry_date, long_row["contract_month"]),
                             "long_strike": float(long_row["strike_price"]),
                             "underlying_entry_price": float(underlying_price),
-                            "long_strike_label": format_actual_strike_bucket(
-                                underlying_price,
-                                long_row["strike_price"],
-                                option_type,
-                            ),
+                            "long_strike_label": format_strike_bucket(strike_bucket),
                         }
                         long_trade = (
                             calculate_long_put_trade if option_type == "PUT" else calculate_long_call_trade
@@ -904,32 +998,297 @@ class VixOptionAnalyzer:
                             )
         return pd.DataFrame(rows)
 
-    def analyze_index(self, spec: IndexSpec) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-        qvix = self.load_qvix(spec.qvix_code)
-        index_prices = self.load_index_prices(spec.index_code)
-        qvix = qvix[qvix.index.isin(index_prices.index)]
-        events = build_vix_events(qvix, spec)
+    @staticmethod
+    def _attach_index_metrics(
+        spec: IndexSpec,
+        events: pd.DataFrame,
+        index_prices: pd.DataFrame,
+    ) -> pd.DataFrame:
         if events.empty:
-            return events, pd.DataFrame(), {}
-        unique_events = events[["index_name", "signal_date"]].drop_duplicates().copy()
-        bottom_rows = [
-            {"index_name": spec.index_name, "signal_date": date, **compute_bottom_metrics(date, index_prices["close_price"])}
-            for date in unique_events["signal_date"]
-        ]
-        bottom = pd.DataFrame(bottom_rows)
-        events = events.merge(bottom, on=["index_name", "signal_date"], how="left")
-        outcome_frames = []
+            return events
+        unique_dates = sorted(events["signal_date"].drop_duplicates())
+        metrics = pd.DataFrame(
+            [
+                {
+                    "index_name": spec.index_name,
+                    "signal_date": signal_date,
+                    **compute_bottom_metrics(signal_date, index_prices["close_price"]),
+                }
+                for signal_date in unique_dates
+            ]
+        )
+        result = events.copy()
+        result["index_name"] = spec.index_name
+        return result.merge(metrics, on=["index_name", "signal_date"], how="left")
+
+    def _build_product_outcomes(
+        self,
+        spec: IndexSpec,
+        events: pd.DataFrame,
+    ) -> pd.DataFrame:
+        outcome_frames: list[pd.DataFrame] = []
         for product in spec.products:
             print(f"[{spec.index_name}] 分析 {product.exchange}:{product.product_code}", flush=True)
             outcome = self._product_outcomes(spec, product, events)
             if not outcome.empty:
                 outcome_frames.append(outcome)
-        outcomes = pd.concat(outcome_frames, ignore_index=True) if outcome_frames else pd.DataFrame()
+        return pd.concat(outcome_frames, ignore_index=True) if outcome_frames else pd.DataFrame()
+
+    def _optimize_absolute_threshold(
+        self,
+        spec: IndexSpec,
+        qvix: pd.DataFrame,
+        index_prices: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
+        events_by_threshold: dict[float, pd.DataFrame] = {}
+        union_dates: set[pd.Timestamp] = set()
+        for threshold in build_absolute_threshold_candidates(qvix, spec.absolute_vix_floor):
+            events = detect_high_vix_episode_events(qvix, threshold)
+            if events.empty or events["signal_date"].nunique() < MIN_THRESHOLD_TRADE_DATES:
+                continue
+            events_by_threshold[threshold] = events
+            union_dates.update(pd.Timestamp(item) for item in events["signal_date"].unique())
+        if not events_by_threshold or not union_dates:
+            return pd.DataFrame(), pd.DataFrame(), []
+
+        union_events = pd.DataFrame(
+            {
+                "index_name": spec.index_name,
+                "signal_date": sorted(union_dates),
+            }
+        )
+        union_events = self._attach_index_metrics(spec, union_events, index_prices)
+        outcomes = self._build_product_outcomes(spec, union_events)
         if outcomes.empty:
+            return pd.DataFrame(), outcomes, []
+
+        candidate_rows: list[dict] = []
+        for threshold, raw_events in events_by_threshold.items():
+            threshold_events = self._attach_index_metrics(spec, raw_events, index_prices)
+            unique_events = threshold_events.sort_values("signal_date").drop_duplicates("signal_date")
+            evaluated = unique_events.merge(outcomes, on=["index_name", "signal_date"], how="inner")
+            aggregated = aggregate_outcomes(evaluated, minimum_trades=MIN_THRESHOLD_TRADE_DATES)
+            if aggregated.empty:
+                continue
+            max_return = aggregated.sort_values(
+                ["net_return_median", "net_return_p25", "trade_count"],
+                ascending=[False, False, False],
+            ).iloc[0].to_dict()
+            balanced = score_candidates(aggregated).iloc[0].to_dict()
+            candidate_rows.append(
+                {
+                    "threshold": float(threshold),
+                    "episode_count": int(raw_events["episode_id"].nunique()),
+                    "event_date_count": int(raw_events["signal_date"].nunique()),
+                    "max_return_recommendation": max_return,
+                    "balanced_recommendation": balanced,
+                    "max_return_median": _number(max_return.get("net_return_median")),
+                    "balanced_median": _number(balanced.get("net_return_median")),
+                    "balanced_p25": _number(balanced.get("net_return_p25")),
+                    "balanced_win_rate": _number(balanced.get("win_rate")),
+                    "balanced_mae": _number(balanced.get("median_mae")),
+                    "balanced_drawdown": _number(balanced.get("sequence_drawdown_units")),
+                }
+            )
+        if not candidate_rows:
+            return pd.DataFrame(), outcomes, []
+
+        candidates = pd.DataFrame(candidate_rows)
+        candidates["composite_score"] = sum(
+            (
+                candidates["balanced_median"].rank(pct=True),
+                candidates["balanced_p25"].rank(pct=True),
+                candidates["balanced_win_rate"].rank(pct=True),
+                candidates["balanced_mae"].rank(pct=True),
+                (-candidates["balanced_drawdown"]).rank(pct=True),
+                candidates["episode_count"].rank(pct=True),
+            )
+        ) / 6
+        max_return_row = candidates.sort_values(
+            ["max_return_median", "event_date_count", "threshold"],
+            ascending=[False, False, True],
+        ).iloc[0]
+        balanced_row = candidates.sort_values(
+            ["composite_score", "balanced_median", "event_date_count"],
+            ascending=[False, False, False],
+        ).iloc[0]
+
+        models: list[dict] = []
+        selected_frames: list[pd.DataFrame] = []
+        for mode, label, selected, recommendation_column in (
+            ("max_return", "收益最高", max_return_row, "max_return_recommendation"),
+            ("balanced", "综合最优", balanced_row, "balanced_recommendation"),
+        ):
+            threshold = float(selected["threshold"])
+            model_events = events_by_threshold[threshold].copy()
+            model_events["threshold_mode"] = mode
+            model_events["threshold_mode_label"] = label
+            selected_frames.append(self._attach_index_metrics(spec, model_events, index_prices))
+            recommendation = selected[recommendation_column]
+            models.append(
+                {
+                    "mode": mode,
+                    "label": label,
+                    "threshold": threshold,
+                    "episode_count": int(selected["episode_count"]),
+                    "event_date_count": int(selected["event_date_count"]),
+                    "composite_score": _number(selected.get("composite_score")),
+                    "recommendation": sanitize_record(recommendation),
+                }
+            )
+        selected_events = pd.concat(selected_frames, ignore_index=True)
+        selected_dates = set(selected_events["signal_date"])
+        return (
+            selected_events,
+            outcomes[outcomes["signal_date"].isin(selected_dates)].copy(),
+            models,
+        )
+
+    def analyze_csi1000(self) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+        """Analyze CSI 1000 as a normal target using two collected QVIX sources."""
+        index_prices = self.load_index_prices(CSI1000_OPTION_SPEC.index_code)
+        source_specs = [
+            next(item for item in INDEX_SPECS if item.index_name == "沪深300"),
+            next(item for item in INDEX_SPECS if item.index_name == "中证500"),
+        ]
+        event_frames: list[pd.DataFrame] = []
+        outcome_frames: list[pd.DataFrame] = []
+        source_models: dict[str, list[dict]] = {}
+        for source in source_specs:
+            qvix = self.load_qvix(source.qvix_code)
+            qvix = qvix[qvix.index.isin(index_prices.index)]
+            analysis_spec = replace(
+                CSI1000_OPTION_SPEC,
+                qvix_code=source.qvix_code,
+                absolute_vix_floor=source.absolute_vix_floor,
+                fixed_thresholds=source.fixed_thresholds,
+            )
+            events, outcomes, models = self._optimize_absolute_threshold(
+                analysis_spec,
+                qvix,
+                index_prices,
+            )
+            if events.empty or outcomes.empty or not models:
+                continue
+            events = events.copy()
+            events["vix_source"] = source.qvix_code
+            events["vix_source_label"] = source.index_name
+            events["episode_id"] = source.qvix_code + ":" + events["episode_id"].astype(str)
+            events["rule_id"] = source.qvix_code + ":" + events["rule_id"].astype(str)
+            events["rule_label"] = source.index_name + " " + events["rule_label"].astype(str)
+            event_frames.append(events)
+            outcome_frames.append(outcomes)
+            source_models[source.index_name] = models
+        if not event_frames or not outcome_frames:
+            return pd.DataFrame(), pd.DataFrame(), {}
+
+        events = pd.concat(event_frames, ignore_index=True)
+        outcomes = pd.concat(outcome_frames, ignore_index=True)
+        outcome_identity = [
+            column
+            for column in ["index_name", "signal_date", *CANDIDATE_COLUMNS]
+            if column in outcomes.columns
+        ]
+        outcomes = outcomes.drop_duplicates(outcome_identity)
+        models: list[dict] = []
+        evaluated_frames: list[pd.DataFrame] = []
+        evaluated_by_mode: dict[str, pd.DataFrame] = {}
+        for mode, label in (("max_return", "收益最高"), ("balanced", "综合最优")):
+            mode_events = events[events["threshold_mode"] == mode].copy()
+            if mode_events.empty:
+                continue
+            unique_events = mode_events.sort_values("signal_date").drop_duplicates("signal_date")
+            unique_events["rule_id"] = f"csi1000-dual-qvix-{mode}"
+            unique_events["rule_label"] = f"沪深300或中证500采集VIX达到{label}绝对阈值"
+            evaluated = unique_events.merge(outcomes, on=["index_name", "signal_date"], how="inner")
+            evaluated_frames.append(evaluated)
+            evaluated_by_mode[mode] = evaluated
+            aggregated = aggregate_outcomes(evaluated, minimum_trades=MIN_THRESHOLD_TRADE_DATES)
+            if aggregated.empty:
+                recommendation = None
+            elif mode == "max_return":
+                recommendation = aggregated.sort_values(
+                    ["net_return_median", "net_return_p25", "trade_count"],
+                    ascending=[False, False, False],
+                ).iloc[0].to_dict()
+            else:
+                recommendation = score_candidates(aggregated).iloc[0].to_dict()
+            thresholds = []
+            for source in source_specs:
+                source_model = next(
+                    (
+                        item
+                        for item in source_models.get(source.index_name, [])
+                        if item.get("mode") == mode
+                    ),
+                    None,
+                )
+                if source_model:
+                    thresholds.append(
+                        {
+                            "source_name": source.index_name,
+                            "qvix_code": source.qvix_code,
+                            "threshold": source_model["threshold"],
+                        }
+                    )
+            models.append(
+                {
+                    "mode": mode,
+                    "label": label,
+                    "threshold": None,
+                    "source_thresholds": thresholds,
+                    "episode_count": int(mode_events["episode_id"].nunique()),
+                    "event_date_count": int(mode_events["signal_date"].nunique()),
+                    "composite_score": None,
+                    "recommendation": sanitize_record(recommendation) if recommendation else None,
+                }
+            )
+
+        balanced_events = events[events["threshold_mode"] == "balanced"].copy()
+        balanced_evaluated = evaluated_by_mode.get("balanced", pd.DataFrame())
+        scored = score_candidates(aggregate_outcomes(balanced_evaluated))
+        summary = self._build_index_summary(
+            CSI1000_OPTION_SPEC,
+            balanced_events,
+            outcomes,
+            balanced_evaluated,
+            scored,
+        )
+        summary["qvix_code"] = "300ETF_QVIX + 500ETF_QVIX"
+        summary["absolute_vix_floor"] = None
+        summary["threshold_models"] = models
+        evaluated_all = pd.concat(evaluated_frames, ignore_index=True)
+        return events, evaluated_all, summary
+
+    def analyze_index(self, spec: IndexSpec) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+        if spec.index_name == CSI1000_OPTION_SPEC.index_name:
+            return self.analyze_csi1000()
+        qvix = self.load_qvix(spec.qvix_code)
+        index_prices = self.load_index_prices(spec.index_code)
+        qvix = qvix[qvix.index.isin(index_prices.index)]
+        events, outcomes, threshold_models = self._optimize_absolute_threshold(
+            spec,
+            qvix,
+            index_prices,
+        )
+        if events.empty or outcomes.empty or not threshold_models:
             return events, outcomes, {}
         evaluated = events.merge(outcomes, on=["index_name", "signal_date"], how="inner")
-        scored = score_candidates(aggregate_outcomes(evaluated))
-        summary = self._build_index_summary(spec, events, outcomes, evaluated, scored)
+        default_events = events[events["threshold_mode"] == "balanced"].copy()
+        default_unique = default_events.sort_values("signal_date").drop_duplicates("signal_date")
+        default_evaluated = default_unique.merge(outcomes, on=["index_name", "signal_date"], how="inner")
+        scored = score_candidates(aggregate_outcomes(default_evaluated))
+        summary = self._build_index_summary(
+            spec,
+            default_events,
+            outcomes,
+            default_evaluated,
+            scored,
+        )
+        summary["threshold_models"] = threshold_models
+        summary["absolute_vix_floor"] = next(
+            item["threshold"] for item in threshold_models if item["mode"] == "balanced"
+        )
         return events, evaluated, summary
 
     def _build_index_summary(
@@ -986,6 +1345,7 @@ class VixOptionAnalyzer:
                     "signal_date": date,
                     "selected": bool(not matched.empty),
                     "vix_close": None if matched.empty else float(matched.iloc[0]["vix_close"]),
+                    "vix_high": None if matched.empty else float(matched.iloc[0]["vix_high"]),
                     "rule_labels": "" if matched.empty else " / ".join(sorted(set(matched["rule_label"]))),
                     "trade_direction": "" if matched.empty else str(matched.iloc[0].get("trade_direction") or ""),
                     "direction_reason": "" if matched.empty else str(matched.iloc[0].get("direction_reason") or ""),
@@ -998,6 +1358,8 @@ class VixOptionAnalyzer:
             "data_start": unique_events["signal_date"].min(),
             "data_end": unique_events["signal_date"].max(),
             "event_count": int(unique_events["signal_date"].nunique()),
+            "episode_count": int(events["episode_id"].nunique()) if "episode_id" in events.columns else 0,
+            "display_event_count": int(len(events)),
             "complete_event_count": int(complete["signal_date"].nunique()),
             "bottom_hit_rate_1pct": _mean_bool(complete["bottom_hit_1pct"]),
             "bottom_hit_rate_3pct": _mean_bool(complete["bottom_hit_3pct"]),
@@ -1023,11 +1385,41 @@ def _mean_bool(series: pd.Series) -> float | None:
 def build_event_export(events: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataFrame:
     if events.empty:
         return events
+    normalized_events = events.copy()
+    defaults = {
+        "threshold_mode": "balanced",
+        "threshold_mode_label": "综合最优",
+        "episode_id": "",
+        "episode_start_date": pd.NaT,
+        "episode_peak_date": pd.NaT,
+        "event_type": "first_cross",
+        "event_type_label": "首次突破",
+        "vix_high": np.nan,
+        "vix_source": "",
+        "vix_source_label": "",
+    }
+    for column, default_value in defaults.items():
+        if column not in normalized_events.columns:
+            normalized_events[column] = default_value
+    group_columns = [
+        "index_name",
+        "threshold_mode",
+        "threshold_mode_label",
+        "episode_id",
+        "episode_start_date",
+        "episode_peak_date",
+        "event_type",
+        "event_type_label",
+        "vix_source",
+        "vix_source_label",
+        "signal_date",
+    ]
     grouped_rules = (
-        events.groupby(["index_name", "signal_date"], as_index=False)
+        normalized_events.groupby(group_columns, as_index=False, dropna=False)
         .agg(
             rule_ids=("rule_id", lambda values: " / ".join(sorted(set(values)))),
             rule_labels=("rule_label", lambda values: " / ".join(sorted(set(values)))),
+            vix_high=("vix_high", "max"),
             vix_close=("vix_close", "max"),
             threshold_value=("threshold_value", "min"),
             bottom_status=("bottom_status", "first"),
@@ -1060,6 +1452,8 @@ def build_event_export(events: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataF
         .rename(
             columns={
                 "product_code": "hindsight_product_code",
+                "product_name": "hindsight_product_name",
+                "exchange": "hindsight_exchange",
                 "strategy_type": "hindsight_strategy_type",
                 "option_type": "hindsight_option_type",
                 "dte_bucket": "hindsight_dte_bucket",
@@ -1080,6 +1474,8 @@ def build_event_export(events: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataF
         "signal_date",
         "entry_date",
         "hindsight_product_code",
+        "hindsight_product_name",
+        "hindsight_exchange",
         "hindsight_strategy_type",
         "hindsight_option_type",
         "hindsight_dte_bucket",
@@ -1094,6 +1490,67 @@ def build_event_export(events: pd.DataFrame, outcomes: pd.DataFrame) -> pd.DataF
         "hindsight_long_strike_label",
     ]
     return grouped_rules.merge(best[columns], on=["index_name", "signal_date"], how="left")
+
+
+def build_event_top_trades(
+    outcomes: pd.DataFrame,
+    index_name: str,
+    signal_date: object,
+    limit: int = 10,
+) -> list[dict]:
+    if outcomes.empty:
+        return []
+    signal_timestamp = pd.Timestamp(signal_date)
+    rows = outcomes[
+        (outcomes["index_name"] == index_name)
+        & (pd.to_datetime(outcomes["signal_date"]) == signal_timestamp)
+    ].copy()
+    if rows.empty:
+        return []
+    dedupe_columns = [
+        "product_code",
+        "strategy_type",
+        "expiry_bucket",
+        "moneyness",
+        "holding_days",
+        "long_contract_code",
+    ]
+    rows = (
+        rows.sort_values(["net_return", "mae"], ascending=[False, False])
+        .drop_duplicates(dedupe_columns)
+        .head(limit)
+    )
+    trade_columns = [
+        "entry_date",
+        "exit_date",
+        "product_code",
+        "product_name",
+        "exchange",
+        "strategy_type",
+        "option_type",
+        "expiry_bucket",
+        "expiry_bucket_label",
+        "dte_bucket",
+        "contract_month_label",
+        "moneyness",
+        "moneyness_label",
+        "holding_days",
+        "long_contract_code",
+        "long_contract_month",
+        "long_strike",
+        "long_strike_label",
+        "underlying_entry_price",
+        "entry_debit",
+        "exit_value",
+        "gross_return",
+        "net_return",
+        "mae",
+        "mfe",
+    ]
+    return [
+        sanitize_record(row)
+        for row in rows[[column for column in trade_columns if column in rows.columns]].to_dict("records")
+    ]
 
 
 def build_overall_conclusion(summaries: list[dict]) -> dict:
@@ -1129,15 +1586,19 @@ def build_overall_conclusion(summaries: list[dict]) -> dict:
     best = rankings[0]
     rec = best["recommendation"] or {}
     defensive = best.get("defensive_recommendation") or {}
+    rec_product = product_display_name(rec.get("exchange"), rec.get("product_name"))
     best_text = (
         f"综合收益中位数、25%收益分位、胜率、单笔回撤和最差单笔，当前样本里优先看"
-        f"{best['index_name']}对应期权；主模板是{rec.get('product_code', '-')}"
+        f"{best['index_name']}对应期权；主模板是{rec_product}"
         f"{strategy_label(rec.get('strategy_type'))}，到期选{rec.get('expiry_bucket_label') or rec.get('dte_bucket', '-')}"
         f"，行权选{rec.get('moneyness_label', '-')}，持有{rec.get('holding_days', '-')}个交易日。"
+        f"该参数当前只有{rec.get('trade_count', 0)}次完整成交样本，属于小样本回望结论，"
+        "应把它作为后续验证优先级，而不是稳定收益承诺。"
     )
     if defensive:
+        defensive_product = product_display_name(defensive.get("exchange"), defensive.get("product_name"))
         best_text += (
-            f" 如果更看重回撤，低回撤模板可参考{defensive.get('product_code', '-')}"
+            f" 如果更看重回撤，低回撤模板可参考{defensive_product}"
             f"{strategy_label(defensive.get('strategy_type'))}，到期选"
             f"{defensive.get('expiry_bucket_label') or defensive.get('dte_bucket', '-')}"
             f"，行权选{defensive.get('moneyness_label', '-')}。"
@@ -1150,11 +1611,14 @@ def build_overall_conclusion(summaries: list[dict]) -> dict:
                 "index_name": item["index_name"],
                 "score": item["score"],
                 "product_code": (item.get("recommendation") or {}).get("product_code"),
+                "product_name": (item.get("recommendation") or {}).get("product_name"),
+                "exchange": (item.get("recommendation") or {}).get("exchange"),
                 "strategy_type": (item.get("recommendation") or {}).get("strategy_type"),
                 "expiry_bucket_label": (item.get("recommendation") or {}).get("expiry_bucket_label")
                 or (item.get("recommendation") or {}).get("dte_bucket"),
                 "moneyness_label": (item.get("recommendation") or {}).get("moneyness_label"),
                 "holding_days": (item.get("recommendation") or {}).get("holding_days"),
+                "trade_count": (item.get("recommendation") or {}).get("trade_count"),
                 "net_return_median": (item.get("recommendation") or {}).get("net_return_median"),
                 "net_return_p25": (item.get("recommendation") or {}).get("net_return_p25"),
                 "win_rate": (item.get("recommendation") or {}).get("win_rate"),
@@ -1175,27 +1639,42 @@ def render_markdown(report: dict) -> str:
         "",
         f"结论：{report.get('overall_conclusion', {}).get('summary', '-')}",
         "",
-        "| 指数 | 绝对VIX地板 | 高VIX事件 | 3%底部命中率 | 长期参数模板 | 持仓 |",
+        "| 指数 | 综合绝对阈值 | 高VIX区间 | 3%底部命中率 | 长期参数模板 | 持仓 |",
         "|---|---:|---:|---:|---|---:|",
     ]
     for item in report["index_summaries"]:
         rec = item.get("recommendation") or {}
+        balanced_model = next(
+            (model for model in item.get("threshold_models", []) if model.get("mode") == "balanced"),
+            {},
+        )
+        source_thresholds = balanced_model.get("source_thresholds") or []
+        threshold_text = (
+            " / ".join(
+                f"{source.get('source_name')}≥{source.get('threshold')}"
+                for source in source_thresholds
+            )
+            if source_thresholds
+            else str(balanced_model.get("threshold") or item.get("absolute_vix_floor") or "-")
+        )
         description = (
-            f"{rec.get('product_code', '-')} / {strategy_label(rec.get('strategy_type'))} / "
+            f"{product_display_name(rec.get('exchange'), rec.get('product_name'))} / "
+            f"{strategy_label(rec.get('strategy_type'))} / "
             f"{rec.get('expiry_bucket_label') or rec.get('dte_bucket', '-')} / {rec.get('moneyness_label', '-')}"
         )
         lines.append(
-            f"| {item['index_name']} | {item.get('absolute_vix_floor', '-')} | {item['event_count']} | "
+            f"| {item['index_name']} | {threshold_text} | {item['event_count']} | "
             f"{_pct(item.get('bottom_hit_rate_3pct'))} | {description} | {rec.get('holding_days', '-')}日 |"
         )
     lines += [
         "",
-        "说明：长期参数模板描述的是到期月份口径和行权价相对标的哪一档；逐事件CSV里给出当次回望最佳的具体合约月份、合约代码、行权价和实际高/低行权档。本版只做单买期权，不做价差。",
+        "说明：长期参数模板按当月、下月、季月和实一档/实二档/平值/虚一档等真实行权价顺序描述；逐事件CSV保留具体合约月份、合约代码和行权价。本版只做单买期权，不做价差。",
         "",
         "## 口径",
         "",
-        "- VIX信号必须达到对应指数的绝对数值地板；滚动分位只能作为辅助，不能让低绝对VIX入选。",
-        "- VIX信号在收盘确认，期权于下一交易日开盘成交。",
+        "- 信号使用采集QVIX的当日最高价；每个指数分别优化一个绝对阈值，不使用低VIX滚动分位凑信号。",
+        "- 同一绝对阈值划分连续高VIX区间；每段分别展示首次突破日和区间最高日，后者只用于回望。",
+        "- 首次突破信号在当日收盘确认，期权于下一交易日开盘成交。",
         "- 信号日前20个交易日涨幅超过3%，或40个交易日涨幅超过6%，按涨多后的高波动处理，只测试单买认沽；否则只测试单买认购。",
         "- 每笔交易独立，收益按买入权利金计算；开仓和平仓各计入0.5%滑点，不做价差组合。",
         "- “真实底部”主口径为未来10日继续下跌不超过3%，且未来20日最大反弹不低于5%。",
@@ -1217,7 +1696,17 @@ def write_report(
     scored: pd.DataFrame,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
-    event_export = build_event_export(events, events.attrs.get("outcomes", pd.DataFrame()))
+    raw_outcomes = events.attrs.get("outcomes", pd.DataFrame())
+    event_export = build_event_export(events, raw_outcomes)
+    event_records: list[dict] = []
+    for row in event_export.to_dict("records"):
+        record = sanitize_record(row)
+        record["top_trades"] = build_event_top_trades(
+            raw_outcomes,
+            str(row.get("index_name") or ""),
+            row.get("signal_date"),
+        )
+        event_records.append(record)
     top_combinations = (
         scored.sort_values(["index_name", "balanced_score"], ascending=[True, False])
         .groupby("index_name", as_index=False)
@@ -1228,7 +1717,7 @@ def write_report(
     report = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "methodology": {
-            "signal": "采集QVIX收盘首次突破绝对阈值；滚动分位规则也必须同时达到该指数绝对VIX地板，连续3日回落后重置",
+            "signal": "使用采集QVIX当日最高价；每条VIX来源分别计算收益最高与综合最优绝对阈值。中证1000同时使用沪深300和中证500采集VIX，其余指数使用自身对应采集VIX。同一阈值连续高位构成一个区间，连续3日低于阈值后重置；每段分别展示首次突破和区间最高",
             "direction": "信号日前20个交易日涨幅超过3%，或40个交易日涨幅超过6%，按涨多后的高波动只测试单买认沽；否则按下跌或震荡后的恐慌只测试单买认购",
             "entry": "下一交易日开盘",
             "slippage": SLIPPAGE,
@@ -1236,12 +1725,12 @@ def write_report(
             "top_definition": "认沽方向不判断底部；未来10日继续上涨不超过3%，且未来20日最大回落不少于5%，记为高位有效",
             "holding_days": list(HOLDING_DAYS),
             "dte_buckets": [item[1] for item in EXPIRY_BUCKETS],
-            "moneyness": [format_moneyness(item) for item in MONEYNESS_TARGETS],
+            "moneyness": [format_strike_bucket(item) for item in STRIKE_BUCKETS],
             "reference_dates": [item.date().isoformat() for item in REFERENCE_SIGNAL_DATES],
         },
         "overall_conclusion": build_overall_conclusion(summaries),
         "index_summaries": _json_value(summaries),
-        "events": [sanitize_record(row) for row in event_export.to_dict("records")],
+        "events": event_records,
         "top_combinations": [sanitize_record(row) for row in top_combinations.to_dict("records")],
     }
     (output_dir / "report.json").write_text(
@@ -1285,7 +1774,13 @@ def main() -> None:
                 event_frames.append(events)
             if not evaluated.empty:
                 evaluated_frames.append(evaluated)
-                scored = score_candidates(aggregate_outcomes(evaluated))
+                scoring_rows = evaluated[
+                    evaluated.get("threshold_mode", "balanced") == "balanced"
+                ].copy()
+                scoring_rows = scoring_rows.drop_duplicates(
+                    ["index_name", "signal_date", *CANDIDATE_COLUMNS]
+                )
+                scored = score_candidates(aggregate_outcomes(scoring_rows))
                 if not scored.empty:
                     scored["index_name"] = spec.index_name
                     scored_frames.append(scored)
@@ -1305,7 +1800,12 @@ def main() -> None:
         ]
     ) if not all_evaluated.empty else pd.DataFrame()
     all_scored = pd.concat(scored_frames, ignore_index=True) if scored_frames else pd.DataFrame()
-    report = write_report(Path(args.output_dir), summaries, all_events, all_scored)
+    report = write_report(
+        Path(args.output_dir),
+        summaries,
+        all_events,
+        all_scored,
+    )
     print(
         f"完成：{len(report['index_summaries'])}个指数，"
         f"{len(report['events'])}个独立事件，输出到 {args.output_dir}",

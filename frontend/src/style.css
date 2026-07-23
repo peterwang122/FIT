@@ -2227,8 +2227,87 @@ button.quant-scan-event-item {
   margin-bottom: 18px;
 }
 
+.quant-strategy-target-chart-card {
+  margin: 18px 0;
+}
+
+.quant-strategy-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.quant-strategy-chart-legend-item {
+  min-width: 58px;
+  padding: 5px 8px;
+  border: 1px solid rgba(20, 33, 61, 0.1);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.quant-strategy-chart-legend-item.tone-blue {
+  color: #1d4ed8;
+  background: rgba(29, 78, 216, 0.1);
+}
+
+.quant-strategy-chart-legend-item.tone-red {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.1);
+}
+
+.quant-strategy-chart-legend-item.tone-purple {
+  color: #7e22ce;
+  background: rgba(126, 34, 206, 0.1);
+}
+
+.quant-strategy-chart-empty {
+  min-height: 260px;
+}
+
 .quant-scan-backtest-card {
   margin-bottom: 18px;
+}
+
+.quant-scan-event-table tbody tr {
+  cursor: pointer;
+}
+
+.quant-scan-event-table tbody tr.selected td {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.quant-option-trade-section {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(20, 33, 61, 0.1);
+}
+
+.quant-option-trade-summary {
+  margin-bottom: 14px;
+}
+
+.quant-option-trade-table-wrap {
+  max-height: 560px;
+}
+
+.quant-option-trade-table {
+  min-width: 1240px;
+}
+
+.quant-option-direction-reason {
+  max-width: 220px;
+}
+
+.quant-option-trade-table td.is-profit .quant-scan-cell-main {
+  color: #047857;
+}
+
+.quant-option-trade-table td.is-loss .quant-scan-cell-main {
+  color: #dc2626;
 }
 
 .quant-scan-event-table-wrap {

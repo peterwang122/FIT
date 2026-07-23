@@ -16,6 +16,7 @@ from app.models.quant_strategy_config import QuantStrategyConfig
 from app.models.user import User
 from app.services.notification_service import NotificationService
 from app.services.stock_service import FUTURES_BASIS_SYMBOL_MAP, StockService
+from app.services.vix_option_strategy_trade_service import VixOptionStrategyTradeService
 
 SHANGHAI_INDEX_NAME = "上证指数"
 BEIJING50_INDEX_NAME = "北证50"
@@ -76,6 +77,12 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
     "cffex-net-short-citic-delta-30d",
     "cffex-net-short-citic-delta-60d",
     "cffex-net-short-citic-delta-120d",
+    "fund-purchase-limit-count",
+    "fund-purchase-limit-pct",
+    "margin-financing-balance",
+    "margin-securities-lending-balance",
+    "margin-total-balance",
+    "margin-financing-net-buy",
     "rsi",
     "wr",
     "macd-dif",
@@ -117,6 +124,23 @@ SEQUENCE_STRATEGY_MARKET_MACRO_SERIES_KEYS = {
 }
 SEQUENCE_MARKET_MACRO_INDEX_NAMES = {"上证指数", "沪深300", "中证500", "中证1000"}
 SCAN_BOARD_FILTER_KEYS = {"main", "chinext", "star", "bse"}
+RESEARCH_OPTION_EXCHANGES = {"SSE", "SZSE", "CFFEX"}
+RESEARCH_OPTION_TYPES = {"CALL", "PUT"}
+RESEARCH_OPTION_EXPIRY_BUCKETS = {
+    "current": "当月",
+    "next": "下月",
+    "quarter_1": "季月1",
+    "quarter_2": "季月2",
+}
+RESEARCH_OPTION_MONEYNESS = {
+    "itm_1": "实一档",
+    "itm_2": "实二档",
+    "itm_3": "实三档",
+    "atm": "平值",
+    "otm_1": "虚一档",
+    "otm_2": "虚二档",
+    "otm_3": "虚三档",
+}
 STOCK_STRATEGY_FILTER_KEYS = [
     "pct-chg",
     "turnover-rate",
@@ -135,7 +159,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v19"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v23"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 CN_OPTION_PUT_CALL_FIELD_MAP = [
     (
@@ -201,6 +225,19 @@ CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS = [
 CN_OPTION_SUPPORTED_FILTER_KEYS = [
     *CN_OPTION_PUT_CALL_FILTER_KEYS,
     *CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS,
+]
+FUND_PURCHASE_LIMIT_FILTER_KEYS = [
+    "fund-purchase-limit-count",
+    "fund-purchase-limit-pct",
+]
+MARGIN_TRADING_FILTER_FIELD_MAP = [
+    ("margin-financing-balance", "margin_financing_balance"),
+    ("margin-securities-lending-balance", "margin_securities_lending_balance"),
+    ("margin-total-balance", "margin_total_balance"),
+    ("margin-financing-net-buy", "margin_financing_net_buy_amount"),
+]
+MARGIN_TRADING_FILTER_KEYS = [
+    field_key for field_key, _column_name in MARGIN_TRADING_FILTER_FIELD_MAP
 ]
 EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME = {
     "上证50": [("sse", "510050", "上交所", "上证50ETF期权")],
@@ -270,6 +307,12 @@ OPTION_VIX_SOURCES_BY_INDEX_NAME = {
         ("sse", "588000", "上交所", "科创50ETF期权"),
         ("sse", "588080", "上交所", "科创板50ETF期权"),
     ],
+}
+OPTION_VIX_DIRECT_QVIX_SOURCES = {
+    "sse:510050",
+    "sse:510300",
+    "sse:510500",
+    "sse:588000",
 }
 OPTION_VIX_FILTER_FIELD_MAP = list(
     dict.fromkeys(
@@ -408,6 +451,11 @@ INDEX_VIX_CODE_BY_INDEX_CODE = {
     "399905": "500ETF_QVIX",
 }
 VIX_FILTER_KEYS = ["vix-open", "vix-high", "vix-low", "vix-close"]
+CSI1000_REFERENCE_VIX_FILTER_MAP = {
+    "reference-vix-hs300-high": ("沪深300", "300ETF_QVIX"),
+    "reference-vix-csi500-high": ("中证500", "500ETF_QVIX"),
+}
+CSI1000_REFERENCE_VIX_FILTER_KEYS = list(CSI1000_REFERENCE_VIX_FILTER_MAP)
 US_VIX_FILTER_KEYS = ["us-vix-open", "us-vix-high", "us-vix-low", "us-vix-close"]
 US_FEAR_GREED_FILTER_KEYS = ["us-fear-greed"]
 US_HEDGE_FILTER_KEYS = ["us-hedge-long", "us-hedge-short", "us-hedge-ratio"]
@@ -699,6 +747,22 @@ def _positive_reciprocal(value: object) -> float | None:
     return 1 / numeric_value
 
 
+def _finite_float(value: object) -> float | None:
+    numeric_value = _to_float(value)
+    if numeric_value is None or not isfinite(numeric_value):
+        return None
+    return numeric_value
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _sort_candles(candles: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for item in candles:
@@ -988,6 +1052,64 @@ class QuantService:
             "board_filters": [],
         }
 
+    def _normalize_research_option_template(self, raw_template: object) -> dict | None:
+        if not isinstance(raw_template, dict) or not raw_template.get("enabled", True):
+            return None
+        product_code = str(raw_template.get("product_code") or "").strip()
+        product_name = str(raw_template.get("product_name") or "").strip()
+        exchange = str(raw_template.get("exchange") or "").strip().upper()
+        option_type = str(raw_template.get("option_type") or "").strip().upper()
+        expiry_bucket = str(raw_template.get("expiry_bucket") or "").strip().lower()
+        moneyness = str(raw_template.get("moneyness") or "").strip().lower()
+        if not product_code or not product_name:
+            raise ValueError("research option template requires product code and name")
+        if exchange not in RESEARCH_OPTION_EXCHANGES:
+            raise ValueError("research option template exchange is not supported")
+        if option_type not in RESEARCH_OPTION_TYPES:
+            raise ValueError("research option template option type must be CALL or PUT")
+        if expiry_bucket not in RESEARCH_OPTION_EXPIRY_BUCKETS:
+            raise ValueError("research option template expiry bucket is not supported")
+        if moneyness not in RESEARCH_OPTION_MONEYNESS:
+            raise ValueError("research option template moneyness is not supported")
+        try:
+            holding_days = int(raw_template.get("holding_days"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("research option template holding days is invalid") from exc
+        if holding_days < 1 or holding_days > 120:
+            raise ValueError("research option template holding days must be between 1 and 120")
+        slippage = _to_float(raw_template.get("slippage"))
+        if slippage is None:
+            slippage = 0.005
+        if slippage < 0 or slippage > 0.2:
+            raise ValueError("research option template slippage must be between 0 and 0.2")
+        initial_capital = _to_float(raw_template.get("initial_capital"))
+        if initial_capital is None or initial_capital <= 0:
+            initial_capital = DEFAULT_SCAN_INITIAL_CAPITAL
+        try:
+            contracts_per_trade = int(raw_template.get("contracts_per_trade", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("research option template contracts per trade is invalid") from exc
+        if contracts_per_trade < 1 or contracts_per_trade > 1000:
+            raise ValueError("research option template contracts per trade must be between 1 and 1000")
+        return {
+            "enabled": True,
+            "report_generated_at": str(raw_template.get("report_generated_at") or "").strip() or None,
+            "direction_mode": "dynamic",
+            "product_code": product_code,
+            "product_name": product_name,
+            "exchange": exchange,
+            "option_type": option_type,
+            "strategy_type": "long_call" if option_type == "CALL" else "long_put",
+            "expiry_bucket": expiry_bucket,
+            "expiry_bucket_label": RESEARCH_OPTION_EXPIRY_BUCKETS[expiry_bucket],
+            "moneyness": moneyness,
+            "moneyness_label": RESEARCH_OPTION_MONEYNESS[moneyness],
+            "holding_days": holding_days,
+            "slippage": float(slippage),
+            "initial_capital": float(initial_capital),
+            "contracts_per_trade": contracts_per_trade,
+        }
+
     def _normalize_scan_sell_trigger(self, raw_trigger: object) -> dict | None:
         if not isinstance(raw_trigger, dict):
             return None
@@ -1166,6 +1288,82 @@ class QuantService:
         target_market: str = "cn",
     ) -> bool:
         return self._resolve_index_vix_code(target_code, target_name, target_market) is not None
+
+    def _index_supports_csi1000_reference_vix(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        if self._normalize_target_market(target_market) != "cn":
+            return False
+        normalized_code = str(target_code or "").strip().lower()
+        normalized_name = str(target_name or "").strip()
+        return normalized_name == "中证1000" or normalized_code in {
+            "000852",
+            "sh000852",
+            "399852",
+            "sz399852",
+        }
+
+    def _index_supports_fund_purchase_limit(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        if self._normalize_target_market(target_market) != "cn":
+            return False
+        normalized_name = str(target_name or "").strip()
+        normalized_code = str(target_code or "").strip().lower()
+        return normalized_name == SHANGHAI_INDEX_NAME or normalized_code in {
+            "000001",
+            "sh000001",
+        }
+
+    def _index_supports_margin_trading(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        return self._normalize_target_market(target_market) == "cn"
+
+    def _load_csi1000_reference_vix_series(
+        self,
+        target_code: object,
+        target_name: object,
+        target_market: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        if not self._index_supports_csi1000_reference_vix(target_code, target_name, target_market):
+            return []
+        result: list[dict] = []
+        for field_key, (source_name, qvix_code) in CSI1000_REFERENCE_VIX_FILTER_MAP.items():
+            rows = self.stock_service.list_index_qvix_daily_data(
+                qvix_code,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            result.append(
+                {
+                    "source_key": field_key,
+                    "source_name": source_name,
+                    "qvix_code": qvix_code,
+                    "points": [
+                        {
+                            "trade_date": row["trade_date"],
+                            "open_price": _to_float(row.get("open_price")) or 0.0,
+                            "high_price": _to_float(row.get("high_price")) or 0.0,
+                            "low_price": _to_float(row.get("low_price")) or 0.0,
+                            "close_price": _to_float(row.get("close_price")) or 0.0,
+                        }
+                        for row in rows
+                    ],
+                }
+            )
+        return result
 
     def _index_supports_cn_option_put_call(
         self,
@@ -1433,6 +1631,14 @@ class QuantService:
                     keys = [key for key in keys if key not in VIX_FILTER_KEYS]
                 if not self._index_supports_cn_option_put_call(target_code, target_name, target_market):
                     keys = [key for key in keys if key not in CN_OPTION_SUPPORTED_FILTER_KEYS]
+                if not self._index_supports_fund_purchase_limit(
+                    target_code,
+                    target_name,
+                    target_market,
+                ):
+                    keys = [key for key in keys if key not in FUND_PURCHASE_LIMIT_FILTER_KEYS]
+                if self._index_supports_csi1000_reference_vix(target_code, target_name, target_market):
+                    keys += CSI1000_REFERENCE_VIX_FILTER_KEYS
                 return keys
             if self._is_technical_only_cn_index(target_code, target_name, target_market):
                 keys = [
@@ -1450,6 +1656,7 @@ class QuantService:
                 ]
                 if self._index_supports_vix(target_code, target_name, target_market):
                     keys += VIX_FILTER_KEYS
+                keys += MARGIN_TRADING_FILTER_KEYS
                 return keys
             if self._normalize_target_market(target_market) == "hk":
                 keys = list(STOCK_STRATEGY_FILTER_KEYS)
@@ -1675,6 +1882,20 @@ class QuantService:
                 select_parts.append(f"`{column_name}` AS {column_name}")
             else:
                 select_parts.append(f"NULL AS {column_name}")
+        for column_name in (
+            "fund_purchase_limit_count",
+            "fund_purchase_limit_total_count",
+            "fund_purchase_limit_pct",
+        ):
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
+        for _field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP:
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
         return ", " + ", ".join(select_parts) if select_parts else ""
 
     def _build_cn_option_put_call_point_payload(self, row: dict) -> dict:
@@ -1713,8 +1934,38 @@ class QuantService:
             return parsed if isinstance(parsed, dict) else {}
         return {}
 
-    def _build_cn_option_vix_point_payload(self, row: dict) -> dict:
-        return {
+    def _build_cn_option_vix_point_payload(
+        self,
+        row: dict,
+        *,
+        source_key: str = "",
+        qvix_row: dict | None = None,
+        qvix_code: str | None = None,
+    ) -> dict:
+        calculation_method = str(row.get("calculation_method") or "").strip()
+        uses_minute_value = row.get("uses_minute_ohlc")
+        uses_minute_ohlc = (
+            uses_minute_value is True
+            or str(uses_minute_value or "").strip().lower() in {"1", "true", "yes"}
+            or calculation_method.startswith("ivix_30d_minute")
+        )
+        price_basis_counts = (
+            row.get("price_basis_counts")
+            if isinstance(row.get("price_basis_counts"), dict)
+            else {}
+        )
+        minute_count = _optional_int(row.get("minute_count"))
+        minute_mid_quote_count = _optional_int(row.get("minute_mid_quote_count"))
+        if minute_count is None and uses_minute_ohlc:
+            minute_count = sum(
+                int(value or 0)
+                for value in price_basis_counts.values()
+                if isinstance(value, (int, float))
+            ) or None
+        if minute_mid_quote_count is None and uses_minute_ohlc:
+            minute_mid_quote_count = _optional_int(price_basis_counts.get("mid_quote"))
+
+        payload = {
             "trade_date": row["trade_date"],
             "vix_open": _to_float(row.get("vix_open")),
             "vix_high": _to_float(row.get("vix_high")),
@@ -1729,21 +1980,81 @@ class QuantService:
             "risk_free_curve_date": row.get("risk_free_curve_date"),
             "near_risk_free_rate": _to_float(row.get("near_risk_free_rate")),
             "next_risk_free_rate": _to_float(row.get("next_risk_free_rate")),
-            "calculation_method": str(row.get("calculation_method") or "").strip() or None,
-            "price_basis_counts": (
-                row.get("price_basis_counts")
-                if isinstance(row.get("price_basis_counts"), dict)
-                else {}
-            ),
+            "calculation_method": calculation_method or None,
+            "uses_minute_ohlc": uses_minute_ohlc,
+            "minute_count": minute_count,
+            "minute_mid_quote_count": minute_mid_quote_count,
+            "price_basis_counts": price_basis_counts,
             "pre_settle_sources": (
                 row.get("pre_settle_sources")
                 if isinstance(row.get("pre_settle_sources"), list)
                 else []
             ),
+            "reference_qvix_code": None,
+            "reference_match_type": None,
+            "reference_vix_open": None,
+            "reference_vix_high": None,
+            "reference_vix_low": None,
+            "reference_vix_close": None,
+            "open_error": None,
+            "high_error": None,
+            "low_error": None,
+            "close_error": None,
+            "open_error_pct": None,
+            "high_error_pct": None,
+            "low_error_pct": None,
+            "close_error_pct": None,
+            "ohlc_mean_abs_error": None,
+            "ohlc_mean_abs_pct_error": None,
         }
+        if not uses_minute_ohlc or not isinstance(qvix_row, dict) or not qvix_code:
+            return payload
 
-    def _build_cn_option_series(self, rows: list[dict], index_name: str) -> list[dict]:
+        payload["reference_qvix_code"] = qvix_code
+        payload["reference_match_type"] = (
+            "direct_product"
+            if source_key in OPTION_VIX_DIRECT_QVIX_SOURCES
+            else "same_index_proxy"
+        )
+        errors: list[float] = []
+        error_pcts: list[float] = []
+        for price_kind in ("open", "high", "low", "close"):
+            calculated_value = _finite_float(payload.get(f"vix_{price_kind}"))
+            reference_value = _finite_float(qvix_row.get(f"{price_kind}_price"))
+            if calculated_value is not None and calculated_value <= 0:
+                calculated_value = None
+            if reference_value is not None and reference_value <= 0:
+                reference_value = None
+            payload[f"reference_vix_{price_kind}"] = reference_value
+            if calculated_value is None or reference_value is None:
+                continue
+            error = calculated_value - reference_value
+            payload[f"{price_kind}_error"] = error
+            errors.append(abs(error))
+            if reference_value != 0:
+                error_pct = error / reference_value * 100
+                payload[f"{price_kind}_error_pct"] = error_pct
+                error_pcts.append(abs(error_pct))
+        if errors:
+            payload["ohlc_mean_abs_error"] = sum(errors) / len(errors)
+        if error_pcts:
+            payload["ohlc_mean_abs_pct_error"] = sum(error_pcts) / len(error_pcts)
+        return payload
+
+    def _build_cn_option_series(
+        self,
+        rows: list[dict],
+        index_name: str,
+        *,
+        qvix_rows: list[dict] | None = None,
+        qvix_code: str | None = None,
+    ) -> list[dict]:
         result: list[dict] = []
+        qvix_by_date = {
+            _date_text(item.get("trade_date")): item
+            for item in (qvix_rows or [])
+            if item.get("trade_date") is not None
+        }
         cffex_product_by_index = {
             "上证50": ("HO", "上证50股指期权"),
             "沪深300": ("IO", "沪深300股指期权"),
@@ -1852,7 +2163,10 @@ class QuantService:
                         {
                             **source_payload,
                             "trade_date": row["trade_date"],
-                        }
+                        },
+                        source_key=source_key,
+                        qvix_row=qvix_by_date.get(_date_text(row["trade_date"])),
+                        qvix_code=qvix_code,
                     )
                 )
         return result
@@ -2255,10 +2569,10 @@ class QuantService:
         candles: list[dict],
     ) -> list[dict]:
         normalized_market = self._normalize_target_market(target_market)
-        if self._index_supports_auxiliary_panels(
-            normalized_market,
-            target_code,
-            symbol_name,
+        if normalized_market == "cn" and (
+            self._index_supports_auxiliary_panels(normalized_market, target_code, symbol_name)
+            or self._index_supports_vix(target_code, symbol_name, normalized_market)
+            or self._index_supports_csi1000_reference_vix(target_code, symbol_name, normalized_market)
         ):
             return self._build_index_snapshots(target_code, symbol_name, params, candles)
         if normalized_market == "hk":
@@ -2455,6 +2769,13 @@ class QuantService:
                     }
                     for row in vix_rows
                 ],
+                "related_vix_series": self._load_csi1000_reference_vix_series(
+                    option["code"],
+                    option["name"],
+                    normalized_market,
+                    start_date=resolved_start_date,
+                    end_date=end_date,
+                ),
                 "us_vix_points": [
                     {
                         "trade_date": row["trade_date"],
@@ -2499,9 +2820,13 @@ class QuantService:
                 "cn_option_series": self._build_cn_option_series(
                     exchange_option_rows,
                     option["name"],
+                    qvix_rows=vix_rows,
+                    qvix_code=qvix_code,
                 ),
                 "cffex_net_short_delta_points": [],
                 "basis_delta_points": [],
+                "fund_purchase_limit_points": [],
+                "margin_trading_points": [],
                 "us_treasury_yield_points": [
                     {
                         "trade_date": row["trade_date"],
@@ -2595,6 +2920,13 @@ class QuantService:
                 }
                 for row in vix_rows
             ],
+            "related_vix_series": self._load_csi1000_reference_vix_series(
+                option["code"],
+                option["name"],
+                normalized_market,
+                start_date=resolved_start_date,
+                end_date=end_date,
+            ),
             "us_vix_points": [],
             "us_fear_greed_points": [],
             "us_hedge_proxy_points": [],
@@ -2608,7 +2940,12 @@ class QuantService:
                 for row in rows
                 if any(_to_float(row.get(column_name)) is not None for column_name, _alias in CN_OPTION_FLOW_PUT_CALL_FIELD_MAP)
             ],
-            "cn_option_series": self._build_cn_option_series(rows, option["name"]),
+            "cn_option_series": self._build_cn_option_series(
+                rows,
+                option["name"],
+                qvix_rows=vix_rows,
+                qvix_code=qvix_code,
+            ),
             "cffex_net_short_delta_points": [
                 self._build_cffex_net_short_delta_point_payload(row)
                 for row in rows
@@ -2623,6 +2960,37 @@ class QuantService:
                 if any(
                     _to_float(row.get(column_name)) is not None
                     for _field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP
+                )
+            ],
+            "fund_purchase_limit_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "limited_fund_count": int(row.get("fund_purchase_limit_count") or 0),
+                    "total_fund_count": int(row.get("fund_purchase_limit_total_count") or 0),
+                    "limited_fund_pct": _to_float(row.get("fund_purchase_limit_pct")) or 0.0,
+                }
+                for row in rows
+                if option["name"] == SHANGHAI_INDEX_NAME
+                and row.get("fund_purchase_limit_count") is not None
+                and row.get("fund_purchase_limit_total_count") is not None
+                and row.get("fund_purchase_limit_pct") is not None
+            ],
+            "margin_trading_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "financing_balance": _to_float(row.get("margin_financing_balance")),
+                    "securities_lending_balance": _to_float(
+                        row.get("margin_securities_lending_balance")
+                    ),
+                    "total_balance": _to_float(row.get("margin_total_balance")),
+                    "financing_net_buy_amount": _to_float(
+                        row.get("margin_financing_net_buy_amount")
+                    ),
+                }
+                for row in rows
+                if any(
+                    _to_float(row.get(column_name)) is not None
+                    for _field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP
                 )
             ],
             "us_treasury_yield_points": [],
@@ -2918,6 +3286,27 @@ class QuantService:
                 }
                 for field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP
             }
+            fund_purchase_limit_maps = {
+                "fund-purchase-limit-count": {
+                    _date_text(item["trade_date"]): _to_float(
+                        item.get("fund_purchase_limit_count")
+                    )
+                    for item in precomputed_rows
+                },
+                "fund-purchase-limit-pct": {
+                    _date_text(item["trade_date"]): _to_float(
+                        item.get("fund_purchase_limit_pct")
+                    )
+                    for item in precomputed_rows
+                },
+            }
+            margin_trading_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
+                    for item in precomputed_rows
+                }
+                for field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP
+            }
         else:
             emotion_map = self._build_emotion_value_by_date(symbol_name)
             basis_main_map, basis_month_map = self._build_basis_value_by_date(symbol_name)
@@ -2937,6 +3326,12 @@ class QuantService:
             }
             basis_delta_maps = {
                 field_key: {} for field_key, _column_name, _payload_key in BASIS_DELTA_FIELD_MAP
+            }
+            fund_purchase_limit_maps = {
+                field_key: {} for field_key in FUND_PURCHASE_LIMIT_FILTER_KEYS
+            }
+            margin_trading_maps = {
+                field_key: {} for field_key in MARGIN_TRADING_FILTER_KEYS
             }
         option_flow_put_call_maps["cn-option-flow-cp-turnover"] = {
             trade_date: _positive_reciprocal(value)
@@ -2964,6 +3359,24 @@ class QuantService:
                 if item.get("trade_date") is not None
             }
 
+        reference_vix_maps: dict[str, dict[str, float | None]] = {
+            field_key: {} for field_key in CSI1000_REFERENCE_VIX_FILTER_KEYS
+        }
+        if self._index_supports_csi1000_reference_vix(target_code, symbol_name, "cn"):
+            first_trade_date = sorted_candles[0].get("trade_date")
+            last_trade_date = sorted_candles[-1].get("trade_date")
+            for field_key, (_source_name, reference_qvix_code) in CSI1000_REFERENCE_VIX_FILTER_MAP.items():
+                reference_rows = self.stock_service.list_index_qvix_daily_data(
+                    reference_qvix_code,
+                    start_date=first_trade_date if isinstance(first_trade_date, date) else None,
+                    end_date=last_trade_date if isinstance(last_trade_date, date) else None,
+                )
+                reference_vix_maps[field_key] = {
+                    _date_text(item["trade_date"]): _to_float(item.get("high_price"))
+                    for item in reference_rows
+                    if item.get("trade_date") is not None
+                }
+
         snapshots: list[dict] = []
         for index, trade_date in enumerate(times):
             vix_values = vix_by_date.get(trade_date, {})
@@ -2982,6 +3395,10 @@ class QuantService:
                         "vix-high": vix_values.get("vix-high"),
                         "vix-low": vix_values.get("vix-low"),
                         "vix-close": vix_values.get("vix-close"),
+                        **{
+                            field_key: reference_vix_maps[field_key].get(trade_date)
+                            for field_key in CSI1000_REFERENCE_VIX_FILTER_KEYS
+                        },
                         "cn-option-put-call-current": option_put_call_maps["cn-option-put-call-current"].get(trade_date),
                         "cn-option-put-call-next": option_put_call_maps["cn-option-put-call-next"].get(trade_date),
                         "cn-option-put-call-quarter-1": option_put_call_maps["cn-option-put-call-quarter-1"].get(trade_date),
@@ -3004,6 +3421,14 @@ class QuantService:
                         **{
                             field_key: basis_delta_maps[field_key].get(trade_date)
                             for field_key in BASIS_DELTA_FILTER_KEYS
+                        },
+                        **{
+                            field_key: fund_purchase_limit_maps[field_key].get(trade_date)
+                            for field_key in FUND_PURCHASE_LIMIT_FILTER_KEYS
+                        },
+                        **{
+                            field_key: margin_trading_maps[field_key].get(trade_date)
+                            for field_key in MARGIN_TRADING_FILTER_KEYS
                         },
                         "rsi": rsi_values[index],
                         "wr": wr_values[index],
@@ -4392,7 +4817,7 @@ class QuantService:
                     continue
                 condition_type = str(raw_condition.get("type", "")).strip()
                 operator = str(raw_condition.get("operator", "")).strip()
-                if operator not in {"gt", "lt"}:
+                if operator not in {"gt", "gte", "lt", "lte", "episode_start"}:
                     continue
 
                 if condition_type == "numeric":
@@ -4411,6 +4836,8 @@ class QuantService:
                     continue
 
                 if condition_type == "boll":
+                    if operator == "episode_start":
+                        continue
                     mode = str(raw_condition.get("mode", "")).strip()
                     track = str(raw_condition.get("track", "")).strip()
                     if mode not in {"close", "intraday"} or track not in allowed_tracks:
@@ -4507,7 +4934,13 @@ class QuantService:
         if not self._index_supports_vix(target_code, target_name, target_market):
             raise ValueError("当前指数不支持 VIX 条件，请先移除 VIX 规则。")
 
-    def _matches_rule_condition(self, snapshot: dict, condition: dict, allowed_keys: list[str]) -> bool:
+    def _matches_rule_condition(
+        self,
+        snapshot: dict,
+        condition: dict,
+        allowed_keys: list[str],
+        previous_snapshots: list[dict] | None = None,
+    ) -> bool:
         condition_type = str(condition.get("type", "")).strip()
         operator = str(condition.get("operator", "")).strip()
 
@@ -4519,7 +4952,23 @@ class QuantService:
             threshold = _normalize_threshold(condition.get("value"))
             if value is None or threshold is None:
                 return False
-            return value > threshold if operator == "gt" else value < threshold
+            if operator == "episode_start":
+                previous_values = [
+                    item.get("values", {}).get(field)
+                    for item in (previous_snapshots or [])[-3:]
+                ]
+                return (
+                    value >= threshold
+                    and len(previous_values) == 3
+                    and all(item is not None and item < threshold for item in previous_values)
+                )
+            if operator == "gt":
+                return value > threshold
+            if operator == "gte":
+                return value >= threshold
+            if operator == "lte":
+                return value <= threshold
+            return value < threshold
 
         if condition_type == "boll":
             track = str(condition.get("track", "")).strip()
@@ -4531,26 +4980,67 @@ class QuantService:
                 close_value = snapshot.get("close")
                 if close_value is None:
                     return False
-                return close_value > reference_value if operator == "gt" else close_value < reference_value
-            if mode == "intraday":
                 if operator == "gt":
+                    return close_value > reference_value
+                if operator == "gte":
+                    return close_value >= reference_value
+                if operator == "lte":
+                    return close_value <= reference_value
+                return close_value < reference_value
+            if mode == "intraday":
+                if operator in {"gt", "gte"}:
                     high_value = snapshot.get("high")
-                    return high_value is not None and high_value > reference_value
+                    if high_value is None:
+                        return False
+                    return high_value >= reference_value if operator == "gte" else high_value > reference_value
                 low_value = snapshot.get("low")
-                return low_value is not None and low_value < reference_value
+                if low_value is None:
+                    return False
+                return low_value <= reference_value if operator == "lte" else low_value < reference_value
 
         return False
 
-    def _matches_rule_group(self, snapshot: dict, group: dict, allowed_keys: list[str]) -> bool:
+    def _matches_rule_group(
+        self,
+        snapshot: dict,
+        group: dict,
+        allowed_keys: list[str],
+        previous_snapshots: list[dict] | None = None,
+    ) -> bool:
         conditions = group.get("conditions")
         if not isinstance(conditions, list) or not conditions:
             return False
-        return all(self._matches_rule_condition(snapshot, condition, allowed_keys) for condition in conditions)
+        return all(
+            self._matches_rule_condition(snapshot, condition, allowed_keys, previous_snapshots)
+            for condition in conditions
+        )
 
-    def _matches_rule_groups(self, snapshot: dict, groups: list[dict], allowed_keys: list[str]) -> bool:
+    def _matches_rule_groups(
+        self,
+        snapshot: dict,
+        groups: list[dict],
+        allowed_keys: list[str],
+        previous_snapshots: list[dict] | None = None,
+    ) -> bool:
         if not groups:
             return False
-        return any(self._matches_rule_group(snapshot, group, allowed_keys) for group in groups)
+        return any(
+            self._matches_rule_group(snapshot, group, allowed_keys, previous_snapshots)
+            for group in groups
+        )
+
+    def _rule_group_hit_indexes(
+        self,
+        snapshot: dict,
+        groups: list[dict],
+        allowed_keys: list[str],
+        previous_snapshots: list[dict] | None = None,
+    ) -> list[int]:
+        return [
+            group_index + 1
+            for group_index, group in enumerate(groups)
+            if self._matches_rule_group(snapshot, group, allowed_keys, previous_snapshots)
+        ]
 
     def _payload_contains_numeric_rules(self, payload: dict, target_fields: list[str]) -> bool:
         field_set = {str(item).strip() for item in target_fields}
@@ -4644,6 +5134,10 @@ class QuantService:
             target_code, target_name, target_market
         ):
             raise ValueError("当前指数不支持 VIX 条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(
+            payload, CSI1000_REFERENCE_VIX_FILTER_KEYS
+        ) and not self._index_supports_csi1000_reference_vix(target_code, target_name, target_market):
+            raise ValueError("沪深300/中证500参考VIX条件仅支持中证1000策略。")
         if self._payload_contains_numeric_rules(payload, BASIS_FILTER_KEYS) and not self._index_supports_basis(
             target_code, target_name, target_market
         ):
@@ -4682,6 +5176,21 @@ class QuantService:
             raise ValueError("当前市场不支持股指期货净空单增量条件，请先移除相关规则。")
         if self._payload_contains_numeric_rules(payload, BASIS_DELTA_FILTER_KEYS) and target_market != "cn":
             raise ValueError("当前市场不支持期现差变化条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(payload, MARGIN_TRADING_FILTER_KEYS) and not self._index_supports_margin_trading(
+            target_code,
+            target_name,
+            target_market,
+        ):
+            raise ValueError("当前市场不支持融资融券统计条件，请先移除相关规则。")
+        if self._payload_contains_numeric_rules(
+            payload,
+            FUND_PURCHASE_LIMIT_FILTER_KEYS,
+        ) and not self._index_supports_fund_purchase_limit(
+            target_code,
+            target_name,
+            target_market,
+        ):
+            raise ValueError("公募基金限购条件目前只支持上证指数。")
         if target_market == "us" and self._payload_contains_numeric_rules(payload, ["basis-month"]):
             raise ValueError("当前美股指数只支持连续期现差条件，请先移除月连期现差规则。")
         if self._payload_contains_numeric_rules(payload, US_BASIS_ADJUSTED_FILTER_KEYS) and not self._index_supports_adjusted_basis(
@@ -4709,9 +5218,10 @@ class QuantService:
         red_groups = self._get_rule_groups(strategy, "red", allowed_keys)
 
         signal_map: dict[str, str] = {}
-        for snapshot in snapshots:
-            is_blue = self._matches_rule_groups(snapshot, blue_groups, allowed_keys)
-            is_red = self._matches_rule_groups(snapshot, red_groups, allowed_keys)
+        for index, snapshot in enumerate(snapshots):
+            previous_snapshots = snapshots[max(0, index - 3):index]
+            is_blue = self._matches_rule_groups(snapshot, blue_groups, allowed_keys, previous_snapshots)
+            is_red = self._matches_rule_groups(snapshot, red_groups, allowed_keys, previous_snapshots)
 
             if is_blue and is_red:
                 signal_map[snapshot["trade_date"]] = "purple"
@@ -4720,6 +5230,203 @@ class QuantService:
             elif is_red:
                 signal_map[snapshot["trade_date"]] = "red"
         return signal_map
+
+    @staticmethod
+    def _highlight_band(
+        trade_date: object,
+        blue_hit_groups: list[int] | None = None,
+        red_hit_groups: list[int] | None = None,
+    ) -> dict:
+        blue_groups = sorted(set(blue_hit_groups or []))
+        red_groups = sorted(set(red_hit_groups or []))
+        color = "purple" if blue_groups and red_groups else "blue" if blue_groups else "red"
+        return {
+            "tradeDate": _date_text(trade_date),
+            "color": color,
+            "variant": "striped" if len(blue_groups) > 1 or len(red_groups) > 1 else "solid",
+            "blueHitGroups": blue_groups,
+            "redHitGroups": red_groups,
+        }
+
+    def _build_strategy_highlight_bands(
+        self,
+        strategy: QuantStrategyConfig,
+        snapshots: list[dict],
+    ) -> list[dict]:
+        start_date = getattr(strategy, "start_date", None)
+        start_date_text = start_date.isoformat() if isinstance(start_date, date) else str(start_date or "").strip()
+        strategy_engine = self._normalize_strategy_engine(strategy.strategy_engine)
+        highlights: list[dict] = []
+
+        if strategy_engine == "sequence":
+            blue_groups = self._get_sequence_groups(strategy, "buy")
+            red_groups = self._get_sequence_groups(strategy, "sell")
+            for index, snapshot in enumerate(snapshots):
+                trade_date = _date_text(snapshot.get("trade_date"))
+                if start_date_text and trade_date < start_date_text:
+                    continue
+                blue_hits = self._sequence_group_hit_indexes(snapshots, index, blue_groups)
+                red_hits = self._sequence_group_hit_indexes(snapshots, index, red_groups)
+                if blue_hits or red_hits:
+                    highlights.append(self._highlight_band(trade_date, blue_hits, red_hits))
+            return highlights
+
+        allowed_keys = self._allowed_snapshot_filter_keys(
+            strategy.strategy_type,
+            self._normalize_target_market(getattr(strategy, "target_market", "cn")),
+            getattr(strategy, "target_code", ""),
+            getattr(strategy, "target_name", ""),
+        )
+        blue_groups = self._get_rule_groups(strategy, "blue", allowed_keys)
+        red_groups = self._get_rule_groups(strategy, "red", allowed_keys)
+        for index, snapshot in enumerate(snapshots):
+            trade_date = _date_text(snapshot.get("trade_date"))
+            if start_date_text and trade_date < start_date_text:
+                continue
+            previous_snapshots = snapshots[max(0, index - 3):index]
+            blue_hits = self._rule_group_hit_indexes(snapshot, blue_groups, allowed_keys, previous_snapshots)
+            red_hits = self._rule_group_hit_indexes(snapshot, red_groups, allowed_keys, previous_snapshots)
+            if blue_hits or red_hits:
+                highlights.append(self._highlight_band(trade_date, blue_hits, red_hits))
+        return highlights
+
+    def _load_fixed_strategy_target_chart(self, strategy: QuantStrategyConfig) -> tuple[list[dict], list[dict]]:
+        strategy_type = str(strategy.strategy_type or "").strip().lower()
+        strategy_engine = self._normalize_strategy_engine(strategy.strategy_engine)
+        target_market = self._normalize_target_market(getattr(strategy, "target_market", "cn"))
+
+        if strategy_engine == "sequence":
+            if strategy_type == "index":
+                candles = self.stock_service.list_index_daily_kline(
+                    strategy.target_code,
+                    market=target_market,
+                )
+            elif strategy_type == "stock":
+                candles = self.stock_service.list_daily_kline(strategy.target_code)
+            elif strategy_type == "etf":
+                candles = self.stock_service.list_etf_daily_kline(strategy.target_code)
+            else:
+                raise ValueError("unsupported sequence target")
+            return candles, self._build_sequence_snapshots(strategy)
+
+        if strategy_type == "index":
+            candles = self.stock_service.list_index_daily_kline(
+                strategy.target_code,
+                market=target_market,
+            )
+            snapshots = self._build_index_snapshots_for_market(
+                target_market,
+                strategy.target_code,
+                strategy.target_name,
+                strategy.indicator_params or {},
+                candles,
+            )
+            return candles, snapshots
+        if strategy_type == "stock":
+            candles = self.stock_service.list_hfq_daily_kline(strategy.target_code)
+            return candles, self._build_stock_snapshots(strategy.indicator_params or {}, candles)
+        if strategy_type == "etf":
+            candles = self.stock_service.list_etf_daily_kline(strategy.target_code)
+            return candles, self._build_stock_snapshots(strategy.indicator_params or {}, candles)
+        raise ValueError("unsupported strategy target")
+
+    def _get_market_scan_target_chart(
+        self,
+        strategy: QuantStrategyConfig,
+        owner_user_id: int,
+        scan_result_id: str | None,
+        target_code: str | None,
+    ) -> dict:
+        normalized_scan_result_id = str(scan_result_id or "").strip()
+        normalized_target_code = str(target_code or "").strip()
+        if not normalized_scan_result_id or not normalized_target_code:
+            raise ValueError("market scan target chart requires scan_result_id and target_code")
+
+        scan_result = self._load_scan_result(normalized_scan_result_id, owner_user_id)
+        expected_payload = self._serialize_scan_payload_for_cache(
+            self._normalize_scan_payload(self._build_market_scan_payload_from_strategy(strategy))
+        )
+        if scan_result.get("normalized_payload") != expected_payload:
+            raise ValueError("scan result does not match strategy")
+
+        target_events = [
+            event
+            for event in scan_result.get("matched_events", [])
+            if str(event.get("target_code") or "").strip() == normalized_target_code
+        ]
+        if not target_events:
+            raise ValueError("scan target not found")
+
+        strategy_type = str(scan_result["normalized_payload"].get("strategy_type") or "").strip()
+        if strategy_type == "stock":
+            candles = self.stock_service.list_daily_kline(normalized_target_code)
+        elif strategy_type == "etf":
+            candles = self.stock_service.list_etf_daily_kline(normalized_target_code)
+        else:
+            raise ValueError("unsupported scan target")
+
+        date_hits: dict[str, dict[str, set[int] | bool]] = {}
+        for event in target_events:
+            signal_date = str(event.get("signal_date") or "").strip()
+            if signal_date:
+                entry = date_hits.setdefault(signal_date, {"blue": set(), "red": False})
+                blue_groups = entry["blue"]
+                if isinstance(blue_groups, set):
+                    for item in event.get("hit_buy_groups", []):
+                        try:
+                            group_index = int(item)
+                        except (TypeError, ValueError):
+                            continue
+                        if group_index > 0:
+                            blue_groups.add(group_index)
+            sell_trigger_date = str(event.get("sell_trigger_date") or "").strip()
+            if sell_trigger_date:
+                date_hits.setdefault(sell_trigger_date, {"blue": set(), "red": False})["red"] = True
+
+        highlights = []
+        for trade_date, hits in sorted(date_hits.items()):
+            blue_hits = sorted(hits["blue"]) if isinstance(hits["blue"], set) else []
+            red_hits = [1] if hits["red"] else []
+            highlights.append(self._highlight_band(trade_date, blue_hits, red_hits))
+
+        return {
+            "target_type": strategy_type,
+            "target_market": "cn",
+            "target_code": normalized_target_code,
+            "target_name": str(target_events[0].get("target_name") or normalized_target_code),
+            "candles": candles,
+            "highlight_bands": highlights,
+        }
+
+    def get_strategy_target_chart(
+        self,
+        strategy_id: int,
+        owner_user_id: int,
+        *,
+        scan_result_id: str | None = None,
+        target_code: str | None = None,
+    ) -> dict:
+        strategy = self._get_owned_strategy(strategy_id, owner_user_id)
+        if (
+            self._normalize_strategy_engine(strategy.strategy_engine) == "sequence"
+            and self._normalize_sequence_mode(strategy.sequence_mode) == "market_scan"
+        ):
+            return self._get_market_scan_target_chart(
+                strategy,
+                owner_user_id,
+                scan_result_id,
+                target_code,
+            )
+
+        candles, snapshots = self._load_fixed_strategy_target_chart(strategy)
+        return {
+            "target_type": str(strategy.strategy_type or "").strip().lower(),
+            "target_market": self._normalize_target_market(getattr(strategy, "target_market", "cn")),
+            "target_code": str(strategy.target_code or "").strip(),
+            "target_name": str(strategy.target_name or strategy.target_code or "").strip(),
+            "candles": candles,
+            "highlight_bands": self._build_strategy_highlight_bands(strategy, snapshots),
+        }
 
     def _serialize_strategy(self, item: QuantStrategyConfig) -> dict:
         allowed_keys = self._allowed_snapshot_filter_keys(
@@ -4742,6 +5449,9 @@ class QuantService:
             "buy_sequence_groups": self._get_sequence_groups(item, "buy"),
             "sell_sequence_groups": self._get_sequence_groups(item, "sell"),
             "scan_trade_config": self._normalize_scan_trade_config(item.scan_trade_config or {}),
+            "research_option_template": self._normalize_research_option_template(
+                getattr(item, "research_option_template", None)
+            ),
             "blue_filter_groups": self._get_rule_groups(item, "blue", allowed_keys),
             "red_filter_groups": self._get_rule_groups(item, "red", allowed_keys),
             "blue_filters": item.blue_filters or {},
@@ -4803,6 +5513,9 @@ class QuantService:
             buy_sequence_groups=payload.get("buy_sequence_groups") or [],
             sell_sequence_groups=payload.get("sell_sequence_groups") or [],
             scan_trade_config=self._normalize_scan_trade_config(payload.get("scan_trade_config") or {}),
+            research_option_template=self._normalize_research_option_template(
+                payload.get("research_option_template")
+            ),
             blue_filter_groups=payload.get("blue_filter_groups") or [],
             red_filter_groups=payload.get("red_filter_groups") or [],
             blue_filters=payload.get("blue_filters") or {},
@@ -4840,6 +5553,9 @@ class QuantService:
         item.buy_sequence_groups = payload.get("buy_sequence_groups") or []
         item.sell_sequence_groups = payload.get("sell_sequence_groups") or []
         item.scan_trade_config = self._normalize_scan_trade_config(payload.get("scan_trade_config") or item.scan_trade_config or {})
+        item.research_option_template = self._normalize_research_option_template(
+            payload.get("research_option_template", item.research_option_template)
+        )
         item.blue_filter_groups = payload.get("blue_filter_groups") or []
         item.red_filter_groups = payload.get("red_filter_groups") or []
         item.blue_filters = payload.get("blue_filters") or {}
@@ -4898,6 +5614,9 @@ class QuantService:
             buy_sequence_groups=source.buy_sequence_groups or [],
             sell_sequence_groups=source.sell_sequence_groups or [],
             scan_trade_config=self._normalize_scan_trade_config(source.scan_trade_config or {}),
+            research_option_template=self._normalize_research_option_template(
+                getattr(source, "research_option_template", None)
+            ),
             blue_filter_groups=source.blue_filter_groups or [],
             red_filter_groups=source.red_filter_groups or [],
             blue_filters=source.blue_filters or {},
@@ -5509,6 +6228,65 @@ class QuantService:
             },
         }
 
+    @staticmethod
+    def _empty_option_trade_result(template: dict | None = None) -> dict:
+        initial_capital = _to_float((template or {}).get("initial_capital")) or DEFAULT_SCAN_INITIAL_CAPITAL
+        return {
+            "template": template,
+            "trades": [],
+            "summary": {
+                "signal_count": 0,
+                "completed_count": 0,
+                "pending_count": 0,
+                "direction_mismatch_count": 0,
+                "not_listed_count": 0,
+                "unavailable_count": 0,
+            },
+            "initial_capital": float(initial_capital),
+            "cumulative_return_pct": 0.0,
+            "annualized_return_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+            "points": [],
+        }
+
+    def _calculate_research_option_trades(
+        self,
+        strategy: QuantStrategyConfig,
+        signal_map: dict[str, str],
+    ) -> dict:
+        template = self._normalize_research_option_template(
+            getattr(strategy, "research_option_template", None)
+        )
+        if not isinstance(template, dict):
+            return self._empty_option_trade_result()
+        signal_dates = [
+            trade_date
+            for trade_date, color in signal_map.items()
+            if self._resolve_action(color, strategy) == "buy"
+        ]
+        if not signal_dates:
+            return self._empty_option_trade_result(template)
+        return VixOptionStrategyTradeService(self.db).calculate(
+            signal_dates,
+            strategy.target_code,
+            template,
+        )
+
+    def calculate_research_option_trades(self, strategy_id: int, owner_user_id: int) -> dict:
+        strategy = self._get_owned_strategy(strategy_id, owner_user_id)
+        template = self._normalize_research_option_template(
+            getattr(strategy, "research_option_template", None)
+        )
+        if template is None:
+            raise ValueError("option trade template not configured")
+        if (
+            self._normalize_strategy_engine(strategy.strategy_engine) == "sequence"
+            and self._normalize_sequence_mode(strategy.sequence_mode) == "market_scan"
+        ):
+            raise ValueError("option trade template is not supported for market scan strategies")
+        _prices, signal_map, _pending_actions, _initial_close = self._build_equity_curve_context(strategy)
+        return self._calculate_research_option_trades(strategy, signal_map)
+
     def calculate_equity_curve(self, strategy_id: int, owner_user_id: int) -> dict:
         strategy = self._get_owned_strategy(strategy_id, owner_user_id)
         if (
@@ -5571,7 +6349,6 @@ class QuantService:
             initial_close=initial_close,
             execution_price_mode=execution_price_mode,
         )
-
         return {
             "strategy": self._serialize_strategy(strategy),
             "cumulative_return_pct": result["cumulative_return_pct"],

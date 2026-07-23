@@ -30,8 +30,15 @@ const targetOptions = computed(() => [
 
 const operatorOptions = [
   { value: 'gt', label: '大于' },
+  { value: 'gte', label: '大于等于' },
   { value: 'lt', label: '小于' },
+  { value: 'lte', label: '小于等于' },
+  { value: 'episode_start', label: '连续3日低于后首次达到' },
 ]
+
+function operatorOptionsFor(target: QuantRuleGroupDraft['conditions'][number]['target']) {
+  return isNumericTarget(target) ? operatorOptions : operatorOptions.filter((item) => item.value !== 'episode_start')
+}
 
 const bollTrackOptions = [
   { value: 'boll-upper', label: 'BOLL上轨' },
@@ -76,7 +83,7 @@ const bollTrackOptions = [
                 </select>
 
                 <select v-model="condition.operator" class="input quant-rule-condition-operator">
-                  <option v-for="option in operatorOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  <option v-for="option in operatorOptionsFor(condition.target)" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
 
                 <input
