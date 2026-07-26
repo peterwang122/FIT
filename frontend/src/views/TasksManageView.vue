@@ -251,7 +251,7 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     marketScope: 'hk_index',
     targetType: null,
     requiresTargetSelection: false,
-    description: '执行港股股指期货日更整批采集，按港股交易日自动调度。',
+    description: '采集港交所股指期货日市况报告。官网通常约22:30发布，任务22:45启动并在同一条记录内重试至23:30。',
   },
   {
     value: 'us_index_futures_daily',

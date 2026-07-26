@@ -203,6 +203,9 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-hk-index-futures-daily",
+        "poll_end_time": "23:30",
+        "poll_interval_minutes": 5,
+        "poll_inside_run": True,
     },
     "us_index_futures_daily": {
         "label": "美股股指期货日更",
@@ -2162,6 +2165,7 @@ class TaskService:
             "fund_purchase_limit_daily",
             "quant_index_daily",
             "index_qvix_daily",
+            "hk_index_futures_daily",
         }:
             explicit_target_trade_date = self._collection_target_trade_date_for_task(collector_key, task, reference_dt)
             if collector_key in {
@@ -2173,6 +2177,7 @@ class TaskService:
                 "cn_macro_daily",
                 "margin_trading_daily",
                 "fund_purchase_limit_daily",
+                "hk_index_futures_daily",
             }:
                 collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
         elif collector_key == "douyin_coze_emotion_daily":
@@ -2244,6 +2249,30 @@ class TaskService:
             raise TaskRunSkipped(
                 f"{label}官方源尚未发布完整：目标交易日 {target_date}，"
                 f"已发布 {available}，应有 {expected}，最近完整日期 {latest_complete}。"
+            )
+        if collector_key == "hk_index_futures_daily" and result_status == "SOURCE_NOT_READY":
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            available = ", ".join(result_value.get("available_products") or []) or "-"
+            expected = ", ".join(result_value.get("expected_products") or []) or "HSI, HHI, HTI"
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, interval_minutes = polling_window
+                checked_at = self._now()
+                end_at = datetime.combine(checked_at.date(), end_time)
+                if checked_at < end_at:
+                    raise TaskRunPollingPending(
+                        f"{label}港交所日市况报告尚未完整：目标交易日 {target_date}，"
+                        f"已发布 {available}，应有 {expected}；"
+                        f"将在同一条运行记录内继续检查。",
+                        countdown_seconds=interval_minutes * 60,
+                    )
+            raise TaskRunSkipped(
+                f"{label}截至 23:30 港交所日市况报告仍未完整：目标交易日 {target_date}，"
+                f"已发布 {available}，应有 {expected}。"
             )
         douyin_processing_error = (
             str(result_value.get("error") or "").strip()

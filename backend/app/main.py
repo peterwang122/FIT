@@ -510,6 +510,26 @@ def ensure_runtime_tables() -> None:
             enforce_name=True,
         )
         for collector_key, name, schedule_time, legacy_names in (
+            ("index_hk_daily", "港股指数日更", "18:00", ("港股指数采集",)),
+            (
+                "hk_index_futures_daily",
+                "港股股指期货日更",
+                "22:45",
+                ("港股期货数据采集",),
+            ),
+        ):
+            _ensure_default_collection_task(
+                db,
+                root_user,
+                collector_key=collector_key,
+                name=name,
+                schedule_time=schedule_time,
+                market_scope="hk_index",
+                enforce_schedule_time=True,
+                enforce_name=True,
+                legacy_names=legacy_names,
+            )
+        for collector_key, name, schedule_time, legacy_names in (
             ("index_us_credit_spread_daily", "美股高收益债利差日更", "00:45", ("美债收益债利差采集",)),
             ("index_us_treasury_yield_daily", "美债收益率日更", "05:30", ("美债收益率采集",)),
             ("index_us_daily", "美股指数日更", "06:00", ("美股指数采集",)),

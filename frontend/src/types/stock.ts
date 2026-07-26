@@ -240,6 +240,7 @@ export interface IndexMarginTradingPoint {
   securities_lending_balance: number | null
   total_balance: number | null
   financing_net_buy_amount: number | null
+  leverage_ratio_pct: number | null
 }
 
 export interface IndexUsTreasuryYieldPoint {

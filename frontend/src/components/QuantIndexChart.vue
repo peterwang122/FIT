@@ -87,7 +87,8 @@ type BasisDeltaWindow = CffexNetShortDeltaWindow
 type BasisDeltaMetricKey = 'main' | 'month'
 type BasisDeltaPayloadKey = `${BasisDeltaMetricKey}_delta_${BasisDeltaWindow}d`
 type FundPurchaseLimitMetricKey = 'count' | 'pct'
-type MarginTradingMetricKey = 'financing' | 'securitiesLending' | 'total' | 'netBuy'
+type MarginTradingMetricKey = 'financing' | 'securitiesLending' | 'total' | 'netBuy' | 'leverage'
+type MarginTradingMetricUnit = 'cnyYi' | 'percent'
 type UsCreditMetricKey = 'hyOas' | 'change5d'
 type BasisMetricKey = 'adjusted' | 'main'
 const CNY_PER_YI = 100_000_000
@@ -1097,26 +1098,35 @@ const marginTradingMetricConfig: Record<MarginTradingMetricKey, {
   label: string
   color: string
   field: keyof IndexMarginTradingPoint
+  unit: MarginTradingMetricUnit
 }> = {
-  financing: { label: '融资余额', color: '#2563eb', field: 'financing_balance' },
-  securitiesLending: { label: '融券余额', color: '#7c3aed', field: 'securities_lending_balance' },
-  total: { label: '两融余额', color: '#0f766e', field: 'total_balance' },
-  netBuy: { label: '融资净买入', color: '#dc2626', field: 'financing_net_buy_amount' },
+  financing: { label: '融资余额', color: '#2563eb', field: 'financing_balance', unit: 'cnyYi' },
+  securitiesLending: { label: '融券余额', color: '#7c3aed', field: 'securities_lending_balance', unit: 'cnyYi' },
+  total: { label: '两融余额', color: '#0f766e', field: 'total_balance', unit: 'cnyYi' },
+  netBuy: { label: '融资净买入', color: '#dc2626', field: 'financing_net_buy_amount', unit: 'cnyYi' },
+  leverage: { label: '杠杆率', color: '#d97706', field: 'leverage_ratio_pct', unit: 'percent' },
 }
+
+const marginTradingPanelTitle = computed(() =>
+  marginTradingMetricConfig[activeMarginTradingMetric.value].unit === 'percent'
+    ? 'A股融资融券（%）'
+    : 'A股融资融券（亿元）',
+)
 
 const marginTradingPointByDate = computed(
   () => new Map(props.marginTradingPoints.map((item) => [item.trade_date, item])),
 )
 
 const marginTradingSeriesData = computed(() => {
-  const field = marginTradingMetricConfig[activeMarginTradingMetric.value].field
+  const metric = marginTradingMetricConfig[activeMarginTradingMetric.value]
+  const field = metric.field
   return sortedCandles.value.map((item) => {
     const point = marginTradingPointByDate.value.get(item.trade_date)
     const rawValue = toNullableNumber(point?.[field] as number | null | undefined)
     return {
       time: item.trade_date as Time,
       rawDate: item.trade_date,
-      value: rawValue === null ? null : rawValue / CNY_PER_YI,
+      value: rawValue === null || metric.unit === 'percent' ? rawValue : rawValue / CNY_PER_YI,
     }
   })
 })
@@ -1730,6 +1740,20 @@ function formatYiAxisValue(value: number) {
   })}亿`
 }
 
+function marginTradingPriceFormat(metric: MarginTradingMetricKey) {
+  return marginTradingMetricConfig[metric].unit === 'percent'
+    ? {
+        type: 'custom' as const,
+        minMove: 0.001,
+        formatter: (value: number) => `${value.toFixed(2)}%`,
+      }
+    : {
+        type: 'custom' as const,
+        minMove: 0.01,
+        formatter: formatYiAxisValue,
+      }
+}
+
 
 function formatRuleGroupList(groups: number[] | undefined) {
   if (!groups?.length) {
@@ -1987,6 +2011,7 @@ const activeIndicatorSnapshot = computed(() => {
       total: marginTradingPointByDate.value.get(tradeDate)?.total_balance ?? null,
       netBuy:
         marginTradingPointByDate.value.get(tradeDate)?.financing_net_buy_amount ?? null,
+      leverage: marginTradingPointByDate.value.get(tradeDate)?.leverage_ratio_pct ?? null,
     },
     usVix: {
       open: usVixPointByDate.value.get(tradeDate)?.open_value ?? null,
@@ -2150,6 +2175,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
               { label: '融券余额', value: formatCnyYi(indicator.marginTrading.securitiesLending) },
               { label: '两融余额', value: formatCnyYi(indicator.marginTrading.total) },
               { label: '融资净买入', value: formatCnyYi(indicator.marginTrading.netBuy) },
+              { label: '杠杆率', value: formatPercent(indicator.marginTrading.leverage) },
             ],
           },
         ]
@@ -2855,7 +2881,10 @@ function updateAllSeries() {
   if (isSubPanelVisible('marginTrading')) {
     if (!marginTradingSeries) return
     const metricConfig = marginTradingMetricConfig[activeMarginTradingMetric.value]
-    marginTradingSeries.applyOptions({ color: metricConfig.color })
+    marginTradingSeries.applyOptions({
+      color: metricConfig.color,
+      priceFormat: marginTradingPriceFormat(activeMarginTradingMetric.value),
+    })
     marginTradingSeries.setData(
       marginTradingSeriesData.value.map((item) =>
         item.value === null
@@ -3112,11 +3141,7 @@ function renderCharts() {
         )
       : null
     marginTradingSeries?.applyOptions({
-      priceFormat: {
-        type: 'custom',
-        minMove: 0.01,
-        formatter: formatYiAxisValue,
-      },
+      priceFormat: marginTradingPriceFormat(activeMarginTradingMetric.value),
     })
     usVixSeries = charts.usVix ? addVixCandles(charts.usVix) : null
     usFearGreedSeries = charts.usFearGreed ? addLineSeries(charts.usFearGreed, quantDataset.value.usFearGreed?.color ?? '#dc2626', 2) : null
@@ -3608,7 +3633,7 @@ onBeforeUnmount(() => {
 
     <div v-if="isSubPanelVisible('marginTrading')" class="quant-panel">
       <div class="quant-panel-head">
-        <h3>A股融资融券（亿元）</h3>
+        <h3>{{ marginTradingPanelTitle }}</h3>
         <div class="quant-legend">
           <button v-for="item in marginTradingLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectMarginTradingMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button>
         </div>

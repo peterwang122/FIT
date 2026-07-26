@@ -133,6 +133,7 @@ export type QuantFilterFieldKey =
   | 'margin-securities-lending-balance'
   | 'margin-total-balance'
   | 'margin-financing-net-buy'
+  | 'margin-leverage-ratio'
   | 'us-vix-open'
   | 'us-vix-high'
   | 'us-vix-low'

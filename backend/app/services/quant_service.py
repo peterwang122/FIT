@@ -83,6 +83,7 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
     "margin-securities-lending-balance",
     "margin-total-balance",
     "margin-financing-net-buy",
+    "margin-leverage-ratio",
     "rsi",
     "wr",
     "macd-dif",
@@ -159,7 +160,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v23"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v24"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 CN_OPTION_PUT_CALL_FIELD_MAP = [
     (
@@ -235,6 +236,7 @@ MARGIN_TRADING_FILTER_FIELD_MAP = [
     ("margin-securities-lending-balance", "margin_securities_lending_balance"),
     ("margin-total-balance", "margin_total_balance"),
     ("margin-financing-net-buy", "margin_financing_net_buy_amount"),
+    ("margin-leverage-ratio", "margin_leverage_ratio_pct"),
 ]
 MARGIN_TRADING_FILTER_KEYS = [
     field_key for field_key, _column_name in MARGIN_TRADING_FILTER_FIELD_MAP
@@ -2985,6 +2987,9 @@ class QuantService:
                     "total_balance": _to_float(row.get("margin_total_balance")),
                     "financing_net_buy_amount": _to_float(
                         row.get("margin_financing_net_buy_amount")
+                    ),
+                    "leverage_ratio_pct": _to_float(
+                        row.get("margin_leverage_ratio_pct")
                     ),
                 }
                 for row in rows

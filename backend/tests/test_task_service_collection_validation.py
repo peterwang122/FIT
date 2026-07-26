@@ -833,6 +833,86 @@ def test_stock_exchange_official_manual_run_passes_previous_trade_date_before_sc
     assert result["status"] == "success"
 
 
+def test_hk_index_futures_scheduled_run_passes_current_trade_date(monkeypatch):
+    task = _make_collection_task("hk_index_futures_daily", market_scope="hk_index")
+    task.schedule_time = "22:45"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 7, 23, 22, 45)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": 36, "latest_date": date(2026, 7, 23)},
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 23), trading=True)
+    captured_kwargs = {}
+
+    def _fake_run_daily_collection_request(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "hk_index_futures_daily",
+                "result": {
+                    "status": "SUCCESS",
+                    "target_date": "2026-07-23",
+                    "collection": 36,
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        _fake_run_daily_collection_request,
+    )
+
+    result = service.execute_run(run.id)
+
+    assert captured_kwargs["payload"] == {"target_date": "2026-07-23"}
+    assert db.executed[0][1]["target_trade_date"] == date(2026, 7, 23)
+    assert result["status"] == "success"
+
+
+def test_hk_index_futures_waits_in_same_run_when_report_is_not_ready(monkeypatch):
+    task = _make_collection_task("hk_index_futures_daily", market_scope="hk_index")
+    task.schedule_time = "22:45"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 7, 23, 22, 45)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 23), trading=True)
+    service._now = lambda: datetime(2026, 7, 23, 22, 50)
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "hk_index_futures_daily",
+                "result": {
+                    "status": "SOURCE_NOT_READY",
+                    "target_date": "2026-07-23",
+                    "available_products": ["HSI"],
+                    "expected_products": ["HSI", "HHI", "HTI"],
+                },
+            },
+        },
+    )
+
+    with pytest.raises(TaskRunPollingPending) as exc_info:
+        service.execute_run(run.id)
+
+    assert exc_info.value.countdown_seconds == 300
+    assert "同一条运行记录内继续检查" in str(exc_info.value)
+    assert run.status == "running"
+
+
 def test_quant_index_manual_run_uses_previous_trade_date_before_schedule(monkeypatch):
     task = _make_collection_task("quant_index_daily")
     task.schedule_time = "17:30"

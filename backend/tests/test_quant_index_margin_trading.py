@@ -44,6 +44,7 @@ def test_index_snapshot_reads_precomputed_margin_trading_values():
             "margin_securities_lending_balance": 20_454_339_987,
             "margin_total_balance": 2_849_479_793_129,
             "margin_financing_net_buy_amount": -28_586_475_046,
+            "margin_leverage_ratio_pct": 2.991798,
         }
     ]
 
@@ -59,6 +60,7 @@ def test_index_snapshot_reads_precomputed_margin_trading_values():
     assert values["margin-securities-lending-balance"] == 20_454_339_987
     assert values["margin-total-balance"] == 2_849_479_793_129
     assert values["margin-financing-net-buy"] == -28_586_475_046
+    assert values["margin-leverage-ratio"] == 2.991798
 
 
 def test_null_margin_trading_value_does_not_match_filter():
@@ -72,6 +74,22 @@ def test_null_margin_trading_value_does_not_match_filter():
 
     assert not service._matches_rule_condition(
         {"values": {"margin-financing-net-buy": None}},
+        condition,
+        MARGIN_TRADING_FILTER_KEYS,
+    )
+
+
+def test_null_margin_leverage_ratio_does_not_match_filter():
+    service = _service()
+    condition = {
+        "type": "numeric",
+        "field": "margin-leverage-ratio",
+        "operator": "gt",
+        "value": 2.5,
+    }
+
+    assert not service._matches_rule_condition(
+        {"values": {"margin-leverage-ratio": None}},
         condition,
         MARGIN_TRADING_FILTER_KEYS,
     )

@@ -307,6 +307,7 @@ class IndexDashboardMarginTradingPointResponse(BaseModel):
     securities_lending_balance: float | None = None
     total_balance: float | None = None
     financing_net_buy_amount: float | None = None
+    leverage_ratio_pct: float | None = None
 
 
 class IndexDashboardUsTreasuryYieldPointResponse(BaseModel):

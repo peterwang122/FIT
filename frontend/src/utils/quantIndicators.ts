@@ -106,6 +106,7 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'margin-securities-lending-balance',
   'margin-total-balance',
   'margin-financing-net-buy',
+  'margin-leverage-ratio',
   'rsi',
   'wr',
   'macd-dif',
@@ -1049,6 +1050,7 @@ function buildIndexQuantFilterFields(
       { key: 'margin-securities-lending-balance', group: 'margin-trading', label: '融券余额' },
       { key: 'margin-total-balance', group: 'margin-trading', label: '两融余额' },
       { key: 'margin-financing-net-buy', group: 'margin-trading', label: '融资净买入额' },
+      { key: 'margin-leverage-ratio', group: 'margin-trading', label: '两融杠杆率(%)' },
     )
   }
   if (options.includeUsVix) {
@@ -1386,6 +1388,7 @@ export function buildIndexQuantFilterDataset(
         'margin-securities-lending-balance': toFiniteNullableNumber(item.securities_lending_balance),
         'margin-total-balance': toFiniteNullableNumber(item.total_balance),
         'margin-financing-net-buy': toFiniteNullableNumber(item.financing_net_buy_amount),
+        'margin-leverage-ratio': toFiniteNullableNumber(item.leverage_ratio_pct),
       },
     ]),
   )
@@ -1492,6 +1495,7 @@ export function buildIndexQuantFilterDataset(
       'margin-securities-lending-balance': marginTradingByDate.get(snapshot.tradeDate)?.['margin-securities-lending-balance'] ?? null,
       'margin-total-balance': marginTradingByDate.get(snapshot.tradeDate)?.['margin-total-balance'] ?? null,
       'margin-financing-net-buy': marginTradingByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy'] ?? null,
+      'margin-leverage-ratio': marginTradingByDate.get(snapshot.tradeDate)?.['margin-leverage-ratio'] ?? null,
       'us-vix-open': usVixByDate.get(snapshot.tradeDate)?.['us-vix-open'] ?? null,
       'us-vix-high': usVixByDate.get(snapshot.tradeDate)?.['us-vix-high'] ?? null,
       'us-vix-low': usVixByDate.get(snapshot.tradeDate)?.['us-vix-low'] ?? null,
