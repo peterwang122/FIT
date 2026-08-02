@@ -29,13 +29,16 @@ import type {
   IndexBasisDeltaPoint,
   IndexBreadthPoint,
   IndexCffexNetShortDeltaPoint,
+  IndexCnMarketFearGreedPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
   IndexCnOptionSeries,
   IndexCnOptionVixPoint,
   IndexEmotionPoint,
   IndexFundPurchaseLimitPoint,
+  IndexMarginFinancingNetBuySumPoint,
   IndexMarginTradingPoint,
+  IndexSelfSentimentPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
@@ -66,6 +69,8 @@ type PanelKey =
   | 'basisDelta'
   | 'fundPurchaseLimit'
   | 'marginTrading'
+  | 'marginFinancingNetBuySum'
+  | 'selfSentiment'
   | 'usVix'
   | 'usFearGreed'
   | 'usHedge'
@@ -77,6 +82,7 @@ type MainOverlayMode = 'ma' | 'boll'
 type UsPutCallMetricKey = 'total' | 'index' | 'equity' | 'etf'
 type CnOptionPutCallMetricKey = 'currentMonth' | 'nextMonth' | 'quarter1' | 'quarter2'
 type CnOptionFlowPutCallMetricKey = 'volume' | 'turnover' | 'turnoverCallPut'
+type SelfSentimentMetricKey = 'score' | 'core' | 'derivative'
 const CFFEX_NET_SHORT_DELTA_WINDOWS = [5, 7, 14, 20, 30, 60, 120] as const
 type CffexNetShortDeltaWindow = (typeof CFFEX_NET_SHORT_DELTA_WINDOWS)[number]
 type CffexNetShortDeltaSource = 'top20' | 'citic'
@@ -87,10 +93,38 @@ type BasisDeltaWindow = CffexNetShortDeltaWindow
 type BasisDeltaMetricKey = 'main' | 'month'
 type BasisDeltaPayloadKey = `${BasisDeltaMetricKey}_delta_${BasisDeltaWindow}d`
 type FundPurchaseLimitMetricKey = 'count' | 'pct'
-type MarginTradingMetricKey = 'financing' | 'securitiesLending' | 'total' | 'netBuy' | 'leverage'
+type EmotionMetricKey = 'index' | 'marketFearGreed'
+type MarginTradingMetricKey =
+  | 'financing'
+  | 'securitiesLending'
+  | 'total'
+  | 'netBuy'
+  | 'leverage'
+  | 'totalMarketCapLeverage'
 type MarginTradingMetricUnit = 'cnyYi' | 'percent'
+type MarginFinancingNetBuySumWindow = CffexNetShortDeltaWindow
+type MarginFinancingNetBuySumPayloadKey = `sum_${MarginFinancingNetBuySumWindow}d`
 type UsCreditMetricKey = 'hyOas' | 'change5d'
 type BasisMetricKey = 'adjusted' | 'main'
+type SubPanelControlPreference = {
+  usPutCallMetric: UsPutCallMetricKey
+  cnOptionPutCallMetric: CnOptionPutCallMetricKey
+  cnOptionFlowPutCallMetric: CnOptionFlowPutCallMetricKey
+  cnOptionPriceSourceKey: string
+  cnOptionFlowSourceKey: string
+  cnOptionVixSourceKey: string
+  cffexNetShortDeltaSource: CffexNetShortDeltaSource
+  cffexNetShortDeltaWindow: CffexNetShortDeltaWindow
+  basisDeltaMetric: BasisDeltaMetricKey
+  basisDeltaWindow: BasisDeltaWindow
+  fundPurchaseLimitMetric: FundPurchaseLimitMetricKey
+  emotionMetric: EmotionMetricKey
+  marginTradingMetric: MarginTradingMetricKey
+  marginFinancingNetBuySumWindow: MarginFinancingNetBuySumWindow
+  selfSentimentMetric: SelfSentimentMetricKey
+  usCreditMetric: UsCreditMetricKey
+  basisMetric: BasisMetricKey
+}
 const CNY_PER_YI = 100_000_000
 type AnySeries = ISeriesApi<SeriesType, Time>
 type LineSeriesApi = ISeriesApi<'Line', Time>
@@ -122,6 +156,8 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'basisDelta',
   'fundPurchaseLimit',
   'marginTrading',
+  'marginFinancingNetBuySum',
+  'selfSentiment',
   'usVix',
   'usFearGreed',
   'usHedge',
@@ -134,11 +170,95 @@ const DEFAULT_HIDDEN_TECHNICAL_SUB_PANELS = new Set<SubPanelKey>(['macd', 'kdj',
 const DEFAULT_VISIBLE_SUB_PANEL_KEYS: SubPanelKey[] = ALL_SUB_PANEL_KEYS.filter(
   (item) => !DEFAULT_HIDDEN_TECHNICAL_SUB_PANELS.has(item),
 )
+const SUB_PANEL_PREFERENCE_STORAGE_PREFIX = 'fit.quant-index.visible-sub-panels.v1'
+const SUB_PANEL_CONTROL_PREFERENCE_STORAGE_PREFIX = 'fit.quant-index.sub-panel-controls.v1'
+
+function normalizePreferenceScope(value: string | null | undefined): string {
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  return normalized || 'default'
+}
+
+function getSubPanelPreferenceStorageKey(scope: string): string {
+  return `${SUB_PANEL_PREFERENCE_STORAGE_PREFIX}.${normalizePreferenceScope(scope)}`
+}
+
+function getSubPanelControlPreferenceStorageKey(scope: string, symbolCode: string): string {
+  return `${SUB_PANEL_CONTROL_PREFERENCE_STORAGE_PREFIX}.${normalizePreferenceScope(scope)}.${normalizePreferenceScope(symbolCode)}`
+}
+
+function loadVisibleSubPanelPreference(scope: string): SubPanelKey[] {
+  if (typeof window === 'undefined') return [...DEFAULT_VISIBLE_SUB_PANEL_KEYS]
+  try {
+    const rawValue = window.localStorage.getItem(getSubPanelPreferenceStorageKey(scope))
+    if (rawValue === null) return [...DEFAULT_VISIBLE_SUB_PANEL_KEYS]
+    const parsedValue: unknown = JSON.parse(rawValue)
+    if (!Array.isArray(parsedValue)) return [...DEFAULT_VISIBLE_SUB_PANEL_KEYS]
+    const selectedKeys = new Set(
+      parsedValue.filter(
+        (item): item is SubPanelKey =>
+          typeof item === 'string' && ALL_SUB_PANEL_KEYS.includes(item as SubPanelKey),
+      ),
+    )
+    return ALL_SUB_PANEL_KEYS.filter((item) => selectedKeys.has(item))
+  } catch {
+    return [...DEFAULT_VISIBLE_SUB_PANEL_KEYS]
+  }
+}
+
+function saveVisibleSubPanelPreference(scope: string, panelKeys: SubPanelKey[]) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      getSubPanelPreferenceStorageKey(scope),
+      JSON.stringify(ALL_SUB_PANEL_KEYS.filter((item) => panelKeys.includes(item))),
+    )
+  } catch {
+    // Browser privacy settings may disable local storage; chart controls still work for this session.
+  }
+}
+
+function loadSubPanelControlPreference(
+  scope: string,
+  symbolCode: string,
+): Partial<SubPanelControlPreference> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const rawValue = window.localStorage.getItem(getSubPanelControlPreferenceStorageKey(scope, symbolCode))
+    if (rawValue === null) return {}
+    const parsedValue: unknown = JSON.parse(rawValue)
+    if (!parsedValue || typeof parsedValue !== 'object' || Array.isArray(parsedValue)) return {}
+    return parsedValue as Partial<SubPanelControlPreference>
+  } catch {
+    return {}
+  }
+}
+
+function saveSubPanelControlPreference(
+  scope: string,
+  symbolCode: string,
+  patch: Partial<SubPanelControlPreference>,
+) {
+  if (typeof window === 'undefined') return
+  try {
+    const current = loadSubPanelControlPreference(scope, symbolCode)
+    window.localStorage.setItem(
+      getSubPanelControlPreferenceStorageKey(scope, symbolCode),
+      JSON.stringify({ ...current, ...patch }),
+    )
+  } catch {
+    // Browser privacy settings may disable local storage; chart controls still work for this session.
+  }
+}
+
+function isStoredChoice<T extends string | number>(value: unknown, choices: readonly T[]): value is T {
+  return choices.includes(value as T)
+}
 
 const props = withDefaults(
   defineProps<{
     candles: KlineCandle[]
     emotionPoints?: IndexEmotionPoint[]
+    cnMarketFearGreedPoints?: IndexCnMarketFearGreedPoint[]
     emotionLoading?: boolean
     emotionErrorMessage?: string
     futuresBasisPoints?: FuturesBasisPoint[]
@@ -157,7 +277,10 @@ const props = withDefaults(
     fundPurchaseLimitPoints?: IndexFundPurchaseLimitPoint[]
     supportsFundPurchaseLimitPanel?: boolean
     marginTradingPoints?: IndexMarginTradingPoint[]
+    marginFinancingNetBuySumPoints?: IndexMarginFinancingNetBuySumPoint[]
     supportsMarginTradingPanel?: boolean
+    selfSentimentPoints?: IndexSelfSentimentPoint[]
+    supportsSelfSentimentPanel?: boolean
     supportsCnOptionPutCallPanel?: boolean
     usVixPoints?: IndexUsVixPoint[]
     usFearGreedPoints?: IndexUsFearGreedPoint[]
@@ -184,9 +307,11 @@ const props = withDefaults(
     zoomStep?: number
     hasMoreHistory?: boolean
     loadingMoreHistory?: boolean
+    preferenceScope?: string
   }>(),
   {
     emotionPoints: () => [],
+    cnMarketFearGreedPoints: () => [],
     emotionLoading: false,
     emotionErrorMessage: '',
     futuresBasisPoints: () => [],
@@ -205,7 +330,10 @@ const props = withDefaults(
     fundPurchaseLimitPoints: () => [],
     supportsFundPurchaseLimitPanel: false,
     marginTradingPoints: () => [],
+    marginFinancingNetBuySumPoints: () => [],
     supportsMarginTradingPanel: false,
+    selfSentimentPoints: () => [],
+    supportsSelfSentimentPanel: false,
     supportsCnOptionPutCallPanel: false,
     usVixPoints: () => [],
     usFearGreedPoints: () => [],
@@ -228,6 +356,7 @@ const props = withDefaults(
     zoomStep: 0.18,
     hasMoreHistory: false,
     loadingMoreHistory: false,
+    preferenceScope: 'default',
   },
 )
 
@@ -253,6 +382,8 @@ const cffexNetShortDeltaContainerRef = ref<HTMLDivElement | null>(null)
 const basisDeltaContainerRef = ref<HTMLDivElement | null>(null)
 const fundPurchaseLimitContainerRef = ref<HTMLDivElement | null>(null)
 const marginTradingContainerRef = ref<HTMLDivElement | null>(null)
+const marginFinancingNetBuySumContainerRef = ref<HTMLDivElement | null>(null)
+const selfSentimentContainerRef = ref<HTMLDivElement | null>(null)
 const usVixContainerRef = ref<HTMLDivElement | null>(null)
 const usFearGreedContainerRef = ref<HTMLDivElement | null>(null)
 const usHedgeContainerRef = ref<HTMLDivElement | null>(null)
@@ -274,9 +405,89 @@ const activeCffexNetShortDeltaWindow = ref<CffexNetShortDeltaWindow>(7)
 const activeBasisDeltaMetric = ref<BasisDeltaMetricKey>('main')
 const activeBasisDeltaWindow = ref<BasisDeltaWindow>(7)
 const activeFundPurchaseLimitMetric = ref<FundPurchaseLimitMetricKey>('count')
+const activeEmotionMetric = ref<EmotionMetricKey>('index')
 const activeMarginTradingMetric = ref<MarginTradingMetricKey>('financing')
+const activeMarginFinancingNetBuySumWindow = ref<MarginFinancingNetBuySumWindow>(20)
+const activeSelfSentimentMetric = ref<SelfSentimentMetricKey>('score')
 const activeUsCreditKey = ref<UsCreditMetricKey>('hyOas')
 const activeBasisKey = ref<BasisMetricKey>('adjusted')
+
+function applySubPanelControlPreference() {
+  const preference = loadSubPanelControlPreference(props.preferenceScope, props.symbolCode)
+  activeUsPutCallKey.value = isStoredChoice(preference.usPutCallMetric, ['total', 'index', 'equity', 'etf'])
+    ? preference.usPutCallMetric
+    : 'total'
+  activeCnOptionPutCallKey.value = isStoredChoice(
+    preference.cnOptionPutCallMetric,
+    ['currentMonth', 'nextMonth', 'quarter1', 'quarter2'],
+  )
+    ? preference.cnOptionPutCallMetric
+    : 'currentMonth'
+  activeCnOptionFlowPutCallKey.value = isStoredChoice(
+    preference.cnOptionFlowPutCallMetric,
+    ['volume', 'turnover', 'turnoverCallPut'],
+  )
+    ? preference.cnOptionFlowPutCallMetric
+    : 'volume'
+  activeCnOptionPriceSourceKey.value = typeof preference.cnOptionPriceSourceKey === 'string'
+    ? preference.cnOptionPriceSourceKey
+    : ''
+  activeCnOptionFlowSourceKey.value = typeof preference.cnOptionFlowSourceKey === 'string'
+    ? preference.cnOptionFlowSourceKey
+    : ''
+  activeCnOptionVixSourceKey.value = typeof preference.cnOptionVixSourceKey === 'string'
+    ? preference.cnOptionVixSourceKey
+    : ''
+  activeCffexNetShortDeltaSource.value = isStoredChoice(
+    preference.cffexNetShortDeltaSource,
+    ['top20', 'citic'],
+  )
+    ? preference.cffexNetShortDeltaSource
+    : 'top20'
+  activeCffexNetShortDeltaWindow.value = isStoredChoice(
+    preference.cffexNetShortDeltaWindow,
+    CFFEX_NET_SHORT_DELTA_WINDOWS,
+  )
+    ? preference.cffexNetShortDeltaWindow
+    : 7
+  activeBasisDeltaMetric.value = isStoredChoice(preference.basisDeltaMetric, ['main', 'month'])
+    ? preference.basisDeltaMetric
+    : 'main'
+  activeBasisDeltaWindow.value = isStoredChoice(preference.basisDeltaWindow, CFFEX_NET_SHORT_DELTA_WINDOWS)
+    ? preference.basisDeltaWindow
+    : 7
+  activeFundPurchaseLimitMetric.value = isStoredChoice(preference.fundPurchaseLimitMetric, ['count', 'pct'])
+    ? preference.fundPurchaseLimitMetric
+    : 'count'
+  activeEmotionMetric.value = isStoredChoice(preference.emotionMetric, ['index', 'marketFearGreed'])
+    ? preference.emotionMetric
+    : 'index'
+  activeMarginTradingMetric.value = isStoredChoice(
+    preference.marginTradingMetric,
+    ['financing', 'securitiesLending', 'total', 'netBuy', 'leverage', 'totalMarketCapLeverage'],
+  )
+    ? preference.marginTradingMetric
+    : 'financing'
+  activeMarginFinancingNetBuySumWindow.value = isStoredChoice(
+    preference.marginFinancingNetBuySumWindow,
+    CFFEX_NET_SHORT_DELTA_WINDOWS,
+  )
+    ? preference.marginFinancingNetBuySumWindow
+    : 20
+  activeSelfSentimentMetric.value = isStoredChoice(preference.selfSentimentMetric, ['score', 'core', 'derivative'])
+    ? preference.selfSentimentMetric
+    : 'score'
+  activeUsCreditKey.value = isStoredChoice(preference.usCreditMetric, ['hyOas', 'change5d'])
+    ? preference.usCreditMetric
+    : 'hyOas'
+  activeBasisKey.value = isStoredChoice(preference.basisMetric, ['adjusted', 'main'])
+    ? preference.basisMetric
+    : 'adjusted'
+}
+
+function rememberSubPanelControl(patch: Partial<SubPanelControlPreference>) {
+  saveSubPanelControlPreference(props.preferenceScope, props.symbolCode, patch)
+}
 
 const charts: Partial<Record<PanelKey, IChartApi>> = {}
 const primarySeriesMap = new Map<PanelKey, AnySeries>()
@@ -307,6 +518,10 @@ let basisDeltaSeries: LineSeriesApi | null = null
 let basisDeltaReferenceSeries: LineSeriesApi | null = null
 let fundPurchaseLimitSeries: LineSeriesApi | null = null
 let marginTradingSeries: LineSeriesApi | null = null
+let marginFinancingNetBuySumSeries: LineSeriesApi | null = null
+let marginFinancingNetBuySumReferenceSeries: LineSeriesApi | null = null
+let selfSentimentSeries: LineSeriesApi | null = null
+let selfSentimentReferenceSeries: LineSeriesApi | null = null
 let usVixSeries: CandleSeriesApi | null = null
 let usFearGreedSeries: LineSeriesApi | null = null
 let usHedgeSeries: LineSeriesApi | null = null
@@ -316,6 +531,7 @@ let usTreasurySpread10y2ySeries: LineSeriesApi | null = null
 let usTreasurySpread10y3mSeries: LineSeriesApi | null = null
 let usCreditSeries: LineSeriesApi | null = null
 let highlightBindings: PrimitiveBinding[] = []
+const timelineAnchorSeriesMap = new Map<PanelKey, LineSeriesApi>()
 let isSyncingRange = false
 let isSyncingCrosshair = false
 let shouldResetVisibleRange = true
@@ -345,6 +561,8 @@ const visiblePanelOptions = computed<SubPanelOption[]>(() => [
   { key: 'basisDelta', label: '期现差变化', available: props.supportsAuxiliaryPanels },
   { key: 'fundPurchaseLimit', label: '公募限购', available: props.supportsFundPurchaseLimitPanel },
   { key: 'marginTrading', label: '融资融券', available: props.supportsMarginTradingPanel },
+  { key: 'marginFinancingNetBuySum', label: '融资净买入累计', available: props.supportsMarginTradingPanel },
+  { key: 'selfSentiment', label: '自建情绪', available: props.supportsSelfSentimentPanel },
   { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
   { key: 'usFearGreed', label: '恐贪', available: props.supportsUsFearGreedPanel },
   { key: 'usHedge', label: '对冲代理', available: props.supportsUsHedgeProxyPanel },
@@ -383,6 +601,8 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   if (panelKey === 'basisDelta') return basisDeltaContainerRef.value
   if (panelKey === 'fundPurchaseLimit') return fundPurchaseLimitContainerRef.value
   if (panelKey === 'marginTrading') return marginTradingContainerRef.value
+  if (panelKey === 'marginFinancingNetBuySum') return marginFinancingNetBuySumContainerRef.value
+  if (panelKey === 'selfSentiment') return selfSentimentContainerRef.value
   if (panelKey === 'usVix') return usVixContainerRef.value
   if (panelKey === 'usFearGreed') return usFearGreedContainerRef.value
   if (panelKey === 'usHedge') return usHedgeContainerRef.value
@@ -437,6 +657,7 @@ function toggleSubPanel(panelKey: SubPanelKey) {
     current.add(panelKey)
   }
   visibleSubPanels.value = ALL_SUB_PANEL_KEYS.filter((item) => current.has(item))
+  saveVisibleSubPanelPreference(props.preferenceScope, visibleSubPanels.value)
   void rebuildChartsPreservingRange()
 }
 
@@ -555,6 +776,7 @@ const quantDataset = computed(() =>
       includeBasisDelta: props.supportsAuxiliaryPanels,
       includeFundPurchaseLimit: props.supportsFundPurchaseLimitPanel,
       includeMarginTrading: props.supportsMarginTradingPanel,
+      includeSelfSentiment: props.supportsSelfSentimentPanel,
       includeUsVix: props.supportsUsVixPanel,
       includeUsFearGreed: props.supportsUsFearGreedPanel,
       includeUsHedge: props.supportsUsHedgeProxyPanel,
@@ -572,6 +794,9 @@ const quantDataset = computed(() =>
       basisDeltaPoints: props.basisDeltaPoints,
       fundPurchaseLimitPoints: props.fundPurchaseLimitPoints,
       marginTradingPoints: props.marginTradingPoints,
+      marginFinancingNetBuySumPoints: props.marginFinancingNetBuySumPoints,
+      selfSentimentPoints: props.selfSentimentPoints,
+      cnMarketFearGreedPoints: props.cnMarketFearGreedPoints,
       usTreasuryYieldPoints: props.usTreasuryYieldPoints,
       usCreditSpreadPoints: props.usCreditSpreadPoints,
     },
@@ -580,13 +805,22 @@ const quantDataset = computed(() =>
 
 const indicatorPayload = computed(() => quantDataset.value.chart)
 
-const emotionSeriesData = computed(() =>
-  (quantDataset.value.emotion?.data ?? []).map((item) => ({
+const emotionSeriesData = computed(() => {
+  if (activeEmotionMetric.value === 'marketFearGreed') {
+    return props.cnMarketFearGreedPoints
+      .filter((item) => Number.isFinite(Number(item.fear_greed_value)))
+      .map((item) => ({
+        time: item.trade_date as Time,
+        rawDate: item.trade_date,
+        value: Number(item.fear_greed_value),
+      }))
+  }
+  return (quantDataset.value.emotion?.data ?? []).map((item) => ({
     time: item.time as Time,
     rawDate: item.time,
     value: item.value ?? 50,
-  })),
-)
+  }))
+})
 
 const breadthSeriesData = computed(() =>
   (quantDataset.value.breadth?.data ?? []).map((item) => ({
@@ -893,7 +1127,6 @@ function buildCnOptionVixSummaryRows(item: IndexCnOptionVixPoint | undefined): S
 function buildCffexNetShortDeltaSummaryRows(
   item: IndexCffexNetShortDeltaPoint | undefined,
   window: CffexNetShortDeltaWindow,
-  emotionValue: number | undefined,
 ): SummaryRow[] {
   return [
     {
@@ -904,7 +1137,6 @@ function buildCffexNetShortDeltaSummaryRows(
       label: `中信 ${window}D`,
       value: formatMetric(item?.[`citic_delta_${window}d` as CffexNetShortDeltaPayloadKey]),
     },
-    { label: '情绪指标', value: formatMetric(emotionValue) },
   ]
 }
 
@@ -952,15 +1184,31 @@ function preferredCnOptionSourceKey(series: IndexCnOptionSeries[]) {
 function ensureCnOptionSourceSelections() {
   const series = availableCnOptionSeries.value
   const preferred = preferredCnOptionSourceKey(series)
+  const storedPreference = loadSubPanelControlPreference(props.preferenceScope, props.symbolCode)
+  const storedPriceSource = typeof storedPreference.cnOptionPriceSourceKey === 'string'
+    ? storedPreference.cnOptionPriceSourceKey
+    : ''
+  const storedFlowSource = typeof storedPreference.cnOptionFlowSourceKey === 'string'
+    ? storedPreference.cnOptionFlowSourceKey
+    : ''
+  const storedVixSource = typeof storedPreference.cnOptionVixSourceKey === 'string'
+    ? storedPreference.cnOptionVixSourceKey
+    : ''
   if (!series.some((item) => item.source_key === activeCnOptionPriceSourceKey.value)) {
-    activeCnOptionPriceSourceKey.value = preferred
+    activeCnOptionPriceSourceKey.value = series.some((item) => item.source_key === storedPriceSource)
+      ? storedPriceSource
+      : preferred
   }
   if (!series.some((item) => item.source_key === activeCnOptionFlowSourceKey.value)) {
-    activeCnOptionFlowSourceKey.value = preferred
+    activeCnOptionFlowSourceKey.value = series.some((item) => item.source_key === storedFlowSource)
+      ? storedFlowSource
+      : preferred
   }
   const vixSeries = series.filter((item) => (item.vix_points ?? []).length > 0)
   if (!vixSeries.some((item) => item.source_key === activeCnOptionVixSourceKey.value)) {
-    activeCnOptionVixSourceKey.value = preferredCnOptionSourceKey(vixSeries)
+    activeCnOptionVixSourceKey.value = vixSeries.some((item) => item.source_key === storedVixSource)
+      ? storedVixSource
+      : preferredCnOptionSourceKey(vixSeries)
   }
 }
 
@@ -1104,7 +1352,13 @@ const marginTradingMetricConfig: Record<MarginTradingMetricKey, {
   securitiesLending: { label: '融券余额', color: '#7c3aed', field: 'securities_lending_balance', unit: 'cnyYi' },
   total: { label: '两融余额', color: '#0f766e', field: 'total_balance', unit: 'cnyYi' },
   netBuy: { label: '融资净买入', color: '#dc2626', field: 'financing_net_buy_amount', unit: 'cnyYi' },
-  leverage: { label: '杠杆率', color: '#d97706', field: 'leverage_ratio_pct', unit: 'percent' },
+  leverage: { label: '流通杠杆率', color: '#d97706', field: 'leverage_ratio_pct', unit: 'percent' },
+  totalMarketCapLeverage: {
+    label: '总市值杠杆率',
+    color: '#0891b2',
+    field: 'total_market_cap_leverage_ratio_pct',
+    unit: 'percent',
+  },
 }
 
 const marginTradingPanelTitle = computed(() =>
@@ -1129,6 +1383,53 @@ const marginTradingSeriesData = computed(() => {
       value: rawValue === null || metric.unit === 'percent' ? rawValue : rawValue / CNY_PER_YI,
     }
   })
+})
+
+const marginFinancingNetBuySumPointByDate = computed(
+  () => new Map(props.marginFinancingNetBuySumPoints.map((item) => [item.trade_date, item])),
+)
+
+const marginFinancingNetBuySumSeriesData = computed(() => {
+  const field = `sum_${activeMarginFinancingNetBuySumWindow.value}d` as MarginFinancingNetBuySumPayloadKey
+  return sortedCandles.value.map((item) => {
+    const rawValue = toNullableNumber(marginFinancingNetBuySumPointByDate.value.get(item.trade_date)?.[field])
+    return {
+      time: item.trade_date as Time,
+      rawDate: item.trade_date,
+      value: rawValue === null ? null : rawValue / CNY_PER_YI,
+    }
+  })
+})
+
+const marginFinancingNetBuySumWindowLegend = computed(() =>
+  CFFEX_NET_SHORT_DELTA_WINDOWS.map((window) => ({
+    key: window,
+    label: `${window}D`,
+    active: activeMarginFinancingNetBuySumWindow.value === window,
+  })),
+)
+
+const selfSentimentMetricConfig: Record<SelfSentimentMetricKey, {
+  label: string
+  color: string
+  field: 'score' | 'core_score' | 'derivative_score'
+}> = {
+  score: { label: '综合分', color: '#0f766e', field: 'score' },
+  core: { label: '核心分', color: '#2563eb', field: 'core_score' },
+  derivative: { label: '衍生分', color: '#d97706', field: 'derivative_score' },
+}
+
+const selfSentimentPointByDate = computed(
+  () => new Map(props.selfSentimentPoints.map((item) => [item.trade_date, item])),
+)
+
+const selfSentimentSeriesData = computed(() => {
+  const metric = selfSentimentMetricConfig[activeSelfSentimentMetric.value]
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: toNullableNumber(selfSentimentPointByDate.value.get(item.trade_date)?.[metric.field]),
+  }))
 })
 
 const usPutCallSeriesData = computed(() => {
@@ -1396,10 +1697,22 @@ const rsiLegend = computed(() => [{ label: indicatorPayload.value.rsi.label, col
 
 const emotionLegend = computed(() => [
   {
-    label: quantDataset.value.emotion?.label ?? '情绪指标',
-    color: quantDataset.value.emotion?.color ?? '#0f4c75',
+    key: 'index' as const,
+    label: '指数情绪',
+    color: '#0f4c75',
+    active: activeEmotionMetric.value === 'index',
+  },
+  {
+    key: 'marketFearGreed' as const,
+    label: '大盘恐贪',
+    color: '#d97706',
+    active: activeEmotionMetric.value === 'marketFearGreed',
   },
 ])
+
+const activeEmotionColor = computed(() =>
+  activeEmotionMetric.value === 'marketFearGreed' ? '#d97706' : '#0f4c75',
+)
 
 const supportsAdjustedBasisSeries = computed(
   () => !props.showBasisMonthLine && Boolean(quantDataset.value.basis?.adjusted?.data?.length),
@@ -1576,6 +1889,17 @@ const marginTradingLegend = computed(() =>
   })),
 )
 
+const selfSentimentLegend = computed(() =>
+  (Object.entries(selfSentimentMetricConfig) as Array<
+    [SelfSentimentMetricKey, (typeof selfSentimentMetricConfig)[SelfSentimentMetricKey]]
+  >).map(([key, item]) => ({
+    key,
+    label: item.label,
+    color: item.color,
+    active: activeSelfSentimentMetric.value === key,
+  })),
+)
+
 const usTreasuryLegend = computed(() => [
   {
     label: quantDataset.value.usTreasuryYield?.spread10y2y.label ?? '10Y-2Y利差',
@@ -1610,16 +1934,19 @@ function handleIndexSelect(event: Event) {
 
 function selectUsPutCallMetric(key: UsPutCallMetricKey) {
   activeUsPutCallKey.value = key
+  rememberSubPanelControl({ usPutCallMetric: key })
   updateAllSeries()
 }
 
 function selectCnOptionPutCallMetric(key: CnOptionPutCallMetricKey) {
   activeCnOptionPutCallKey.value = key
+  rememberSubPanelControl({ cnOptionPutCallMetric: key })
   updateAllSeries()
 }
 
 function selectCnOptionFlowPutCallMetric(key: CnOptionFlowPutCallMetricKey) {
   activeCnOptionFlowPutCallKey.value = key
+  rememberSubPanelControl({ cnOptionFlowPutCallMetric: key })
   updateAllSeries()
 }
 
@@ -1635,53 +1962,92 @@ function selectCnOptionExchange(event: Event, panel: 'price' | 'flow' | 'vix') {
       : undefined
   ) ?? candidates[0]
   if (!preferred) return
-  if (panel === 'price') activeCnOptionPriceSourceKey.value = preferred.source_key
-  else if (panel === 'flow') activeCnOptionFlowSourceKey.value = preferred.source_key
-  else activeCnOptionVixSourceKey.value = preferred.source_key
+  if (panel === 'price') {
+    activeCnOptionPriceSourceKey.value = preferred.source_key
+    rememberSubPanelControl({ cnOptionPriceSourceKey: preferred.source_key })
+  } else if (panel === 'flow') {
+    activeCnOptionFlowSourceKey.value = preferred.source_key
+    rememberSubPanelControl({ cnOptionFlowSourceKey: preferred.source_key })
+  } else {
+    activeCnOptionVixSourceKey.value = preferred.source_key
+    rememberSubPanelControl({ cnOptionVixSourceKey: preferred.source_key })
+  }
   updateAllSeries()
 }
 
 function selectCnOptionProduct(event: Event, panel: 'price' | 'flow' | 'vix') {
   const sourceKey = (event.target as HTMLSelectElement | null)?.value
   if (!sourceKey) return
-  if (panel === 'price') activeCnOptionPriceSourceKey.value = sourceKey
-  else if (panel === 'flow') activeCnOptionFlowSourceKey.value = sourceKey
-  else activeCnOptionVixSourceKey.value = sourceKey
+  if (panel === 'price') {
+    activeCnOptionPriceSourceKey.value = sourceKey
+    rememberSubPanelControl({ cnOptionPriceSourceKey: sourceKey })
+  } else if (panel === 'flow') {
+    activeCnOptionFlowSourceKey.value = sourceKey
+    rememberSubPanelControl({ cnOptionFlowSourceKey: sourceKey })
+  } else {
+    activeCnOptionVixSourceKey.value = sourceKey
+    rememberSubPanelControl({ cnOptionVixSourceKey: sourceKey })
+  }
   updateAllSeries()
 }
 
 function selectCffexNetShortDeltaSource(source: CffexNetShortDeltaSource) {
   activeCffexNetShortDeltaSource.value = source
+  rememberSubPanelControl({ cffexNetShortDeltaSource: source })
   updateAllSeries()
 }
 
 function selectCffexNetShortDeltaWindow(window: CffexNetShortDeltaWindow) {
   activeCffexNetShortDeltaWindow.value = window
+  rememberSubPanelControl({ cffexNetShortDeltaWindow: window })
   updateAllSeries()
 }
 
 function selectBasisDeltaMetric(metric: BasisDeltaMetricKey) {
   activeBasisDeltaMetric.value = metric
+  rememberSubPanelControl({ basisDeltaMetric: metric })
   updateAllSeries()
 }
 
 function selectBasisDeltaWindow(window: BasisDeltaWindow) {
   activeBasisDeltaWindow.value = window
+  rememberSubPanelControl({ basisDeltaWindow: window })
   updateAllSeries()
 }
 
 function selectFundPurchaseLimitMetric(metric: FundPurchaseLimitMetricKey) {
   activeFundPurchaseLimitMetric.value = metric
+  rememberSubPanelControl({ fundPurchaseLimitMetric: metric })
+  updateAllSeries()
+}
+
+function selectEmotionMetric(metric: EmotionMetricKey) {
+  activeEmotionMetric.value = metric
+  rememberSubPanelControl({ emotionMetric: metric })
   updateAllSeries()
 }
 
 function selectMarginTradingMetric(metric: MarginTradingMetricKey) {
   activeMarginTradingMetric.value = metric
+  rememberSubPanelControl({ marginTradingMetric: metric })
+  updateAllSeries()
+}
+
+function selectMarginFinancingNetBuySumWindow(window: MarginFinancingNetBuySumWindow) {
+  activeMarginFinancingNetBuySumWindow.value = window
+  rememberSubPanelControl({ marginFinancingNetBuySumWindow: window })
+  updateAllSeries()
+}
+
+function selectSelfSentimentMetric(metric: SelfSentimentMetricKey) {
+  activeSelfSentimentMetric.value = metric
+  rememberSubPanelControl({ selfSentimentMetric: metric })
   updateAllSeries()
 }
 
 function selectUsCreditMetric(key: UsCreditMetricKey) {
   activeUsCreditKey.value = key
+  rememberSubPanelControl({ usCreditMetric: key })
   updateAllSeries()
 }
 
@@ -1690,6 +2056,7 @@ function selectBasisMetric(key: BasisMetricKey) {
     return
   }
   activeBasisKey.value = key
+  rememberSubPanelControl({ basisMetric: key })
   updateAllSeries()
 }
 
@@ -1711,6 +2078,19 @@ function formatPercent(value: number | null | undefined) {
   return value === null || value === undefined || !Number.isFinite(value)
     ? '-'
     : `${value.toFixed(2)}%`
+}
+
+function leveragePercentDigits(value: number) {
+  const absoluteValue = Math.abs(value)
+  if (absoluteValue < 0.01) return 6
+  if (absoluteValue < 1) return 4
+  return 2
+}
+
+function formatLeveragePercent(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? '-'
+    : `${value.toFixed(leveragePercentDigits(value))}%`
 }
 
 function formatSignedPercent(value: number | null | undefined) {
@@ -1744,8 +2124,8 @@ function marginTradingPriceFormat(metric: MarginTradingMetricKey) {
   return marginTradingMetricConfig[metric].unit === 'percent'
     ? {
         type: 'custom' as const,
-        minMove: 0.001,
-        formatter: (value: number) => `${value.toFixed(2)}%`,
+        minMove: 0.000001,
+        formatter: (value: number) => formatLeveragePercent(value),
       }
     : {
         type: 'custom' as const,
@@ -1910,6 +2290,11 @@ const indicatorValueMaps = computed(() => {
         .filter((item) => item.value !== null)
         .map((item) => [item.rawDate, item.value as number]),
     ),
+    marginFinancingNetBuySum: new Map(
+      marginFinancingNetBuySumSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
     usVix: buildValueMap(quantDataset.value.usVix?.data ?? []),
     usFearGreed: buildValueMap(quantDataset.value.usFearGreed?.data ?? []),
     usHedge: buildValueMap(quantDataset.value.usHedgeProxy?.data ?? []),
@@ -2012,6 +2397,11 @@ const activeIndicatorSnapshot = computed(() => {
       netBuy:
         marginTradingPointByDate.value.get(tradeDate)?.financing_net_buy_amount ?? null,
       leverage: marginTradingPointByDate.value.get(tradeDate)?.leverage_ratio_pct ?? null,
+      totalMarketCapLeverage:
+        marginTradingPointByDate.value.get(tradeDate)?.total_market_cap_leverage_ratio_pct ?? null,
+    },
+    marginFinancingNetBuySum: {
+      value: maps.marginFinancingNetBuySum.get(tradeDate) ?? null,
     },
     usVix: {
       open: usVixPointByDate.value.get(tradeDate)?.open_value ?? null,
@@ -2095,6 +2485,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
     indicator.basis.rollFlag && indicator.basis.rollType !== 'contract_last_trade'
       ? [{ label: '换月调整幅度', value: formatMetric(indicator.basis.rollDelta) }]
       : []
+  const selfSentimentPoint = selfSentimentPointByDate.value.get(indicator.tradeDate)
 
   return [
     {
@@ -2115,99 +2506,66 @@ const summaryCards = computed<SummaryCard[]>(() => {
       hint: overlayMode.value === 'ma' ? '均线' : 'BOLL',
       rows: overlayRows,
     },
-    {
-      key: 'macd',
-      title: 'MACD',
-      rows: [
-        { label: 'DIF', value: formatMetric(indicator.macd.dif) },
-        { label: 'DEA', value: formatMetric(indicator.macd.dea) },
-        { label: '柱值', value: formatMetric(indicator.macd.histogram) },
-      ],
-    },
-    {
-      key: 'kdj-wr-rsi',
-      title: 'KDJ / WR / RSI',
-      rows: [
-        { label: 'K', value: formatMetric(indicator.kdj.k) },
-        { label: 'D', value: formatMetric(indicator.kdj.d) },
-        { label: 'J', value: formatMetric(indicator.kdj.j) },
-        { label: 'WR', value: formatMetric(indicator.wr) },
-        { label: indicatorPayload.value.rsi.label, value: formatMetric(indicator.rsi) },
-      ],
-    },
-    ...(props.supportsAuxiliaryPanels
+    ...(isSubPanelVisible('macd')
       ? [
           {
-            key: 'extended',
-            title: '期现差 / 涨跌家数',
+            key: 'macd',
+            title: 'MACD',
             rows: [
-              { label: '主连期现差', value: formatMetric(indicator.basis.main) },
-              { label: '月连期现差', value: formatMetric(indicator.basis.month) },
-              ...basisContractRollRows,
-              { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
-              { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
+              { label: 'DIF', value: formatMetric(indicator.macd.dif) },
+              { label: 'DEA', value: formatMetric(indicator.macd.dea) },
+              { label: '柱值', value: formatMetric(indicator.macd.histogram) },
             ],
           },
         ]
       : []),
-    ...(props.supportsFundPurchaseLimitPanel
+    ...(isSubPanelVisible('kdj')
       ? [
           {
-            key: 'fund-purchase-limit',
-            title: 'A股公募基金大额限购',
-            hint: fundPurchaseLimitMetricConfig[activeFundPurchaseLimitMetric.value].label,
+            key: 'kdj',
+            title: 'KDJ',
             rows: [
-              { label: '大额限购家数', value: formatMetric(indicator.fundPurchaseLimit.limitedCount) },
-              { label: '基金总数', value: formatMetric(indicator.fundPurchaseLimit.totalCount) },
-              { label: '大额限购比例', value: formatPercent(indicator.fundPurchaseLimit.limitedPct) },
+              { label: 'K', value: formatMetric(indicator.kdj.k) },
+              { label: 'D', value: formatMetric(indicator.kdj.d) },
+              { label: 'J', value: formatMetric(indicator.kdj.j) },
             ],
           },
         ]
       : []),
-    ...(props.supportsMarginTradingPanel
+    ...(isSubPanelVisible('wr')
       ? [
           {
-            key: 'margin-trading',
-            title: 'A股融资融券',
-            hint: marginTradingMetricConfig[activeMarginTradingMetric.value].label,
+            key: 'wr',
+            title: 'WR',
+            rows: [{ label: 'WR', value: formatMetric(indicator.wr) }],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('rsi')
+      ? [
+          {
+            key: 'rsi',
+            title: 'RSI',
+            rows: [{ label: indicatorPayload.value.rsi.label, value: formatMetric(indicator.rsi) }],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('emotion')
+      ? [
+          {
+            key: 'emotion',
+            title: '情绪指标',
+            hint: activeEmotionMetric.value === 'marketFearGreed' ? '大盘恐贪' : '指数情绪',
             rows: [
-              { label: '融资余额', value: formatCnyYi(indicator.marginTrading.financing) },
-              { label: '融券余额', value: formatCnyYi(indicator.marginTrading.securitiesLending) },
-              { label: '两融余额', value: formatCnyYi(indicator.marginTrading.total) },
-              { label: '融资净买入', value: formatCnyYi(indicator.marginTrading.netBuy) },
-              { label: '杠杆率', value: formatPercent(indicator.marginTrading.leverage) },
+              {
+                label: activeEmotionMetric.value === 'marketFearGreed' ? '大盘恐贪' : '指数情绪',
+                value: formatMetric(indicator.emotion),
+              },
             ],
           },
         ]
       : []),
-    ...(props.supportsAuxiliaryPanels
-      ? [
-          {
-            key: 'cffex-net-short-delta',
-            title: '净空单增量',
-            hint: `${activeCffexNetShortDeltaWindow.value}D`,
-            rows: buildCffexNetShortDeltaSummaryRows(
-              cffexNetShortDeltaPointByDate.value.get(indicator.tradeDate),
-              activeCffexNetShortDeltaWindow.value,
-              indicator.emotion,
-            ),
-          },
-        ]
-      : []),
-    ...(props.supportsAuxiliaryPanels
-      ? [
-          {
-            key: 'basis-delta',
-            title: '期现差变化',
-            hint: `${activeBasisDeltaWindow.value}D`,
-            rows: buildBasisDeltaSummaryRows(
-              basisDeltaPointByDate.value.get(indicator.tradeDate),
-              activeBasisDeltaWindow.value,
-            ),
-          },
-        ]
-      : []),
-    ...(props.supportsBasisPanel && !props.supportsAuxiliaryPanels
+    ...(isSubPanelVisible('basis')
       ? [
           {
             key: 'basis-summary',
@@ -2229,7 +2587,134 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
-    ...(props.supportsVixPanel
+    ...(isSubPanelVisible('breadth')
+      ? [
+          {
+            key: 'breadth',
+            title: '涨跌家数',
+            rows: [
+              { label: '上涨家数百分比', value: formatMetricWithSuffix(indicator.breadth.pct, '%') },
+              { label: '上涨家数', value: formatPairValue(indicator.breadth.upCount, indicator.breadth.totalCount) },
+            ],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('fundPurchaseLimit')
+      ? [
+          {
+            key: 'fund-purchase-limit',
+            title: 'A股公募基金大额限购',
+            hint: fundPurchaseLimitMetricConfig[activeFundPurchaseLimitMetric.value].label,
+            rows: [
+              { label: '大额限购家数', value: formatMetric(indicator.fundPurchaseLimit.limitedCount) },
+              { label: '基金总数', value: formatMetric(indicator.fundPurchaseLimit.totalCount) },
+              { label: '大额限购比例', value: formatPercent(indicator.fundPurchaseLimit.limitedPct) },
+            ],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('marginTrading')
+      ? [
+          {
+            key: 'margin-trading',
+            title: 'A股融资融券',
+            hint: marginTradingMetricConfig[activeMarginTradingMetric.value].label,
+            rows: [
+              { label: '融资余额', value: formatCnyYi(indicator.marginTrading.financing) },
+              { label: '融券余额', value: formatCnyYi(indicator.marginTrading.securitiesLending) },
+              { label: '两融余额', value: formatCnyYi(indicator.marginTrading.total) },
+              { label: '融资净买入', value: formatCnyYi(indicator.marginTrading.netBuy) },
+              { label: '流通杠杆率', value: formatLeveragePercent(indicator.marginTrading.leverage) },
+              {
+                label: '总市值杠杆率',
+                value: formatLeveragePercent(indicator.marginTrading.totalMarketCapLeverage),
+              },
+            ],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('marginFinancingNetBuySum')
+      ? [
+          {
+            key: 'margin-financing-net-buy-sum',
+            title: '融资净买入累计',
+            hint: `${activeMarginFinancingNetBuySumWindow.value}D`,
+            rows: [
+              {
+                label: `近${activeMarginFinancingNetBuySumWindow.value}日累计`,
+                value:
+                  indicator.marginFinancingNetBuySum.value === null
+                    ? '-'
+                    : `${formatMetric(indicator.marginFinancingNetBuySum.value)}亿元`,
+              },
+            ],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('selfSentiment')
+      ? [
+          {
+            key: 'self-sentiment-core',
+            title: '核心情绪因子',
+            hint:
+              activeSelfSentimentMetric.value === 'derivative'
+                ? undefined
+                : selfSentimentMetricConfig[activeSelfSentimentMetric.value].label,
+            rows: [
+              { label: '综合分', value: formatMetric(selfSentimentPoint?.score) },
+              { label: '核心分', value: formatMetric(selfSentimentPoint?.core_score) },
+              { label: 'RSI14', value: formatMetric(selfSentimentPoint?.components.rsi14) },
+              { label: '20日动量', value: formatMetric(selfSentimentPoint?.components.momentum20) },
+              { label: '60日强度', value: formatMetric(selfSentimentPoint?.components.price_strength60) },
+              { label: '低波动', value: formatMetric(selfSentimentPoint?.components.realized_vol20) },
+            ],
+          },
+          {
+            key: 'self-sentiment-derivative',
+            title: '衍生市场因子',
+            hint:
+              activeSelfSentimentMetric.value === 'derivative'
+                ? selfSentimentMetricConfig.derivative.label
+                : undefined,
+            rows: [
+              { label: '衍生分', value: formatMetric(selfSentimentPoint?.derivative_score) },
+              { label: '低VIX', value: formatMetric(selfSentimentPoint?.components.vix) },
+              { label: 'VIX期限结构', value: formatMetric(selfSentimentPoint?.components.vix_term_structure) },
+              { label: '低25Δ偏斜', value: formatMetric(selfSentimentPoint?.components.downside_skew_25d) },
+              { label: '成交额P/C', value: formatMetric(selfSentimentPoint?.components.put_call_turnover) },
+              { label: '月连期现差', value: formatMetric(selfSentimentPoint?.components.month_basis) },
+              { label: '融资净买入30D', value: formatMetric(selfSentimentPoint?.components.margin_financing_net_buy_30d) },
+            ],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('cffexNetShortDelta')
+      ? [
+          {
+            key: 'cffex-net-short-delta',
+            title: '净空单增量',
+            hint: `${activeCffexNetShortDeltaWindow.value}D`,
+            rows: buildCffexNetShortDeltaSummaryRows(
+              cffexNetShortDeltaPointByDate.value.get(indicator.tradeDate),
+              activeCffexNetShortDeltaWindow.value,
+            ),
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('basisDelta')
+      ? [
+          {
+            key: 'basis-delta',
+            title: '期现差变化',
+            hint: `${activeBasisDeltaWindow.value}D`,
+            rows: buildBasisDeltaSummaryRows(
+              basisDeltaPointByDate.value.get(indicator.tradeDate),
+              activeBasisDeltaWindow.value,
+            ),
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('vix')
       ? [
           {
             key: 'vix',
@@ -2243,7 +2728,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
-    ...(props.supportsCnOptionPutCallPanel
+    ...(isSubPanelVisible('cnPutCall')
       ? [
           {
             key: 'cn-option-put-call',
@@ -2251,25 +2736,29 @@ const summaryCards = computed<SummaryCard[]>(() => {
             hint: `${activeCnOptionPriceSeries.value?.exchange_label ?? '-'} ${activeCnOptionPriceSeries.value?.product_code ?? ''} · ${cnOptionPutCallMetricConfig[activeCnOptionPutCallKey.value].label}`,
             rows: buildCnOptionPutCallSummaryRows(cnOptionPutCallPointByDate.value.get(indicator.tradeDate)),
           },
+        ]
+      : []),
+    ...(isSubPanelVisible('cnFlowPutCall')
+      ? [
           {
             key: 'cn-option-flow-put-call',
             title: '成交 Put/Call',
             hint: `${activeCnOptionFlowSeries.value?.exchange_label ?? '-'} ${activeCnOptionFlowSeries.value?.product_code ?? ''} · ${cnOptionFlowPutCallMetricConfig[activeCnOptionFlowPutCallKey.value].label}`,
             rows: buildCnOptionFlowPutCallSummaryRows(cnOptionFlowPutCallPointByDate.value.get(indicator.tradeDate)),
           },
-          ...(availableCnOptionVixSeries.value.length
-            ? [
-                {
-                  key: 'cn-option-vix',
-                  title: '自算VIX',
-                  hint: `${activeCnOptionVixSeries.value?.exchange_label ?? '-'} ${activeCnOptionVixSeries.value?.product_code ?? ''}`,
-                  rows: buildCnOptionVixSummaryRows(cnOptionVixPointByDate.value.get(indicator.tradeDate)),
-                },
-              ]
-            : []),
         ]
       : []),
-    ...(props.supportsUsVixPanel
+    ...(isSubPanelVisible('cnOptionVix')
+      ? [
+          {
+            key: 'cn-option-vix',
+            title: '自算VIX',
+            hint: `${activeCnOptionVixSeries.value?.exchange_label ?? '-'} ${activeCnOptionVixSeries.value?.product_code ?? ''}`,
+            rows: buildCnOptionVixSummaryRows(cnOptionVixPointByDate.value.get(indicator.tradeDate)),
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('usVix')
       ? [
           {
             key: 'us-vix',
@@ -2283,7 +2772,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
-    ...(props.supportsUsFearGreedPanel
+    ...(isSubPanelVisible('usFearGreed')
       ? [
           {
             key: 'fear-greed',
@@ -2295,7 +2784,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
-    ...(props.supportsUsHedgeProxyPanel
+    ...(isSubPanelVisible('usHedge')
       ? [
           {
             key: 'us-hedge',
@@ -2310,7 +2799,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
-    ...(props.supportsUsPutCallPanel
+    ...(isSubPanelVisible('usPutCall')
       ? [
           {
             key: 'us-put-call',
@@ -2324,7 +2813,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
-    ...(props.supportsUsTreasuryYieldPanel
+    ...(isSubPanelVisible('usTreasury')
       ? [
           {
             key: 'us-treasury',
@@ -2339,7 +2828,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
-    ...(props.supportsUsCreditSpreadPanel
+    ...(isSubPanelVisible('usCredit')
       ? [
           {
             key: 'us-credit',
@@ -2382,7 +2871,7 @@ const summaryCards = computed<SummaryCard[]>(() => {
   ]
 })
 
-function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
+function createBaseChart(container: HTMLDivElement, showTimeScale: boolean, controlsTimeScale = false) {
   return createChart(container, {
     autoSize: true,
     layout: {
@@ -2421,6 +2910,8 @@ function createBaseChart(container: HTMLDivElement, showTimeScale: boolean) {
     localization: {
       locale: 'zh-CN',
     },
+    handleScroll: controlsTimeScale,
+    handleScale: controlsTimeScale,
   })
 }
 
@@ -2439,6 +2930,15 @@ function addReferenceLineSeries(chart: IChartApi, color: string) {
   return chart.addSeries(LineSeries, {
     color,
     lineWidth: 1,
+    lastValueVisible: false,
+    priceLineVisible: false,
+    crosshairMarkerVisible: false,
+  })
+}
+
+function addTimelineAnchorSeries(chart: IChartApi) {
+  return chart.addSeries(LineSeries, {
+    visible: false,
     lastValueVisible: false,
     priceLineVisible: false,
     crosshairMarkerVisible: false,
@@ -2476,7 +2976,7 @@ function addVixCandles(chart: IChartApi) {
 }
 
 function syncVisibleRange(sourceKey: PanelKey, range: LogicalRange | null) {
-  if (!range || isSyncingRange) {
+  if (sourceKey !== 'main' || !range || isSyncingRange) {
     return
   }
 
@@ -2542,15 +3042,18 @@ function maybeRequestMoreHistory(range: LogicalRange | null) {
 }
 
 function attachSync(panelKey: PanelKey, chart: IChartApi) {
-  const visibleRangeHandler = (range: LogicalRange | null) => {
-    syncVisibleRange(panelKey, range)
-    maybeRequestMoreHistory(range)
-  }
   const crosshairHandler = (param: MouseEventParams<Time>) => syncCrosshair(panelKey, param)
-  chart.timeScale().subscribeVisibleLogicalRangeChange(visibleRangeHandler)
   chart.subscribeCrosshairMove(crosshairHandler)
-  unsubs.push(() => chart.timeScale().unsubscribeVisibleLogicalRangeChange(visibleRangeHandler))
   unsubs.push(() => chart.unsubscribeCrosshairMove(crosshairHandler))
+
+  if (panelKey === 'main') {
+    const visibleRangeHandler = (range: LogicalRange | null) => {
+      syncVisibleRange(panelKey, range)
+      maybeRequestMoreHistory(range)
+    }
+    chart.timeScale().subscribeVisibleLogicalRangeChange(visibleRangeHandler)
+    unsubs.push(() => chart.timeScale().unsubscribeVisibleLogicalRangeChange(visibleRangeHandler))
+  }
 }
 
 function applyDefaultVisibleRange() {
@@ -2643,6 +3146,8 @@ function updateAllSeries() {
 
   const payload = indicatorPayload.value
   mainCandleSeries.setData(mainCandles.value)
+  const timelineData = mainCandles.value.map((item) => ({ time: item.time } as WhitespaceData<Time>))
+  timelineAnchorSeriesMap.forEach((series) => series.setData(timelineData))
 
   if (overlayMode.value === 'boll') {
     mainMaSeries.forEach((series) => {
@@ -2700,7 +3205,8 @@ function updateAllSeries() {
 
   if (isSubPanelVisible('emotion')) {
     if (!emotionSeries) return
-    emotionSeries.setData(toLineData(quantDataset.value.emotion?.data ?? []))
+    emotionSeries.applyOptions({ color: activeEmotionColor.value })
+    emotionSeries.setData(emotionSeriesData.value.map((item) => ({ time: item.time, value: item.value })))
     panelValueMaps.set('emotion', new Map(emotionSeriesData.value.map((item) => [item.rawDate, item.value])))
   } else {
     panelValueMaps.delete('emotion')
@@ -2904,6 +3410,56 @@ function updateAllSeries() {
     panelValueMaps.delete('marginTrading')
   }
 
+  if (isSubPanelVisible('marginFinancingNetBuySum')) {
+    if (!marginFinancingNetBuySumSeries) return
+    marginFinancingNetBuySumSeries.setData(
+      marginFinancingNetBuySumSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    marginFinancingNetBuySumReferenceSeries?.setData(
+      mainCandles.value.map((item) => ({ time: item.time, value: 0 })),
+    )
+    panelValueMaps.set(
+      'marginFinancingNetBuySum',
+      new Map(
+        marginFinancingNetBuySumSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('marginFinancingNetBuySum')
+  }
+
+  if (isSubPanelVisible('selfSentiment')) {
+    if (!selfSentimentSeries) return
+    const metricConfig = selfSentimentMetricConfig[activeSelfSentimentMetric.value]
+    selfSentimentSeries.applyOptions({ color: metricConfig.color })
+    selfSentimentSeries.setData(
+      selfSentimentSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    selfSentimentReferenceSeries?.setData(
+      sortedCandles.value.map((item) => ({ time: item.trade_date as Time, value: 50 })),
+    )
+    panelValueMaps.set(
+      'selfSentiment',
+      new Map(
+        selfSentimentSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('selfSentiment')
+  }
+
   if (isSubPanelVisible('usVix')) {
     if (!usVixSeries) return
     usVixSeries.setData(toVixCandleData(usVixSeriesData.value))
@@ -3004,7 +3560,7 @@ function renderCharts() {
   try {
     renderError.value = ''
 
-    charts.main = createBaseChart(mainContainerRef.value!, false)
+    charts.main = createBaseChart(mainContainerRef.value!, false, true)
     if (isSubPanelVisible('macd')) charts.macd = createBaseChart(macdContainerRef.value!, false)
     if (isSubPanelVisible('kdj')) charts.kdj = createBaseChart(kdjContainerRef.value!, false)
     if (isSubPanelVisible('wr')) charts.wr = createBaseChart(wrContainerRef.value!, false)
@@ -3047,6 +3603,12 @@ function renderCharts() {
     if (isSubPanelVisible('marginTrading')) {
       charts.marginTrading = createBaseChart(marginTradingContainerRef.value!, true)
     }
+    if (isSubPanelVisible('marginFinancingNetBuySum')) {
+      charts.marginFinancingNetBuySum = createBaseChart(marginFinancingNetBuySumContainerRef.value!, true)
+    }
+    if (isSubPanelVisible('selfSentiment')) {
+      charts.selfSentiment = createBaseChart(selfSentimentContainerRef.value!, true)
+    }
     if (isSubPanelVisible('usVix')) {
       charts.usVix = createBaseChart(usVixContainerRef.value!, true)
     }
@@ -3065,6 +3627,12 @@ function renderCharts() {
     if (isSubPanelVisible('usCredit')) {
       charts.usCredit = createBaseChart(usCreditContainerRef.value!, true)
     }
+
+    activePanelKeys.forEach((panelKey) => {
+      if (panelKey === 'main') return
+      const chart = charts[panelKey]
+      if (chart) timelineAnchorSeriesMap.set(panelKey, addTimelineAnchorSeries(chart))
+    })
 
     mainCandleSeries = addCandles(charts.main)
     mainMaSeries = indicatorPayload.value.ma.map((item) => addLineSeries(charts.main!, item.color, 2))
@@ -3088,7 +3656,7 @@ function renderCharts() {
 
     wrSeries = charts.wr ? addLineSeries(charts.wr, indicatorPayload.value.wr.color, 2) : null
     rsiSeries = charts.rsi ? addLineSeries(charts.rsi, indicatorPayload.value.rsi.color, 2) : null
-    emotionSeries = charts.emotion ? addLineSeries(charts.emotion, quantDataset.value.emotion?.color ?? '#0f4c75', 2) : null
+    emotionSeries = charts.emotion ? addLineSeries(charts.emotion, activeEmotionColor.value, 2) : null
     basisMainSeries = charts.basis ? addLineSeries(charts.basis, activeBasisSeries.value?.color ?? '#dc2626', 2) : null
     basisMonthSeries =
       charts.basis && props.showBasisMonthLine
@@ -3143,6 +3711,29 @@ function renderCharts() {
     marginTradingSeries?.applyOptions({
       priceFormat: marginTradingPriceFormat(activeMarginTradingMetric.value),
     })
+    marginFinancingNetBuySumSeries = charts.marginFinancingNetBuySum
+      ? addLineSeries(charts.marginFinancingNetBuySum, '#2563eb', 2)
+      : null
+    marginFinancingNetBuySumSeries?.applyOptions({
+      priceFormat: {
+        type: 'custom',
+        minMove: 0.01,
+        formatter: formatYiAxisValue,
+      },
+    })
+    marginFinancingNetBuySumReferenceSeries = charts.marginFinancingNetBuySum
+      ? addReferenceLineSeries(charts.marginFinancingNetBuySum, '#dc2626')
+      : null
+    selfSentimentSeries = charts.selfSentiment
+      ? addLineSeries(
+          charts.selfSentiment,
+          selfSentimentMetricConfig[activeSelfSentimentMetric.value].color,
+          2,
+        )
+      : null
+    selfSentimentReferenceSeries = charts.selfSentiment
+      ? addReferenceLineSeries(charts.selfSentiment, '#dc2626')
+      : null
     usVixSeries = charts.usVix ? addVixCandles(charts.usVix) : null
     usFearGreedSeries = charts.usFearGreed ? addLineSeries(charts.usFearGreed, quantDataset.value.usFearGreed?.color ?? '#dc2626', 2) : null
     usHedgeSeries = charts.usHedge ? addLineSeries(charts.usHedge, quantDataset.value.usHedgeProxy?.color ?? '#0f766e', 2) : null
@@ -3172,6 +3763,8 @@ function renderCharts() {
     if (basisDeltaSeries) primarySeriesMap.set('basisDelta', basisDeltaSeries)
     if (fundPurchaseLimitSeries) primarySeriesMap.set('fundPurchaseLimit', fundPurchaseLimitSeries)
     if (marginTradingSeries) primarySeriesMap.set('marginTrading', marginTradingSeries)
+    if (marginFinancingNetBuySumSeries) primarySeriesMap.set('marginFinancingNetBuySum', marginFinancingNetBuySumSeries)
+    if (selfSentimentSeries) primarySeriesMap.set('selfSentiment', selfSentimentSeries)
     if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
     if (usFearGreedSeries) primarySeriesMap.set('usFearGreed', usFearGreedSeries)
     if (usHedgeSeries) primarySeriesMap.set('usHedge', usHedgeSeries)
@@ -3216,6 +3809,10 @@ function renderCharts() {
     }
     if (props.supportsMarginTradingPanel) {
       attachHighlightPrimitive(marginTradingSeries)
+      attachHighlightPrimitive(marginFinancingNetBuySumSeries)
+    }
+    if (props.supportsSelfSentimentPanel) {
+      attachHighlightPrimitive(selfSentimentSeries)
     }
     if (props.supportsUsVixPanel) {
       attachHighlightPrimitive(usVixSeries)
@@ -3261,6 +3858,7 @@ function disposeCharts() {
 
   primarySeriesMap.clear()
   panelValueMaps.clear()
+  timelineAnchorSeriesMap.clear()
   mainCandleSeries = null
   mainMaSeries = []
   bollSeriesRefs = []
@@ -3287,6 +3885,10 @@ function disposeCharts() {
   basisDeltaReferenceSeries = null
   fundPurchaseLimitSeries = null
   marginTradingSeries = null
+  marginFinancingNetBuySumSeries = null
+  marginFinancingNetBuySumReferenceSeries = null
+  selfSentimentSeries = null
+  selfSentimentReferenceSeries = null
   usVixSeries = null
   usFearGreedSeries = null
   usHedgeSeries = null
@@ -3382,6 +3984,14 @@ watch(marginTradingSeriesData, () => {
   if (props.supportsMarginTradingPanel) updateAllSeries()
 })
 
+watch(marginFinancingNetBuySumSeriesData, () => {
+  if (props.supportsMarginTradingPanel) updateAllSeries()
+})
+
+watch(selfSentimentSeriesData, () => {
+  if (props.supportsSelfSentimentPanel) updateAllSeries()
+})
+
 watch(usTreasurySpread10y2ySeriesData, () => {
   if (props.supportsUsTreasuryYieldPanel) updateAllSeries()
 })
@@ -3395,6 +4005,17 @@ watch(usCreditSeriesData, () => {
 })
 
 watch(
+  () => props.preferenceScope,
+  async (nextScope, previousScope) => {
+    if (nextScope === previousScope) return
+    visibleSubPanels.value = loadVisibleSubPanelPreference(nextScope)
+    applySubPanelControlPreference()
+    ensureCnOptionSourceSelections()
+    await rebuildChartsPreservingRange()
+  },
+)
+
+watch(
   () =>
     `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsFundPurchaseLimitPanel}:${props.supportsMarginTradingPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}:${availableSubPanelOptions.value.map((item) => item.key).join('|')}`,
   async () => {
@@ -3405,10 +4026,11 @@ watch(
 watch(
   () => props.symbolCode,
   () => {
+    applySubPanelControlPreference()
+    ensureCnOptionSourceSelections()
     hoveredTradeDate.value = null
     shouldResetVisibleRange = true
     lastRequestedHistoryBoundary = null
-    activeBasisKey.value = supportsAdjustedBasisSeries.value ? 'adjusted' : 'main'
   },
 )
 
@@ -3466,6 +4088,9 @@ watch(
 )
 
 onMounted(() => {
+  visibleSubPanels.value = loadVisibleSubPanelPreference(props.preferenceScope)
+  applySubPanelControlPreference()
+  ensureCnOptionSourceSelections()
   renderCharts()
 })
 
@@ -3541,7 +4166,7 @@ onBeforeUnmount(() => {
 
     <div v-if="isSubPanelVisible('rsi')" class="quant-panel"><div class="quant-panel-head"><h3>RSI</h3><div class="quant-legend"><span v-for="item in rsiLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><div ref="rsiContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
-    <div v-if="isSubPanelVisible('emotion')" class="quant-panel"><div class="quant-panel-head"><h3>情绪指标</h3><div class="quant-legend"><span v-for="item in emotionLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="emotionLoading" class="muted">情绪指标加载中...</p><p v-else-if="emotionErrorMessage" class="error">{{ emotionErrorMessage }}</p><div ref="emotionContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('emotion')" class="quant-panel"><div class="quant-panel-head"><h3>情绪指标</h3><div class="quant-legend"><button v-for="item in emotionLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectEmotionMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="emotionLoading" class="muted">情绪指标加载中...</p><p v-else-if="emotionErrorMessage" class="error">{{ emotionErrorMessage }}</p><div ref="emotionContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
     <div v-if="isSubPanelVisible('basis')" class="quant-panel"><div class="quant-panel-head"><h3>期现差</h3><div class="quant-legend"><button v-for="item in basisLegend" :key="item.label" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectBasisMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="futuresBasisLoading" class="muted">期现差指标加载中...</p><p v-else-if="futuresBasisErrorMessage" class="error">{{ futuresBasisErrorMessage }}</p><div ref="basisContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
@@ -3640,6 +4265,33 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="!marginTradingPoints.length" class="muted">当前范围暂无融资融券统计数据</p>
       <div ref="marginTradingContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div v-if="isSubPanelVisible('marginFinancingNetBuySum')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>融资净买入累计（亿元）</h3>
+        <div class="quant-legend quant-legend-groups">
+          <div class="quant-legend-group">
+            <span class="quant-legend-group-label">窗口</span>
+            <button v-for="item in marginFinancingNetBuySumWindowLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectMarginFinancingNetBuySumWindow(item.key)"><i :style="{ background: item.active ? '#2563eb' : '#cbd5e1' }"></i>{{ item.label }}</button>
+          </div>
+          <span class="quant-legend-item"><i style="background:#dc2626"></i>零轴</span>
+        </div>
+      </div>
+      <p v-if="!marginFinancingNetBuySumPoints.length" class="muted">当前范围暂无融资净买入累计数据</p>
+      <div ref="marginFinancingNetBuySumContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div v-if="isSubPanelVisible('selfSentiment')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>自建情绪（0-100）</h3>
+        <div class="quant-legend">
+          <button v-for="item in selfSentimentLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectSelfSentimentMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button>
+          <span class="quant-legend-item"><i style="background:#dc2626"></i>中性 50</span>
+        </div>
+      </div>
+      <p v-if="!selfSentimentPoints.length" class="muted">当前范围暂无自建情绪数据</p>
+      <div ref="selfSentimentContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
 
     <div v-if="isSubPanelVisible('usVix')" class="quant-panel"><div class="quant-panel-head"><h3>美股 VIX</h3><div class="quant-legend"><span v-for="item in usVixLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usVixPoints.length" class="muted">当前范围暂无美股 VIX 数据</p><div ref="usVixContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>

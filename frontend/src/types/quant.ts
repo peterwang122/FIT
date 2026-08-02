@@ -79,6 +79,8 @@ export interface QuantChartPayload {
 
 export type QuantFilterFieldKey =
   | 'emotion'
+  | 'cn-market-fear-greed'
+  | 'self-sentiment-score'
   | 'basis-main'
   | 'basis-main-adjusted'
   | 'basis-month'
@@ -134,6 +136,14 @@ export type QuantFilterFieldKey =
   | 'margin-total-balance'
   | 'margin-financing-net-buy'
   | 'margin-leverage-ratio'
+  | 'margin-total-market-cap-leverage-ratio'
+  | 'margin-financing-net-buy-sum-5d'
+  | 'margin-financing-net-buy-sum-7d'
+  | 'margin-financing-net-buy-sum-14d'
+  | 'margin-financing-net-buy-sum-20d'
+  | 'margin-financing-net-buy-sum-30d'
+  | 'margin-financing-net-buy-sum-60d'
+  | 'margin-financing-net-buy-sum-120d'
   | 'us-vix-open'
   | 'us-vix-high'
   | 'us-vix-low'

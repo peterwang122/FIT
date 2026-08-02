@@ -290,6 +290,15 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     description: '执行新闻情绪日更整批采集，按 A 股交易日自动调度。',
   },
   {
+    value: 'index_cn_market_fear_greed_daily',
+    label: 'A股大盘恐贪指数日更',
+    group: '独立日更',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '21:50同步 MIUMIU 大盘总体恐贪指数的完整公开窗口，并自动回补网站修订或新增的历史记录。',
+  },
+  {
     value: 'excel_emotion_import',
     label: '情绪指标 Excel 导入',
     group: '手动任务',

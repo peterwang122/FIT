@@ -1774,6 +1774,40 @@ class StockService:
             if row.get("trade_date") is not None
         ]
 
+    def list_index_cn_market_fear_greed_daily_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_cn_market_fear_greed_daily_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+        sql = (
+            f"SELECT "
+            f"`{settings.index_cn_market_fear_greed_daily_date_column}` AS trade_date, "
+            f"`{settings.index_cn_market_fear_greed_daily_value_column}` AS fear_greed_value, "
+            f"`{settings.index_cn_market_fear_greed_daily_label_column}` AS sentiment_label "
+            f"FROM `{table_name}` WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{settings.index_cn_market_fear_greed_daily_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_cn_market_fear_greed_daily_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_cn_market_fear_greed_daily_date_column}` ASC"
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "fear_greed_value": _to_float(row.get("fear_greed_value")),
+                "sentiment_label": str(row.get("sentiment_label") or "").strip(),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
     def list_index_us_hedge_proxy_data(
         self,
         contract_scope: str,

@@ -35,6 +35,8 @@ INDEX_TO_ETF_CODE = {
 
 CN_INDEX_STRATEGY_FILTER_KEYS = [
     "emotion",
+    "cn-market-fear-greed",
+    "self-sentiment-score",
     "basis-main",
     "basis-month",
     "breadth-up-pct",
@@ -84,6 +86,14 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
     "margin-total-balance",
     "margin-financing-net-buy",
     "margin-leverage-ratio",
+    "margin-total-market-cap-leverage-ratio",
+    "margin-financing-net-buy-sum-5d",
+    "margin-financing-net-buy-sum-7d",
+    "margin-financing-net-buy-sum-14d",
+    "margin-financing-net-buy-sum-20d",
+    "margin-financing-net-buy-sum-30d",
+    "margin-financing-net-buy-sum-60d",
+    "margin-financing-net-buy-sum-120d",
     "rsi",
     "wr",
     "macd-dif",
@@ -160,7 +170,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v24"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v28"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 CN_OPTION_PUT_CALL_FIELD_MAP = [
     (
@@ -237,9 +247,27 @@ MARGIN_TRADING_FILTER_FIELD_MAP = [
     ("margin-total-balance", "margin_total_balance"),
     ("margin-financing-net-buy", "margin_financing_net_buy_amount"),
     ("margin-leverage-ratio", "margin_leverage_ratio_pct"),
+    (
+        "margin-total-market-cap-leverage-ratio",
+        "margin_total_market_cap_leverage_ratio_pct",
+    ),
 ]
 MARGIN_TRADING_FILTER_KEYS = [
     field_key for field_key, _column_name in MARGIN_TRADING_FILTER_FIELD_MAP
+]
+MARGIN_FINANCING_NET_BUY_SUM_WINDOWS = (5, 7, 14, 20, 30, 60, 120)
+MARGIN_FINANCING_NET_BUY_SUM_FILTER_UNIT = 100_000_000
+MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP = [
+    (
+        f"margin-financing-net-buy-sum-{window}d",
+        f"margin_financing_net_buy_sum_{window}d",
+        f"sum_{window}d",
+    )
+    for window in MARGIN_FINANCING_NET_BUY_SUM_WINDOWS
+]
+MARGIN_TRADING_FILTER_KEYS += [
+    field_key
+    for field_key, _column_name, _payload_key in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
 ]
 EXCHANGE_OPTION_SOURCES_BY_INDEX_NAME = {
     "上证50": [("sse", "510050", "上交所", "上证50ETF期权")],
@@ -1898,7 +1926,37 @@ class QuantService:
                 select_parts.append(f"`{column_name}` AS {column_name}")
             else:
                 select_parts.append(f"NULL AS {column_name}")
+        for _field_key, column_name, _payload_key in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP:
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
+        for column_name in (
+            "self_sentiment_score",
+            "self_sentiment_core_score",
+            "self_sentiment_derivative_score",
+            "self_sentiment_components_json",
+        ):
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
         return ", " + ", ".join(select_parts) if select_parts else ""
+
+    def _build_self_sentiment_point_payload(self, row: dict) -> dict:
+        payload = self._parse_exchange_option_pc_json(
+            row.get("self_sentiment_components_json")
+        )
+        scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
+        return {
+            "trade_date": row["trade_date"],
+            "score": _to_float(row.get("self_sentiment_score")),
+            "core_score": _to_float(row.get("self_sentiment_core_score")),
+            "derivative_score": _to_float(row.get("self_sentiment_derivative_score")),
+            "component_count": int(payload.get("component_count") or 0),
+            "components": {str(key): _to_float(value) for key, value in scores.items()},
+            "version": str(payload.get("version") or "").strip(),
+        }
 
     def _build_cn_option_put_call_point_payload(self, row: dict) -> dict:
         payload = {"trade_date": row["trade_date"]}
@@ -2299,6 +2357,12 @@ class QuantService:
             payload[payload_key] = _to_float(row.get(column_name))
         return payload
 
+    def _build_margin_financing_net_buy_sum_point_payload(self, row: dict) -> dict:
+        payload = {"trade_date": row["trade_date"]}
+        for _field_key, column_name, payload_key in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP:
+            payload[payload_key] = _to_float(row.get(column_name))
+        return payload
+
     def _resolve_recent_index_start_date(self, index_code: str, market: str = "cn") -> date | None:
         config = self.stock_service._get_index_market_config(self._normalize_target_market(market))
         sql = text(
@@ -2347,6 +2411,19 @@ class QuantService:
                 end_date=end_date,
             ),
         }
+
+    def _load_cn_market_fear_greed_rows(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        stock_service = getattr(self, "stock_service", None)
+        if stock_service is None:
+            return []
+        return stock_service.list_index_cn_market_fear_greed_daily_data(
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def _align_sparse_rows_to_trade_dates(
         self,
@@ -2756,6 +2833,7 @@ class QuantService:
                 "range_mode": response_mode,
                 "candles": candles,
                 "emotion_points": [],
+                "cn_market_fear_greed_points": [],
                 "basis_points": [
                     self._build_basis_point_payload(row, option["name"], contract_roll_markers)
                     for row in basis_rows
@@ -2829,6 +2907,8 @@ class QuantService:
                 "basis_delta_points": [],
                 "fund_purchase_limit_points": [],
                 "margin_trading_points": [],
+                "margin_financing_net_buy_sum_points": [],
+                "self_sentiment_points": [],
                 "us_treasury_yield_points": [
                     {
                         "trade_date": row["trade_date"],
@@ -2885,6 +2965,12 @@ class QuantService:
                 start_date=resolved_start_date,
                 end_date=end_date,
             )
+        cn_market_fear_greed_rows = self._load_cn_market_fear_greed_rows(
+            start_date=resolved_start_date,
+            end_date=end_date,
+        )
+        if not candles:
+            cn_market_fear_greed_rows = []
         result = {
             "index": {"code": option["code"], "name": option["name"]},
             "market": normalized_market,
@@ -2898,6 +2984,15 @@ class QuantService:
                     "value": _to_float(row.get("emotion_value")) or 50.0,
                 }
                 for row in rows
+            ],
+            "cn_market_fear_greed_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "fear_greed_value": _to_float(row.get("fear_greed_value")),
+                    "sentiment_label": str(row.get("sentiment_label") or "").strip(),
+                }
+                for row in cn_market_fear_greed_rows
+                if _to_float(row.get("fear_greed_value")) is not None
             ],
             "basis_points": [
                 self._build_basis_point_payload(row, auxiliary_source_name, contract_roll_markers)
@@ -2991,12 +3086,29 @@ class QuantService:
                     "leverage_ratio_pct": _to_float(
                         row.get("margin_leverage_ratio_pct")
                     ),
+                    "total_market_cap_leverage_ratio_pct": _to_float(
+                        row.get("margin_total_market_cap_leverage_ratio_pct")
+                    ),
                 }
                 for row in rows
                 if any(
                     _to_float(row.get(column_name)) is not None
                     for _field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP
                 )
+            ],
+            "margin_financing_net_buy_sum_points": [
+                self._build_margin_financing_net_buy_sum_point_payload(row)
+                for row in rows
+                if any(
+                    _to_float(row.get(column_name)) is not None
+                    for _field_key, column_name, _payload_key
+                    in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
+                )
+            ],
+            "self_sentiment_points": [
+                self._build_self_sentiment_point_payload(row)
+                for row in rows
+                if _to_float(row.get("self_sentiment_score")) is not None
             ],
             "us_treasury_yield_points": [],
             "us_credit_spread_points": [],
@@ -3312,6 +3424,18 @@ class QuantService:
                 }
                 for field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP
             }
+            margin_financing_net_buy_sum_maps = {
+                field_key: {
+                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
+                    for item in precomputed_rows
+                }
+                for field_key, column_name, _payload_key
+                in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
+            }
+            self_sentiment_map = {
+                _date_text(item["trade_date"]): _to_float(item.get("self_sentiment_score"))
+                for item in precomputed_rows
+            }
         else:
             emotion_map = self._build_emotion_value_by_date(symbol_name)
             basis_main_map, basis_month_map = self._build_basis_value_by_date(symbol_name)
@@ -3336,8 +3460,15 @@ class QuantService:
                 field_key: {} for field_key in FUND_PURCHASE_LIMIT_FILTER_KEYS
             }
             margin_trading_maps = {
-                field_key: {} for field_key in MARGIN_TRADING_FILTER_KEYS
+                field_key: {}
+                for field_key, _column_name in MARGIN_TRADING_FILTER_FIELD_MAP
             }
+            margin_financing_net_buy_sum_maps = {
+                field_key: {}
+                for field_key, _column_name, _payload_key
+                in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
+            }
+            self_sentiment_map = {}
         option_flow_put_call_maps["cn-option-flow-cp-turnover"] = {
             trade_date: _positive_reciprocal(value)
             for trade_date, value in option_flow_put_call_maps["cn-option-flow-pc-turnover"].items()
@@ -3382,6 +3513,15 @@ class QuantService:
                     if item.get("trade_date") is not None
                 }
 
+        cn_market_fear_greed_map = {
+            _date_text(item["trade_date"]): _to_float(item.get("fear_greed_value"))
+            for item in self._load_cn_market_fear_greed_rows(
+                start_date=sorted_candles[0].get("trade_date"),
+                end_date=sorted_candles[-1].get("trade_date"),
+            )
+            if item.get("trade_date") is not None
+        }
+
         snapshots: list[dict] = []
         for index, trade_date in enumerate(times):
             vix_values = vix_by_date.get(trade_date, {})
@@ -3393,6 +3533,8 @@ class QuantService:
                     "low": sorted_candles[index]["low"],
                     "values": {
                         "emotion": emotion_map.get(trade_date, 50.0),
+                        "cn-market-fear-greed": cn_market_fear_greed_map.get(trade_date),
+                        "self-sentiment-score": self_sentiment_map.get(trade_date),
                         "basis-main": basis_main_map.get(trade_date, 0.0),
                         "basis-month": basis_month_map.get(trade_date, 0.0),
                         "breadth-up-pct": breadth_map.get(trade_date, 0.0),
@@ -3433,7 +3575,21 @@ class QuantService:
                         },
                         **{
                             field_key: margin_trading_maps[field_key].get(trade_date)
-                            for field_key in MARGIN_TRADING_FILTER_KEYS
+                            for field_key, _column_name in MARGIN_TRADING_FILTER_FIELD_MAP
+                        },
+                        **{
+                            field_key: (
+                                value / MARGIN_FINANCING_NET_BUY_SUM_FILTER_UNIT
+                                if (
+                                    value := margin_financing_net_buy_sum_maps[field_key].get(
+                                        trade_date
+                                    )
+                                )
+                                is not None
+                                else None
+                            )
+                            for field_key, _column_name, _payload_key
+                            in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
                         },
                         "rsi": rsi_values[index],
                         "wr": wr_values[index],

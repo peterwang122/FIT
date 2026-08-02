@@ -15,13 +15,16 @@ import type {
   IndexBasisDeltaPoint,
   IndexBreadthPoint,
   IndexCffexNetShortDeltaPoint,
+  IndexCnMarketFearGreedPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
   IndexCnOptionSeries,
   IndexEmotionPoint,
   IndexFundPurchaseLimitPoint,
+  IndexMarginFinancingNetBuySumPoint,
   IndexMarginTradingPoint,
   IndexRelatedVixSeries,
+  IndexSelfSentimentPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
@@ -56,6 +59,8 @@ function supportsVixSeries(symbolName: string) {
 
 export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'emotion',
+  'cn-market-fear-greed',
+  'self-sentiment-score',
   'basis-main',
   'basis-month',
   'breadth-up-pct',
@@ -107,6 +112,14 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'margin-total-balance',
   'margin-financing-net-buy',
   'margin-leverage-ratio',
+  'margin-total-market-cap-leverage-ratio',
+  'margin-financing-net-buy-sum-5d',
+  'margin-financing-net-buy-sum-7d',
+  'margin-financing-net-buy-sum-14d',
+  'margin-financing-net-buy-sum-20d',
+  'margin-financing-net-buy-sum-30d',
+  'margin-financing-net-buy-sum-60d',
+  'margin-financing-net-buy-sum-120d',
   'rsi',
   'wr',
   'macd-dif',
@@ -839,6 +852,7 @@ type IndexDatasetOptions = {
   includeBasisDelta?: boolean
   includeFundPurchaseLimit?: boolean
   includeMarginTrading?: boolean
+  includeSelfSentiment?: boolean
   includeUsVix?: boolean
   includeUsFearGreed?: boolean
   includeUsHedge?: boolean
@@ -856,6 +870,9 @@ type IndexDatasetOptions = {
   basisDeltaPoints?: IndexBasisDeltaPoint[]
   fundPurchaseLimitPoints?: IndexFundPurchaseLimitPoint[]
   marginTradingPoints?: IndexMarginTradingPoint[]
+  marginFinancingNetBuySumPoints?: IndexMarginFinancingNetBuySumPoint[]
+  selfSentimentPoints?: IndexSelfSentimentPoint[]
+  cnMarketFearGreedPoints?: IndexCnMarketFearGreedPoint[]
   usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints?: IndexUsCreditSpreadPoint[]
 }
@@ -877,6 +894,7 @@ function buildIndexQuantFilterFields(
     includeBasisDelta: boolean
     includeFundPurchaseLimit: boolean
     includeMarginTrading: boolean
+    includeSelfSentiment: boolean
     includeUsVix: boolean
     includeUsFearGreed: boolean
     includeUsHedge: boolean
@@ -901,8 +919,12 @@ function buildIndexQuantFilterFields(
   if (options.includeCnAuxiliary) {
     fields.unshift(
       { key: 'emotion', group: 'emotion', label: '情绪指标' },
+      { key: 'cn-market-fear-greed', group: 'emotion', label: '大盘总体恐贪指数' },
       { key: 'breadth-up-pct', group: 'breadth', label: '上涨家数百分比' },
     )
+  }
+  if (options.includeSelfSentiment) {
+    fields.unshift({ key: 'self-sentiment-score', group: 'emotion', label: '自建情绪综合分' })
   }
   if (options.includeBasis) {
     const basisFields: QuantFilterFieldMeta[] = [{ key: 'basis-main', group: 'basis', label: options.basisMainLabel }]
@@ -1050,7 +1072,15 @@ function buildIndexQuantFilterFields(
       { key: 'margin-securities-lending-balance', group: 'margin-trading', label: '融券余额' },
       { key: 'margin-total-balance', group: 'margin-trading', label: '两融余额' },
       { key: 'margin-financing-net-buy', group: 'margin-trading', label: '融资净买入额' },
-      { key: 'margin-leverage-ratio', group: 'margin-trading', label: '两融杠杆率(%)' },
+      { key: 'margin-leverage-ratio', group: 'margin-trading', label: '两融流通市值杠杆率(%)' },
+      { key: 'margin-total-market-cap-leverage-ratio', group: 'margin-trading', label: '两融总市值杠杆率(%)' },
+      { key: 'margin-financing-net-buy-sum-5d', group: 'margin-trading', label: '融资净买入累计 5D（亿元）' },
+      { key: 'margin-financing-net-buy-sum-7d', group: 'margin-trading', label: '融资净买入累计 7D（亿元）' },
+      { key: 'margin-financing-net-buy-sum-14d', group: 'margin-trading', label: '融资净买入累计 14D（亿元）' },
+      { key: 'margin-financing-net-buy-sum-20d', group: 'margin-trading', label: '融资净买入累计 20D（亿元）' },
+      { key: 'margin-financing-net-buy-sum-30d', group: 'margin-trading', label: '融资净买入累计 30D（亿元）' },
+      { key: 'margin-financing-net-buy-sum-60d', group: 'margin-trading', label: '融资净买入累计 60D（亿元）' },
+      { key: 'margin-financing-net-buy-sum-120d', group: 'margin-trading', label: '融资净买入累计 120D（亿元）' },
     )
   }
   if (options.includeUsVix) {
@@ -1175,6 +1205,7 @@ export function buildIndexQuantFilterDataset(
   const includeBasisDelta = options.includeBasisDelta ?? includeCnAuxiliary
   const includeFundPurchaseLimit = options.includeFundPurchaseLimit ?? false
   const includeMarginTrading = options.includeMarginTrading ?? false
+  const includeSelfSentiment = options.includeSelfSentiment ?? false
   const includeUsVix = options.includeUsVix ?? false
   const includeUsFearGreed = options.includeUsFearGreed ?? false
   const includeUsHedge = options.includeUsHedge ?? false
@@ -1192,6 +1223,9 @@ export function buildIndexQuantFilterDataset(
   const basisDeltaPoints = options.basisDeltaPoints ?? []
   const fundPurchaseLimitPoints = options.fundPurchaseLimitPoints ?? []
   const marginTradingPoints = options.marginTradingPoints ?? []
+  const marginFinancingNetBuySumPoints = options.marginFinancingNetBuySumPoints ?? []
+  const selfSentimentPoints = options.selfSentimentPoints ?? []
+  const cnMarketFearGreedPoints = options.cnMarketFearGreedPoints ?? []
   const usTreasuryYieldPoints = options.usTreasuryYieldPoints ?? []
   const usCreditSpreadPoints = options.usCreditSpreadPoints ?? []
   const relatedVixSeries = options.relatedVixSeries ?? []
@@ -1389,7 +1423,28 @@ export function buildIndexQuantFilterDataset(
         'margin-total-balance': toFiniteNullableNumber(item.total_balance),
         'margin-financing-net-buy': toFiniteNullableNumber(item.financing_net_buy_amount),
         'margin-leverage-ratio': toFiniteNullableNumber(item.leverage_ratio_pct),
+        'margin-total-market-cap-leverage-ratio': toFiniteNullableNumber(item.total_market_cap_leverage_ratio_pct),
       },
+    ]),
+  )
+  const marginFinancingNetBuySumByDate = new Map(
+    marginFinancingNetBuySumPoints.map((item) => [
+      item.trade_date,
+      {
+        'margin-financing-net-buy-sum-5d': toFiniteNullableNumber(item.sum_5d) === null ? null : Number(item.sum_5d) / 100_000_000,
+        'margin-financing-net-buy-sum-7d': toFiniteNullableNumber(item.sum_7d) === null ? null : Number(item.sum_7d) / 100_000_000,
+        'margin-financing-net-buy-sum-14d': toFiniteNullableNumber(item.sum_14d) === null ? null : Number(item.sum_14d) / 100_000_000,
+        'margin-financing-net-buy-sum-20d': toFiniteNullableNumber(item.sum_20d) === null ? null : Number(item.sum_20d) / 100_000_000,
+        'margin-financing-net-buy-sum-30d': toFiniteNullableNumber(item.sum_30d) === null ? null : Number(item.sum_30d) / 100_000_000,
+        'margin-financing-net-buy-sum-60d': toFiniteNullableNumber(item.sum_60d) === null ? null : Number(item.sum_60d) / 100_000_000,
+        'margin-financing-net-buy-sum-120d': toFiniteNullableNumber(item.sum_120d) === null ? null : Number(item.sum_120d) / 100_000_000,
+      },
+    ]),
+  )
+  const selfSentimentByDate = new Map(
+    selfSentimentPoints.map((item) => [
+      item.trade_date,
+      toFiniteNullableNumber(item.score),
     ]),
   )
   const usTreasuryByDate = new Map(
@@ -1423,6 +1478,12 @@ export function buildIndexQuantFilterDataset(
     }),
   )
   const baseSnapshots = buildBaseSnapshots(chart, candles)
+  const cnMarketFearGreedByDate = new Map(
+    cnMarketFearGreedPoints.map((item) => [
+      item.trade_date,
+      Number.isFinite(Number(item.fear_greed_value)) ? Number(item.fear_greed_value) : null,
+    ]),
+  )
   const alignedUsHedgeRows = alignSparseRowsToTradeDates(
     baseSnapshots.map((item) => item.tradeDate),
     usHedgeProxyPoints,
@@ -1443,6 +1504,8 @@ export function buildIndexQuantFilterDataset(
     values: {
       ...snapshot.values,
       emotion: emotion?.data[index]?.value ?? null,
+      'cn-market-fear-greed': cnMarketFearGreedByDate.get(snapshot.tradeDate) ?? null,
+      'self-sentiment-score': selfSentimentByDate.get(snapshot.tradeDate) ?? null,
       'basis-main': basis?.main.data[index]?.value ?? null,
       'basis-main-adjusted': includeBasisAdjusted ? (basis?.adjusted?.data[index]?.value ?? null) : null,
       'basis-month': basis?.month.data[index]?.value ?? null,
@@ -1496,6 +1559,14 @@ export function buildIndexQuantFilterDataset(
       'margin-total-balance': marginTradingByDate.get(snapshot.tradeDate)?.['margin-total-balance'] ?? null,
       'margin-financing-net-buy': marginTradingByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy'] ?? null,
       'margin-leverage-ratio': marginTradingByDate.get(snapshot.tradeDate)?.['margin-leverage-ratio'] ?? null,
+      'margin-total-market-cap-leverage-ratio': marginTradingByDate.get(snapshot.tradeDate)?.['margin-total-market-cap-leverage-ratio'] ?? null,
+      'margin-financing-net-buy-sum-5d': marginFinancingNetBuySumByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy-sum-5d'] ?? null,
+      'margin-financing-net-buy-sum-7d': marginFinancingNetBuySumByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy-sum-7d'] ?? null,
+      'margin-financing-net-buy-sum-14d': marginFinancingNetBuySumByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy-sum-14d'] ?? null,
+      'margin-financing-net-buy-sum-20d': marginFinancingNetBuySumByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy-sum-20d'] ?? null,
+      'margin-financing-net-buy-sum-30d': marginFinancingNetBuySumByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy-sum-30d'] ?? null,
+      'margin-financing-net-buy-sum-60d': marginFinancingNetBuySumByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy-sum-60d'] ?? null,
+      'margin-financing-net-buy-sum-120d': marginFinancingNetBuySumByDate.get(snapshot.tradeDate)?.['margin-financing-net-buy-sum-120d'] ?? null,
       'us-vix-open': usVixByDate.get(snapshot.tradeDate)?.['us-vix-open'] ?? null,
       'us-vix-high': usVixByDate.get(snapshot.tradeDate)?.['us-vix-high'] ?? null,
       'us-vix-low': usVixByDate.get(snapshot.tradeDate)?.['us-vix-low'] ?? null,
@@ -1545,6 +1616,7 @@ export function buildIndexQuantFilterDataset(
       includeBasisDelta,
       includeFundPurchaseLimit,
       includeMarginTrading,
+      includeSelfSentiment,
       includeUsVix,
       includeUsFearGreed,
       includeUsHedge,

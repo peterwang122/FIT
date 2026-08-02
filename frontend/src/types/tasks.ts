@@ -31,6 +31,7 @@ export type CollectionCollectorKey =
   | 'us_index_futures_official_daily'
   | 'index_qvix_daily'
   | 'index_news_sentiment_daily'
+  | 'index_cn_market_fear_greed_daily'
   | 'excel_emotion_import'
   | 'douyin_coze_emotion_daily'
   | 'index_us_vix_daily'

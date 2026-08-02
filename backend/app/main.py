@@ -502,6 +502,16 @@ def ensure_runtime_tables() -> None:
         _ensure_default_collection_task(
             db,
             root_user,
+            collector_key="index_cn_market_fear_greed_daily",
+            name="A股大盘恐贪指数日更",
+            schedule_time="21:50",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
             collector_key="quant_index_daily",
             name="看板数据计算",
             schedule_time="22:30",
@@ -532,11 +542,11 @@ def ensure_runtime_tables() -> None:
         for collector_key, name, schedule_time, legacy_names in (
             ("index_us_credit_spread_daily", "美股高收益债利差日更", "00:45", ("美债收益债利差采集",)),
             ("index_us_treasury_yield_daily", "美债收益率日更", "05:30", ("美债收益率采集",)),
-            ("index_us_daily", "美股指数日更", "06:00", ("美股指数采集",)),
-            ("index_us_vix_daily", "美股 VIX 日更", "06:10", ("美股VIX采集",)),
+            ("index_us_daily", "美股指数日更", "09:30", ("美股指数采集",)),
+            ("index_us_vix_daily", "美股 VIX 日更", "09:40", ("美股VIX采集",)),
             ("index_us_fear_greed_daily", "美股恐贪指数日更", "06:20", ("美股恐贪指数采集",)),
-            ("index_us_put_call_ratio_daily", "美股 Put/Call Ratio 日更", "06:30", ()),
-            ("us_index_futures_daily", "美股股指期货日更", "06:45", ("美股期货数据采集",)),
+            ("index_us_put_call_ratio_daily", "美股 Put/Call Ratio 日更", "09:50", ()),
+            ("us_index_futures_daily", "美股股指期货日更", "10:00", ("美股期货数据采集",)),
             ("index_us_hedge_proxy_daily", "OFR 美股持仓代理月更", "09:30", ("美股持仓采集",)),
             (
                 "us_index_futures_official_daily",

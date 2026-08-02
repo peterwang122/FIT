@@ -18,6 +18,7 @@ import type {
   IndexBreadthPoint,
   IndexBasisDeltaPoint,
   IndexCffexNetShortDeltaPoint,
+  IndexCnMarketFearGreedPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
   IndexCnOptionSeries,
@@ -26,8 +27,10 @@ import type {
   IndexDashboardResponse,
   IndexEmotionPoint,
   IndexFundPurchaseLimitPoint,
+  IndexMarginFinancingNetBuySumPoint,
   IndexMarginTradingPoint,
   IndexRelatedVixSeries,
+  IndexSelfSentimentPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
   IndexUsHedgeProxyPoint,
@@ -79,6 +82,7 @@ type IndexDashboardChunkState = {
   supportsBasisPanel: boolean
   candles: KlineCandle[]
   emotionPoints: IndexDashboardEmotionPoint[]
+  cnMarketFearGreedPoints: IndexCnMarketFearGreedPoint[]
   basisPoints: IndexDashboardBasisPoint[]
   breadthPoints: IndexBreadthPoint[]
   vixPoints: IndexVixPoint[]
@@ -94,6 +98,8 @@ type IndexDashboardChunkState = {
   basisDeltaPoints: IndexBasisDeltaPoint[]
   fundPurchaseLimitPoints: IndexFundPurchaseLimitPoint[]
   marginTradingPoints: IndexMarginTradingPoint[]
+  marginFinancingNetBuySumPoints: IndexMarginFinancingNetBuySumPoint[]
+  selfSentimentPoints: IndexSelfSentimentPoint[]
   usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints: IndexUsCreditSpreadPoint[]
   earliestLoadedDate: string | null
@@ -282,6 +288,7 @@ function buildDashboardChunkState(
     | 'supports_basis_panel'
     | 'candles'
     | 'emotion_points'
+    | 'cn_market_fear_greed_points'
     | 'basis_points'
     | 'breadth_points'
     | 'vix_points'
@@ -297,6 +304,8 @@ function buildDashboardChunkState(
     | 'basis_delta_points'
     | 'fund_purchase_limit_points'
     | 'margin_trading_points'
+    | 'margin_financing_net_buy_sum_points'
+    | 'self_sentiment_points'
     | 'us_treasury_yield_points'
     | 'us_credit_spread_points'
   >,
@@ -309,6 +318,7 @@ function buildDashboardChunkState(
     supportsBasisPanel: payload.supports_basis_panel,
     candles: payload.candles,
     emotionPoints: payload.emotion_points,
+    cnMarketFearGreedPoints: payload.cn_market_fear_greed_points ?? [],
     basisPoints: payload.basis_points,
     breadthPoints: payload.breadth_points,
     vixPoints: payload.vix_points,
@@ -324,6 +334,8 @@ function buildDashboardChunkState(
     basisDeltaPoints: payload.basis_delta_points ?? [],
     fundPurchaseLimitPoints: payload.fund_purchase_limit_points ?? [],
     marginTradingPoints: payload.margin_trading_points ?? [],
+    marginFinancingNetBuySumPoints: payload.margin_financing_net_buy_sum_points ?? [],
+    selfSentimentPoints: payload.self_sentiment_points ?? [],
     usTreasuryYieldPoints: payload.us_treasury_yield_points ?? [],
     usCreditSpreadPoints: payload.us_credit_spread_points ?? [],
     earliestLoadedDate: payload.candles[0]?.trade_date ?? null,
@@ -489,6 +501,7 @@ const indexOptions = ref<MarketOption[]>([])
 const indexCode = ref('')
 const indexCandles = ref<KlineCandle[]>([])
 const emotionPoints = ref<IndexEmotionPoint[]>([])
+const cnMarketFearGreedPoints = ref<IndexCnMarketFearGreedPoint[]>([])
 const futuresBasisPoints = ref<FuturesBasisPoint[]>([])
 const breadthPoints = ref<IndexBreadthPoint[]>([])
 const vixPoints = ref<IndexVixPoint[]>([])
@@ -504,6 +517,8 @@ const cffexNetShortDeltaPoints = ref<IndexCffexNetShortDeltaPoint[]>([])
 const basisDeltaPoints = ref<IndexBasisDeltaPoint[]>([])
 const fundPurchaseLimitPoints = ref<IndexFundPurchaseLimitPoint[]>([])
 const marginTradingPoints = ref<IndexMarginTradingPoint[]>([])
+const marginFinancingNetBuySumPoints = ref<IndexMarginFinancingNetBuySumPoint[]>([])
+const selfSentimentPoints = ref<IndexSelfSentimentPoint[]>([])
 const usTreasuryYieldPoints = ref<IndexUsTreasuryYieldPoint[]>([])
 const usCreditSpreadPoints = ref<IndexUsCreditSpreadPoint[]>([])
 const loading = ref(false)
@@ -558,6 +573,9 @@ const supportsFundPurchaseLimitPanel = computed(
   () => isCnMarket.value && selectedIndexName.value === DEFAULT_INDEX_NAME,
 )
 const supportsMarginTradingPanel = computed(() => isCnMarket.value)
+const supportsSelfSentimentPanel = computed(
+  () => isCnMarket.value && supportsAuxiliaryPanels.value,
+)
 const supportsUsTreasuryYieldPanel = computed(() => isUsMarket.value)
 const supportsUsCreditSpreadPanel = computed(() => isUsMarket.value)
 const supportsAdjustedBasisPanel = computed(() => isUsMarket.value && indexSupportsAdjustedBasis(selectedIndexName.value, indexCode.value))
@@ -590,6 +608,7 @@ const quantFilterDataset = computed(() => {
         includeBasisDelta: supportsAuxiliaryPanels.value,
         includeFundPurchaseLimit: supportsFundPurchaseLimitPanel.value,
         includeMarginTrading: supportsMarginTradingPanel.value,
+        includeSelfSentiment: supportsSelfSentimentPanel.value,
         cnOptionPutCallPoints: cnOptionPutCallPoints.value,
         cnOptionFlowPutCallPoints: cnOptionFlowPutCallPoints.value,
         cnOptionSeries: cnOptionSeries.value,
@@ -598,6 +617,9 @@ const quantFilterDataset = computed(() => {
         basisDeltaPoints: basisDeltaPoints.value,
         fundPurchaseLimitPoints: fundPurchaseLimitPoints.value,
         marginTradingPoints: marginTradingPoints.value,
+        marginFinancingNetBuySumPoints: marginFinancingNetBuySumPoints.value,
+        selfSentimentPoints: selfSentimentPoints.value,
+        cnMarketFearGreedPoints: cnMarketFearGreedPoints.value,
       },
     )
   }
@@ -996,6 +1018,9 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
         })),
       ) ?? []
     : []
+  cnMarketFearGreedPoints.value = supportsAuxiliaryPanels.value
+    ? state?.cnMarketFearGreedPoints ?? []
+    : []
   futuresBasisPoints.value = supportsBasisPanel.value
     ? state?.basisPoints.flatMap((item) =>
         (state?.supportsAuxiliaryPanels ? basisIndexNames : [item.index_name || targetName]).map((indexName) => ({
@@ -1041,6 +1066,11 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
       : []
   marginTradingPoints.value =
     targetMarket.value === 'cn' ? state?.marginTradingPoints ?? [] : []
+  marginFinancingNetBuySumPoints.value =
+    targetMarket.value === 'cn' ? state?.marginFinancingNetBuySumPoints ?? [] : []
+  selfSentimentPoints.value = supportsSelfSentimentPanel.value
+    ? state?.selfSentimentPoints ?? []
+    : []
   usTreasuryYieldPoints.value = targetMarket.value === 'us' ? state?.usTreasuryYieldPoints ?? [] : []
   usCreditSpreadPoints.value = targetMarket.value === 'us' ? state?.usCreditSpreadPoints ?? [] : []
   hasMoreHistory.value = state?.hasMoreHistory ?? false
@@ -1066,6 +1096,10 @@ function mergeDashboardState(
     supportsBasisPanel: payload.supports_basis_panel,
     candles: mergedCandles,
     emotionPoints: mergeByTradeDate(currentState.emotionPoints, payload.emotion_points),
+    cnMarketFearGreedPoints: mergeByTradeDate(
+      currentState.cnMarketFearGreedPoints,
+      payload.cn_market_fear_greed_points ?? [],
+    ),
     basisPoints: mergeByTradeDate(currentState.basisPoints, payload.basis_points),
     breadthPoints: mergeByTradeDate(currentState.breadthPoints, payload.breadth_points),
     vixPoints: mergeByTradeDate(currentState.vixPoints, payload.vix_points),
@@ -1115,6 +1149,14 @@ function mergeDashboardState(
     marginTradingPoints: mergeByTradeDate(
       currentState.marginTradingPoints,
       payload.margin_trading_points ?? [],
+    ),
+    marginFinancingNetBuySumPoints: mergeByTradeDate(
+      currentState.marginFinancingNetBuySumPoints,
+      payload.margin_financing_net_buy_sum_points ?? [],
+    ),
+    selfSentimentPoints: mergeByTradeDate(
+      currentState.selfSentimentPoints,
+      payload.self_sentiment_points ?? [],
     ),
     usTreasuryYieldPoints: mergeByTradeDate(currentState.usTreasuryYieldPoints, payload.us_treasury_yield_points ?? []),
     usCreditSpreadPoints: mergeByTradeDate(currentState.usCreditSpreadPoints, payload.us_credit_spread_points ?? []),
@@ -1396,10 +1438,12 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
   if (!indexCode.value) {
     indexCandles.value = []
     emotionPoints.value = []
+    cnMarketFearGreedPoints.value = []
     futuresBasisPoints.value = []
     breadthPoints.value = []
     vixPoints.value = []
     relatedVixSeries.value = []
+    selfSentimentPoints.value = []
     usVixPoints.value = []
     usFearGreedPoints.value = []
     usHedgeProxyPoints.value = []
@@ -1552,6 +1596,7 @@ watch(
         <QuantIndexChart
           :candles="indexCandles"
           :emotion-points="emotionPoints"
+          :cn-market-fear-greed-points="cnMarketFearGreedPoints"
           :emotion-loading="emotionLoading"
           :emotion-error-message="emotionError"
           :futures-basis-points="futuresBasisPoints"
@@ -1573,6 +1618,8 @@ watch(
           :basis-delta-points="basisDeltaPoints"
           :fund-purchase-limit-points="fundPurchaseLimitPoints"
           :margin-trading-points="marginTradingPoints"
+          :margin-financing-net-buy-sum-points="marginFinancingNetBuySumPoints"
+          :self-sentiment-points="selfSentimentPoints"
           :us-treasury-yield-points="usTreasuryYieldPoints"
           :us-credit-spread-points="usCreditSpreadPoints"
           :supports-us-vix-panel="supportsUsVixPanel"
@@ -1582,11 +1629,13 @@ watch(
           :supports-cn-option-put-call-panel="supportsCnOptionPutCallPanel"
           :supports-fund-purchase-limit-panel="supportsFundPurchaseLimitPanel"
           :supports-margin-trading-panel="supportsMarginTradingPanel"
+          :supports-self-sentiment-panel="supportsSelfSentimentPanel"
           :supports-us-treasury-yield-panel="supportsUsTreasuryYieldPanel"
           :supports-us-credit-spread-panel="supportsUsCreditSpreadPanel"
           :highlight-bands="highlightBands"
           :has-more-history="hasMoreHistory"
           :loading-more-history="loadingMoreHistory"
+          :preference-scope="targetMarket"
           :market-options="indexOptions"
           :symbol-name="selectedIndexName"
           :symbol-code="indexCode"

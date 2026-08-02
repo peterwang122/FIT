@@ -626,14 +626,17 @@ def test_option_minute_daily_warns_for_partial_vix_when_raw_minutes_are_complete
     assert "szse:159922分钟VIX126行（质量告警" in result["summary"]
 
 
-def test_us_futures_validation_rejects_stale_upstream_trade_date(monkeypatch):
+def test_us_futures_validation_accepts_immediately_previous_upstream_trade_date(monkeypatch):
     task = _make_collection_task("us_index_futures_daily", market_scope="us_index")
     run = _make_run(task.id)
     run.scheduled_for = datetime(2026, 5, 2, 9, 0)
     db = _FakeSession(
         tasks=[task],
         runs=[run],
-        execute_rows=[{"target_count": 0, "latest_date": date(2026, 4, 30)}],
+        execute_rows=[
+            {"target_count": 0, "latest_date": date(2026, 4, 30)},
+            {"target_count": 2, "latest_date": date(2026, 4, 30)},
+        ],
     )
     service = TaskService(db)
     service.market_calendar = _FixedMarketCalendar(date(2026, 5, 1))
@@ -651,12 +654,98 @@ def test_us_futures_validation_rejects_stale_upstream_trade_date(monkeypatch):
         },
     )
 
+    result = service.execute_run(run.id)
+
+    assert db.executed[0][1]["target_trade_date"] == date(2026, 5, 1)
+    assert db.executed[1][1]["target_trade_date"] == date(2026, 4, 30)
+    assert result["status"] == "success"
+    assert "实际更新并确认的是前一美股交易日 2026-04-30" in result["summary"]
+
+
+def test_us_futures_validation_rejects_data_older_than_previous_trade_date(monkeypatch):
+    task = _make_collection_task("us_index_futures_daily", market_scope="us_index")
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 5, 2, 9, 0)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": 0, "latest_date": date(2026, 4, 29)},
+            {"target_count": 0, "latest_date": date(2026, 4, 29)},
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 5, 1))
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "us_index_futures_daily",
+                "result": {"trade_date": "2026-04-29", "collection": 2},
+            },
+        },
+    )
+
     with pytest.raises(RuntimeError) as exc_info:
         service.execute_run(run.id)
 
-    assert db.executed[0][1]["target_trade_date"] == date(2026, 5, 1)
     assert "目标交易日 2026-05-01 数据未完整入库" in str(exc_info.value)
-    assert "2026-04-30" in str(exc_info.value)
+    assert "2026-04-29" in str(exc_info.value)
+
+
+def test_cme_network_block_is_skipped_with_latest_official_date(monkeypatch):
+    task = _make_collection_task("us_index_futures_official_daily", market_scope="us_index")
+    run = _make_run(task.id)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[{"target_count": 0, "latest_date": date(2026, 7, 17)}],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 7, 20), previous_date=date(2026, 7, 17))
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                'upstream returned 500, body={"error":"CME settlements official API blocked the request (HTTP 403)"}'
+            )
+        ),
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "skipped"
+    assert "CME 官方结算接口拒绝当前网络请求" in result["summary"]
+    assert "2026-07-17" in result["summary"]
+
+
+def test_duplicate_daily_collection_is_skipped_before_validation(monkeypatch):
+    task = _make_collection_task("index_us_vix_daily", market_scope="us_index")
+    run = _make_run(task.id)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "requested_at": "2026-07-29",
+            "status": "deduplicated",
+            "message": "same daily collection is already running",
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "skipped"
+    assert "已有同类型采集正在运行" in result["summary"]
+    assert db.executed == []
 
 
 def test_collection_validation_uses_previous_trade_date_when_reference_market_is_closed():

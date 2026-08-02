@@ -196,6 +196,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": "index",
         "requires_target": False,
         "endpoint": "/collect-index-us-daily",
+        "accept_previous_trading_day": True,
     },
     "hk_index_futures_daily": {
         "label": "港股股指期货日更",
@@ -213,6 +214,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-us-index-futures-daily",
+        "accept_previous_trading_day": True,
     },
     "us_index_futures_official_daily": {
         "label": "美股股指期货官方合约日更",
@@ -235,6 +237,13 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-index-news-sentiment-daily",
+    },
+    "index_cn_market_fear_greed_daily": {
+        "label": "A股大盘恐贪指数日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-cn-market-fear-greed-daily",
     },
     "excel_emotion_import": {
         "label": "情绪指标 Excel 导入",
@@ -261,6 +270,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-index-us-vix-daily",
+        "accept_previous_trading_day": True,
     },
     "index_us_fear_greed_daily": {
         "label": "美股恐贪指数日更",
@@ -283,6 +293,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-index-us-put-call-ratio-daily",
+        "accept_previous_trading_day": True,
     },
     "index_us_treasury_yield_daily": {
         "label": "美债收益率日更",
@@ -328,6 +339,7 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "us_index_futures_official_daily": "美股股指期货官方合约日更",
     "index_qvix_daily": "QVIX 日更",
     "index_news_sentiment_daily": "新闻情绪日更",
+    "index_cn_market_fear_greed_daily": "A股大盘恐贪指数日更",
     "excel_emotion_import": "情绪指标 Excel 导入",
     "douyin_coze_emotion_daily": "抖音四大指数情绪日更",
     "index_us_vix_daily": "美股 VIX 日更",
@@ -696,6 +708,13 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
     ],
     "index_news_sentiment_daily": [
         CollectionDataProbe("index_news_sentiment_scope_daily", "trade_date", "新闻情绪"),
+    ],
+    "index_cn_market_fear_greed_daily": [
+        CollectionDataProbe(
+            "index_cn_market_fear_greed_daily",
+            "trade_date",
+            "A股大盘总体恐贪指数",
+        ),
     ],
     "index_us_vix_daily": [
         CollectionDataProbe(settings.index_us_vix_daily_table_name, settings.index_us_vix_daily_date_column, "美股VIX"),
@@ -2090,14 +2109,17 @@ class TaskService:
                 )
             return f"已确认月度源有效：{'，'.join(successes)}。"
 
-        for probe in probes:
-            target_count, latest_date = self._collection_probe_snapshot(probe, target_trade_date)
-            if target_count < probe.minimum_rows:
-                failures.append(
-                    f"{probe.label}目标日{target_trade_date.isoformat()}仅{target_count}行"
-                    f"（要求至少{probe.minimum_rows}行，当前最新{latest_date or '-'}）"
-                )
-            else:
+        def collect_probe_results(validation_date: date) -> tuple[list[str], list[str]]:
+            date_failures: list[str] = []
+            date_successes: list[str] = []
+            for probe in probes:
+                target_count, latest_date = self._collection_probe_snapshot(probe, validation_date)
+                if target_count < probe.minimum_rows:
+                    date_failures.append(
+                        f"{probe.label}目标日{validation_date.isoformat()}仅{target_count}行"
+                        f"（要求至少{probe.minimum_rows}行，当前最新{latest_date or '-'}）"
+                    )
+                    continue
                 suffix = "分钟" if probe.distinct_count_column else "行"
                 success = f"{probe.label}{target_count}{suffix}"
                 if probe.warning_below_rows and target_count < probe.warning_below_rows:
@@ -2105,7 +2127,23 @@ class TaskService:
                         f"（质量告警：可计算点少于{probe.warning_below_rows}，"
                         "原始分钟完整但部分时点方差无效）"
                     )
-                successes.append(success)
+                date_successes.append(success)
+            return date_failures, date_successes
+
+        failures, successes = collect_probe_results(target_trade_date)
+        if failures and bool(definition.get("accept_previous_trading_day")):
+            market_scope = self._collection_validation_market_scope(collector_key)
+            previous_trade_date = self.market_calendar.previous_trading_day(
+                market_scope,
+                target_trade_date,
+            )
+            previous_failures, previous_successes = collect_probe_results(previous_trade_date)
+            if not previous_failures:
+                return (
+                    f"目标交易日 {target_trade_date.isoformat()} 的上游数据尚未发布；"
+                    f"本次实际更新并确认的是前一美股交易日 {previous_trade_date.isoformat()}："
+                    f"{'，'.join(previous_successes)}。"
+                )
 
         if collector_key == "index_qvix_daily" and not failures:
             qvix_gap_failure = self._qvix_recent_gap_failure(target_trade_date)
@@ -2165,6 +2203,7 @@ class TaskService:
             "fund_purchase_limit_daily",
             "quant_index_daily",
             "index_qvix_daily",
+            "index_cn_market_fear_greed_daily",
             "hk_index_futures_daily",
         }:
             explicit_target_trade_date = self._collection_target_trade_date_for_task(collector_key, task, reference_dt)
@@ -2177,6 +2216,7 @@ class TaskService:
                 "cn_macro_daily",
                 "margin_trading_daily",
                 "fund_purchase_limit_daily",
+                "index_cn_market_fear_greed_daily",
                 "hk_index_futures_daily",
             }:
                 collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
@@ -2199,16 +2239,46 @@ class TaskService:
                     }
                 )
 
-        if collector_key == "index_hk_daily":
-            result = run_index_daily_collection_request("hk")
-        elif collector_key == "index_us_daily":
-            result = run_index_daily_collection_request("us")
-        else:
-            endpoint = str(definition.get("endpoint") or "").strip()
-            result = run_daily_collection_request(
-                collector_key=collector_key,
-                endpoint=endpoint,
-                payload=collection_payload,
+        try:
+            if collector_key == "index_hk_daily":
+                result = run_index_daily_collection_request("hk")
+            elif collector_key == "index_us_daily":
+                result = run_index_daily_collection_request("us")
+            else:
+                endpoint = str(definition.get("endpoint") or "").strip()
+                result = run_daily_collection_request(
+                    collector_key=collector_key,
+                    endpoint=endpoint,
+                    payload=collection_payload,
+                )
+        except Exception as exc:  # noqa: BLE001
+            error_text = str(exc)
+            cme_source_blocked = (
+                collector_key == "us_index_futures_official_daily"
+                and any(
+                    marker in error_text
+                    for marker in (
+                        "CME settlements official API blocked the request",
+                        "SSLEOFError",
+                        "UNEXPECTED_EOF_WHILE_READING",
+                    )
+                )
+            )
+            if not cme_source_blocked:
+                raise
+            probe = COLLECTION_DATA_PROBES[collector_key][0]
+            target_date = self._collection_target_trade_date(collector_key, reference_dt)
+            _, latest_date = self._collection_probe_snapshot(probe, target_date)
+            raise TaskRunSkipped(
+                "CME 官方结算接口拒绝当前网络请求，今日官方合约采集已跳过，"
+                f"未覆盖或伪造数据；库内最近官方交易日为 {latest_date or '-'}。"
+                "普通美股股指期货日更仍会按前一美股交易日更新。"
+            ) from exc
+
+        if str(result.get("status") or "").strip().lower() == "deduplicated":
+            raise TaskRunSkipped(
+                f"{label}已有同类型采集正在运行，本次重复请求已跳过，"
+                "不会重复访问上游或重复写入数据。"
             )
 
         upstream_status = str(result.get("upstream_status", result.get("status", "ok"))).upper()
@@ -2387,6 +2457,8 @@ class TaskService:
         )
         if collector_key == "douyin_coze_emotion_daily":
             self.stock_service.clear_index_emotions_cache()
+            self.quant_service.clear_index_dashboard_cache("cn")
+        elif collector_key == "index_cn_market_fear_greed_daily":
             self.quant_service.clear_index_dashboard_cache("cn")
 
         if result_value not in (None, ""):

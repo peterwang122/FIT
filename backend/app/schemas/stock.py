@@ -123,6 +123,12 @@ class IndexDashboardEmotionPointResponse(BaseModel):
     value: float
 
 
+class IndexDashboardCnMarketFearGreedPointResponse(BaseModel):
+    trade_date: date
+    fear_greed_value: float
+    sentiment_label: str = ""
+
+
 class IndexDashboardBasisPointResponse(BaseModel):
     trade_date: date
     index_name: str = ""
@@ -308,6 +314,28 @@ class IndexDashboardMarginTradingPointResponse(BaseModel):
     total_balance: float | None = None
     financing_net_buy_amount: float | None = None
     leverage_ratio_pct: float | None = None
+    total_market_cap_leverage_ratio_pct: float | None = None
+
+
+class IndexDashboardMarginFinancingNetBuySumPointResponse(BaseModel):
+    trade_date: date
+    sum_5d: float | None = None
+    sum_7d: float | None = None
+    sum_14d: float | None = None
+    sum_20d: float | None = None
+    sum_30d: float | None = None
+    sum_60d: float | None = None
+    sum_120d: float | None = None
+
+
+class IndexDashboardSelfSentimentPointResponse(BaseModel):
+    trade_date: date
+    score: float | None = None
+    core_score: float | None = None
+    derivative_score: float | None = None
+    component_count: int = 0
+    components: dict[str, float | None] = Field(default_factory=dict)
+    version: str = ""
 
 
 class IndexDashboardUsTreasuryYieldPointResponse(BaseModel):
@@ -332,6 +360,7 @@ class IndexDashboardResponse(BaseModel):
     range_mode: str
     candles: list[StockCandle]
     emotion_points: list[IndexDashboardEmotionPointResponse]
+    cn_market_fear_greed_points: list[IndexDashboardCnMarketFearGreedPointResponse] = Field(default_factory=list)
     basis_points: list[IndexDashboardBasisPointResponse]
     breadth_points: list[IndexBreadthPointResponse]
     vix_points: list[IndexDashboardVixPointResponse]
@@ -347,6 +376,8 @@ class IndexDashboardResponse(BaseModel):
     basis_delta_points: list[IndexDashboardBasisDeltaPointResponse] = Field(default_factory=list)
     fund_purchase_limit_points: list[IndexDashboardFundPurchaseLimitPointResponse] = Field(default_factory=list)
     margin_trading_points: list[IndexDashboardMarginTradingPointResponse] = Field(default_factory=list)
+    margin_financing_net_buy_sum_points: list[IndexDashboardMarginFinancingNetBuySumPointResponse] = Field(default_factory=list)
+    self_sentiment_points: list[IndexDashboardSelfSentimentPointResponse] = Field(default_factory=list)
     us_treasury_yield_points: list[IndexDashboardUsTreasuryYieldPointResponse] = Field(default_factory=list)
     us_credit_spread_points: list[IndexDashboardUsCreditSpreadPointResponse] = Field(default_factory=list)
 

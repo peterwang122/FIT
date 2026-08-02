@@ -5,8 +5,8 @@
     radial-gradient(circle at top left, rgba(247, 196, 95, 0.22), transparent 28%),
     radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 30%),
     linear-gradient(180deg, #f7f4ea 0%, #f4f7fb 44%, #eef3f8 100%);
-  --header-height: clamp(124px, 15vh, 156px);
-  --sidebar-width: clamp(220px, 15vw, 260px);
+  --header-height: clamp(84px, 9vh, 112px);
+  --sidebar-width: clamp(190px, 14vw, 260px);
   --page-gap: 16px;
   --page-padding: 16px;
   --card-radius: 24px;
@@ -515,7 +515,7 @@ button.quant-scan-event-item {
 
 .site-header h1 {
   margin: 0;
-  font-size: clamp(31px, 3.2vw, 44px);
+  font-size: clamp(26px, 2.3vw, 36px);
   line-height: 1.05;
   letter-spacing: 0.05em;
 }
@@ -528,8 +528,8 @@ button.quant-scan-event-item {
 
 .brand-logo {
   width: auto;
-  max-width: min(320px, 28vw);
-  height: min(118px, calc(var(--header-height) - 14px));
+  max-width: min(260px, 24vw);
+  height: min(88px, calc(var(--header-height) - 14px));
   object-fit: contain;
   object-position: left center;
   border-radius: 0;
@@ -858,8 +858,9 @@ button.quant-scan-event-item {
   width: var(--sidebar-width);
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 24px;
+  overflow-y: auto;
 }
 
 .dashboard-main {
@@ -867,6 +868,8 @@ button.quant-scan-event-item {
   display: flex;
   flex-direction: column;
   gap: 28px;
+  container-type: inline-size;
+  container-name: dashboard-main;
 }
 
 .card {
@@ -2006,6 +2009,118 @@ button.quant-scan-event-item {
   padding-top: 6px;
 }
 
+/* Let dense dashboard pages react to the space left after the app sidebar.
+   This keeps charts usable under laptop resolution and OS display scaling. */
+@container dashboard-main (max-width: 1320px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+  }
+
+  .hero-column-left,
+  .hero-column-right {
+    grid-template-rows: auto;
+  }
+
+  .quant-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .quant-filter-sidebar {
+    position: static;
+  }
+
+  .quant-filter-card {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .quant-filter-sections {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .quant-filter-sidebar .quant-sequence-condition-grid,
+  .quant-filter-sidebar .quant-rule-condition-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .quant-filter-sidebar .quant-rule-delete-btn {
+    grid-column: 1 / -1;
+    justify-self: flex-start;
+  }
+}
+
+@media (max-width: 1500px) {
+  :root {
+    --page-gap: 12px;
+    --page-padding: 12px;
+  }
+
+  .site-header {
+    gap: 12px;
+  }
+
+  .brand-lockup {
+    gap: 12px;
+  }
+
+  .brand-logo {
+    max-width: min(210px, 20vw);
+  }
+
+  .brand-subtitle {
+    font-size: 10px;
+  }
+
+  .site-header-actions {
+    gap: 8px;
+  }
+
+  .notification-trigger {
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+  }
+
+  .account-menu-trigger {
+    min-width: 210px;
+    min-height: 48px;
+    padding: 6px 10px;
+  }
+
+  .account-avatar {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+  }
+
+  .sidebar {
+    gap: 14px;
+  }
+
+  .sidebar-block h2 {
+    font-size: 20px;
+  }
+
+  .sidebar-nav {
+    gap: 7px;
+  }
+
+  .sidebar-link {
+    padding: 10px 12px;
+    border-radius: 12px;
+    font-size: 14px;
+  }
+
+  .dashboard-main {
+    gap: 20px;
+  }
+}
+
 @media (max-width: 1180px) {
   .quant-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3036,6 +3151,15 @@ button.quant-scan-event-item {
     position: static;
     width: auto;
     margin-bottom: 18px;
+    gap: 12px;
+  }
+
+  .sidebar-nav {
+    grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+  }
+
+  .sidebar-link {
+    text-align: center;
   }
 
   .dashboard-main {
@@ -3081,6 +3205,22 @@ button.quant-scan-event-item {
 }
 
 @media (max-width: 900px) {
+  .site-header {
+    flex-wrap: wrap;
+  }
+
+  .brand-lockup {
+    min-width: 0;
+  }
+
+  .brand-copy {
+    min-width: 0;
+  }
+
+  .site-header-actions {
+    margin-left: 0;
+  }
+
   .summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3198,6 +3338,10 @@ button.quant-scan-event-item {
   .quant-filter-row-grid {
     grid-template-columns: 1fr;
   }
+
+  .quant-filter-sections {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -3211,8 +3355,16 @@ button.quant-scan-event-item {
 
   .brand-logo {
     width: auto;
-    max-width: min(220px, 48vw);
-    height: min(88px, calc(var(--header-height) - 18px));
+    max-width: min(132px, 34vw);
+    height: 58px;
+  }
+
+  .site-header h1 {
+    font-size: 21px;
+  }
+
+  .brand-subtitle {
+    display: none;
   }
 
   .summary {
@@ -3221,10 +3373,31 @@ button.quant-scan-event-item {
 
   .site-header-actions {
     width: 100%;
-    justify-content: flex-end;
+    justify-content: space-between;
   }
 
-  .account-menu-trigger,
+  .account-menu-wrap {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .account-menu-trigger {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .account-menu-trigger .account-copy {
+    flex: 1 1 auto;
+  }
+
+  .account-role {
+    display: none;
+  }
+
+  .account-menu-trigger {
+    min-width: 0;
+  }
+
   .account-dropdown {
     min-width: min(100vw - 40px, 320px);
     width: 100%;

@@ -234,6 +234,12 @@ export interface IndexFundPurchaseLimitPoint {
   limited_fund_pct: number
 }
 
+export interface IndexCnMarketFearGreedPoint {
+  trade_date: string
+  fear_greed_value: number
+  sentiment_label: string
+}
+
 export interface IndexMarginTradingPoint {
   trade_date: string
   financing_balance: number | null
@@ -241,6 +247,28 @@ export interface IndexMarginTradingPoint {
   total_balance: number | null
   financing_net_buy_amount: number | null
   leverage_ratio_pct: number | null
+  total_market_cap_leverage_ratio_pct: number | null
+}
+
+export interface IndexMarginFinancingNetBuySumPoint {
+  trade_date: string
+  sum_5d: number | null
+  sum_7d: number | null
+  sum_14d: number | null
+  sum_20d: number | null
+  sum_30d: number | null
+  sum_60d: number | null
+  sum_120d: number | null
+}
+
+export interface IndexSelfSentimentPoint {
+  trade_date: string
+  score: number | null
+  core_score: number | null
+  derivative_score: number | null
+  component_count: number
+  components: Record<string, number | null>
+  version: string
 }
 
 export interface IndexUsTreasuryYieldPoint {
@@ -268,6 +296,7 @@ export interface IndexDashboardResponse {
   range_mode: 'recent' | 'full' | 'window'
   candles: KlineCandle[]
   emotion_points: IndexDashboardEmotionPoint[]
+  cn_market_fear_greed_points: IndexCnMarketFearGreedPoint[]
   basis_points: IndexDashboardBasisPoint[]
   breadth_points: IndexBreadthPoint[]
   vix_points: IndexVixPoint[]
@@ -283,6 +312,8 @@ export interface IndexDashboardResponse {
   basis_delta_points: IndexBasisDeltaPoint[]
   fund_purchase_limit_points: IndexFundPurchaseLimitPoint[]
   margin_trading_points: IndexMarginTradingPoint[]
+  margin_financing_net_buy_sum_points: IndexMarginFinancingNetBuySumPoint[]
+  self_sentiment_points: IndexSelfSentimentPoint[]
   us_treasury_yield_points: IndexUsTreasuryYieldPoint[]
   us_credit_spread_points: IndexUsCreditSpreadPoint[]
 }

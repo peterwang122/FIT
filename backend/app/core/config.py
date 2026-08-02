@@ -157,6 +157,11 @@ class Settings(BaseSettings):
     index_us_fear_greed_daily_value_column: str = "fear_greed_value"
     index_us_fear_greed_daily_label_column: str = "sentiment_label"
 
+    index_cn_market_fear_greed_daily_table_name: str = "index_cn_market_fear_greed_daily"
+    index_cn_market_fear_greed_daily_date_column: str = "trade_date"
+    index_cn_market_fear_greed_daily_value_column: str = "fear_greed_value"
+    index_cn_market_fear_greed_daily_label_column: str = "sentiment_label"
+
     index_us_hedge_proxy_table_name: str = "index_us_hedge_fund_ls_proxy"
     index_us_hedge_proxy_report_date_column: str = "report_date"
     index_us_hedge_proxy_scope_column: str = "contract_scope"

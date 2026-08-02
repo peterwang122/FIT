@@ -45,6 +45,9 @@ def test_index_snapshot_reads_precomputed_margin_trading_values():
             "margin_total_balance": 2_849_479_793_129,
             "margin_financing_net_buy_amount": -28_586_475_046,
             "margin_leverage_ratio_pct": 2.991798,
+            "margin_total_market_cap_leverage_ratio_pct": 2.621472,
+            "margin_financing_net_buy_sum_5d": -50_000_000_000,
+            "margin_financing_net_buy_sum_20d": 120_000_000_000,
         }
     ]
 
@@ -61,6 +64,9 @@ def test_index_snapshot_reads_precomputed_margin_trading_values():
     assert values["margin-total-balance"] == 2_849_479_793_129
     assert values["margin-financing-net-buy"] == -28_586_475_046
     assert values["margin-leverage-ratio"] == 2.991798
+    assert values["margin-total-market-cap-leverage-ratio"] == 2.621472
+    assert values["margin-financing-net-buy-sum-5d"] == -500
+    assert values["margin-financing-net-buy-sum-20d"] == 1200
 
 
 def test_null_margin_trading_value_does_not_match_filter():
@@ -90,6 +96,38 @@ def test_null_margin_leverage_ratio_does_not_match_filter():
 
     assert not service._matches_rule_condition(
         {"values": {"margin-leverage-ratio": None}},
+        condition,
+        MARGIN_TRADING_FILTER_KEYS,
+    )
+
+
+def test_null_total_market_cap_leverage_ratio_does_not_match_filter():
+    service = _service()
+    condition = {
+        "type": "numeric",
+        "field": "margin-total-market-cap-leverage-ratio",
+        "operator": "gt",
+        "value": 2.5,
+    }
+
+    assert not service._matches_rule_condition(
+        {"values": {"margin-total-market-cap-leverage-ratio": None}},
+        condition,
+        MARGIN_TRADING_FILTER_KEYS,
+    )
+
+
+def test_null_margin_financing_net_buy_sum_does_not_match_filter():
+    service = _service()
+    condition = {
+        "type": "numeric",
+        "field": "margin-financing-net-buy-sum-20d",
+        "operator": "gt",
+        "value": 0,
+    }
+
+    assert not service._matches_rule_condition(
+        {"values": {"margin-financing-net-buy-sum-20d": None}},
         condition,
         MARGIN_TRADING_FILTER_KEYS,
     )
