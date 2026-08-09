@@ -136,6 +136,7 @@ function mergeNetPositionSeries(
   if (!incoming) return existing
   return {
     citic_customer: mergeNetPositionGroup(existing.citic_customer, incoming.citic_customer),
+    guotai_customer: mergeNetPositionGroup(existing.guotai_customer, incoming.guotai_customer),
     top20_institutions: mergeNetPositionGroup(existing.top20_institutions, incoming.top20_institutions),
   }
 }
@@ -144,6 +145,7 @@ function extractEarliestNetPositionTradeDate(series: NetPositionSeries | null): 
   if (!series) return null
   const tradeDates = [
     ...Object.values(series.citic_customer?.series ?? {}).flatMap((items) => items.map((item) => item.trade_date)),
+    ...Object.values(series.guotai_customer?.series ?? {}).flatMap((items) => items.map((item) => item.trade_date)),
     ...Object.values(series.top20_institutions?.series ?? {}).flatMap((items) => items.map((item) => item.trade_date)),
   ]
     .filter(Boolean)

@@ -91,6 +91,7 @@ class NetPositionSeriesGroupResponse(BaseModel):
 
 class NetPositionSeriesResponse(BaseModel):
     citic_customer: NetPositionSeriesGroupResponse
+    guotai_customer: NetPositionSeriesGroupResponse
     top20_institutions: NetPositionSeriesGroupResponse
 
 
@@ -127,6 +128,20 @@ class IndexDashboardCnMarketFearGreedPointResponse(BaseModel):
     trade_date: date
     fear_greed_value: float
     sentiment_label: str = ""
+
+
+class IndexDashboardCnBaifenweiFearGreedPointResponse(BaseModel):
+    trade_date: date
+    fear_greed_value: float
+    sentiment_label: str = ""
+    volatility_score: float
+    relative_turnover_score: float
+    margin_trading_score: float
+    market_breadth_score: float
+    rsi_score: float
+    limit_up_down_ratio_score: float
+    market_index_value: float | None = None
+    value_origin: str = ""
 
 
 class IndexDashboardBasisPointResponse(BaseModel):
@@ -361,6 +376,9 @@ class IndexDashboardResponse(BaseModel):
     candles: list[StockCandle]
     emotion_points: list[IndexDashboardEmotionPointResponse]
     cn_market_fear_greed_points: list[IndexDashboardCnMarketFearGreedPointResponse] = Field(default_factory=list)
+    cn_baifenwei_fear_greed_points: list[IndexDashboardCnBaifenweiFearGreedPointResponse] = Field(
+        default_factory=list
+    )
     basis_points: list[IndexDashboardBasisPointResponse]
     breadth_points: list[IndexBreadthPointResponse]
     vix_points: list[IndexDashboardVixPointResponse]

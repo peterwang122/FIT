@@ -299,6 +299,15 @@ const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
     description: '21:50同步 MIUMIU 大盘总体恐贪指数的完整公开窗口，并自动回补网站修订或新增的历史记录。',
   },
   {
+    value: 'index_cn_baifenwei_fear_greed_daily',
+    label: '百分位A股恐贪指数日更',
+    group: '独立日更',
+    marketScope: 'cn_stock',
+    targetType: null,
+    requiresTargetSelection: false,
+    description: '23:10同步百分位A股恐贪综合分与六个分项，并按公开权重重建和回补完整历史。',
+  },
+  {
     value: 'excel_emotion_import',
     label: '情绪指标 Excel 导入',
     group: '手动任务',

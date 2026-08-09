@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LineSeries, createChart, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts'
+import { LineSeries, LineStyle, createChart, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts'
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import type { MacroPoint } from '../types/macro'
@@ -8,12 +8,16 @@ interface SeriesDefinition {
   key: keyof MacroPoint
   label: string
   color: string
+  lineWidth?: 1 | 2 | 3 | 4
+  lineStyle?: LineStyle
+  lastValueVisible?: boolean
 }
 
 const props = defineProps<{
   points: MacroPoint[]
   series: SeriesDefinition[]
   unit: string
+  precision?: number
   visibleStartDate?: string
 }>()
 
@@ -77,16 +81,17 @@ async function renderChart() {
       horzLine: { color: '#94a3b8', labelBackgroundColor: '#334155' },
     },
     localization: {
-      priceFormatter: (value: number) => `${value.toFixed(2)}${props.unit}`,
+      priceFormatter: (value: number) => `${value.toFixed(props.precision ?? 2)}${props.unit}`,
     },
   })
 
   lineSeries = props.series.map((item) => {
     const series = chart!.addSeries(LineSeries, {
       color: item.color,
-      lineWidth: 2,
+      lineWidth: item.lineWidth ?? 2,
+      lineStyle: item.lineStyle ?? LineStyle.Solid,
       priceLineVisible: false,
-      lastValueVisible: true,
+      lastValueVisible: item.lastValueVisible ?? true,
     })
     series.setData(
       props.points.flatMap((point) => {
@@ -114,7 +119,7 @@ async function renderChart() {
   updateHover()
 }
 
-watch(() => [props.points, props.series, props.unit], renderChart, { deep: true, immediate: true })
+watch(() => [props.points, props.series, props.unit, props.precision], renderChart, { deep: true, immediate: true })
 watch(() => props.visibleStartDate, applyVisibleRange)
 onBeforeUnmount(disposeChart)
 </script>
@@ -126,7 +131,7 @@ onBeforeUnmount(disposeChart)
       <span v-for="item in hoverValues" :key="item.label" class="macro-chart-legend-item">
         <i :style="{ backgroundColor: item.color }"></i>
         {{ item.label }}
-        <strong>{{ item.value == null ? '-' : `${item.value.toFixed(2)}${unit}` }}</strong>
+        <strong>{{ item.value == null ? '-' : `${item.value.toFixed(precision ?? 2)}${unit}` }}</strong>
       </span>
     </div>
     <div ref="containerRef" class="macro-chart"></div>

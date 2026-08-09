@@ -38,6 +38,23 @@ class Settings(BaseSettings):
     github_api_base_url: str = "https://api.github.com"
     github_request_timeout_seconds: int = 30
 
+    codex_reset_watchdog_enabled: bool = True
+    codex_reset_watchdog_source_url: str = (
+        "https://api.dayclaw.com/api/source/public/x/thsottiaux/items"
+    )
+    codex_reset_watchdog_state_file: str = "runtime/state/codex_reset_watchdog.json"
+    codex_reset_watchdog_request_timeout_seconds: int = 20
+    codex_reset_watchdog_retry_attempts: int = 3
+    codex_reset_watchdog_retry_backoff_seconds: int = 5
+    codex_reset_watchdog_failure_notification_threshold: int = 3
+    codex_reset_watchdog_failure_notification_interval: int = 24
+    codex_reset_watchdog_lock_ttl_seconds: int = 900
+    codex_reset_watchdog_translation_enabled: bool = True
+    codex_reset_watchdog_translation_url: str = "https://translate.googleapis.com/translate_a/single"
+    codex_reset_watchdog_translation_fallback_url: str = "https://api.mymemory.translated.net/get"
+    codex_reset_watchdog_translation_timeout_seconds: int = 20
+    codex_reset_watchdog_translation_retry_attempts: int = 2
+
     # read-only existing table mapping (defaults aligned with current DB)
     stock_table_name: str = "stock_daily_data"
     stock_code_column: str = "stock_code"
@@ -161,6 +178,9 @@ class Settings(BaseSettings):
     index_cn_market_fear_greed_daily_date_column: str = "trade_date"
     index_cn_market_fear_greed_daily_value_column: str = "fear_greed_value"
     index_cn_market_fear_greed_daily_label_column: str = "sentiment_label"
+
+    index_cn_baifenwei_fear_greed_daily_table_name: str = "index_cn_baifenwei_fear_greed_daily"
+    index_cn_baifenwei_fear_greed_daily_date_column: str = "trade_date"
 
     index_us_hedge_proxy_table_name: str = "index_us_hedge_fund_ls_proxy"
     index_us_hedge_proxy_report_date_column: str = "report_date"

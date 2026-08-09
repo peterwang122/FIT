@@ -240,6 +240,20 @@ export interface IndexCnMarketFearGreedPoint {
   sentiment_label: string
 }
 
+export interface IndexCnBaifenweiFearGreedPoint {
+  trade_date: string
+  fear_greed_value: number
+  sentiment_label: string
+  volatility_score: number
+  relative_turnover_score: number
+  margin_trading_score: number
+  market_breadth_score: number
+  rsi_score: number
+  limit_up_down_ratio_score: number
+  market_index_value: number | null
+  value_origin: 'published' | 'reconstructed' | string
+}
+
 export interface IndexMarginTradingPoint {
   trade_date: string
   financing_balance: number | null
@@ -297,6 +311,7 @@ export interface IndexDashboardResponse {
   candles: KlineCandle[]
   emotion_points: IndexDashboardEmotionPoint[]
   cn_market_fear_greed_points: IndexCnMarketFearGreedPoint[]
+  cn_baifenwei_fear_greed_points: IndexCnBaifenweiFearGreedPoint[]
   basis_points: IndexDashboardBasisPoint[]
   breadth_points: IndexBreadthPoint[]
   vix_points: IndexVixPoint[]
@@ -343,6 +358,7 @@ export interface NetPositionTables {
 }
 
 export type CffexSeriesKey = 'OVERALL' | 'IF' | 'IH' | 'IC' | 'IM'
+export type CffexCustomerMemberKey = 'citic_customer' | 'guotai_customer'
 
 export interface NetPositionSeriesPoint {
   trade_date: string
@@ -356,6 +372,7 @@ export interface NetPositionSeriesGroup {
 
 export interface NetPositionSeries {
   citic_customer: NetPositionSeriesGroup
+  guotai_customer: NetPositionSeriesGroup
   top20_institutions: NetPositionSeriesGroup
 }
 

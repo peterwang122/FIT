@@ -245,6 +245,13 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "requires_target": False,
         "endpoint": "/collect-index-cn-market-fear-greed-daily",
     },
+    "index_cn_baifenwei_fear_greed_daily": {
+        "label": "百分位A股恐贪指数日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-cn-baifenwei-fear-greed-daily",
+    },
     "excel_emotion_import": {
         "label": "情绪指标 Excel 导入",
         "market_scope": "cn_stock",
@@ -340,6 +347,7 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "index_qvix_daily": "QVIX 日更",
     "index_news_sentiment_daily": "新闻情绪日更",
     "index_cn_market_fear_greed_daily": "A股大盘恐贪指数日更",
+    "index_cn_baifenwei_fear_greed_daily": "百分位A股恐贪指数日更",
     "excel_emotion_import": "情绪指标 Excel 导入",
     "douyin_coze_emotion_daily": "抖音四大指数情绪日更",
     "index_us_vix_daily": "美股 VIX 日更",
@@ -397,6 +405,13 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
     ],
     "index_cn_daily": [
         CollectionDataProbe(settings.index_daily_table_name, settings.index_daily_date_column, "A股指数日线"),
+        CollectionDataProbe(
+            settings.index_daily_table_name,
+            settings.index_daily_date_column,
+            "中证红利指数日线",
+            where_sql=f"AND {_quoted_identifier(settings.index_daily_code_column)} = :csi_dividend_code",
+            params={"csi_dividend_code": "sh000922"},
+        ),
     ],
     "index_bj50_daily": [
         CollectionDataProbe(
@@ -714,6 +729,13 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
             "index_cn_market_fear_greed_daily",
             "trade_date",
             "A股大盘总体恐贪指数",
+        ),
+    ],
+    "index_cn_baifenwei_fear_greed_daily": [
+        CollectionDataProbe(
+            "index_cn_baifenwei_fear_greed_daily",
+            "trade_date",
+            "百分位A股恐贪指数",
         ),
     ],
     "index_us_vix_daily": [
@@ -2204,6 +2226,7 @@ class TaskService:
             "quant_index_daily",
             "index_qvix_daily",
             "index_cn_market_fear_greed_daily",
+            "index_cn_baifenwei_fear_greed_daily",
             "hk_index_futures_daily",
         }:
             explicit_target_trade_date = self._collection_target_trade_date_for_task(collector_key, task, reference_dt)
@@ -2217,6 +2240,7 @@ class TaskService:
                 "margin_trading_daily",
                 "fund_purchase_limit_daily",
                 "index_cn_market_fear_greed_daily",
+                "index_cn_baifenwei_fear_greed_daily",
                 "hk_index_futures_daily",
             }:
                 collection_payload = {"target_date": explicit_target_trade_date.isoformat()}
@@ -2458,7 +2482,10 @@ class TaskService:
         if collector_key == "douyin_coze_emotion_daily":
             self.stock_service.clear_index_emotions_cache()
             self.quant_service.clear_index_dashboard_cache("cn")
-        elif collector_key == "index_cn_market_fear_greed_daily":
+        elif collector_key in {
+            "index_cn_market_fear_greed_daily",
+            "index_cn_baifenwei_fear_greed_daily",
+        }:
             self.quant_service.clear_index_dashboard_cache("cn")
 
         if result_value not in (None, ""):

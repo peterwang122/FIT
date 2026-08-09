@@ -96,11 +96,18 @@ function formatNotificationTime(rawValue: string | null) {
 }
 
 async function openNotification(item: UserNotification) {
+  const isExternalUrl = Boolean(item.action_url && /^https?:\/\//i.test(item.action_url))
+  if (isExternalUrl && item.action_url) {
+    window.open(item.action_url, '_blank', 'noopener,noreferrer')
+  }
   if (!item.is_read) {
     await notificationStore.markRead(item.id)
   }
   closeMenus()
   if (item.action_url) {
+    if (isExternalUrl) {
+      return
+    }
     await router.push(item.action_url)
   }
 }
@@ -208,7 +215,7 @@ onBeforeUnmount(() => {
               </div>
               <div v-else class="notification-empty">
                 <strong>暂无消息</strong>
-                <span>新的策略派发与采集提醒会显示在这里。</span>
+                <span>策略、采集与系统监控提醒会显示在这里。</span>
               </div>
             </div>
           </div>

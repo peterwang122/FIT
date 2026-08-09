@@ -512,6 +512,16 @@ def ensure_runtime_tables() -> None:
         _ensure_default_collection_task(
             db,
             root_user,
+            collector_key="index_cn_baifenwei_fear_greed_daily",
+            name="百分位A股恐贪指数日更",
+            schedule_time="23:10",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
             collector_key="quant_index_daily",
             name="看板数据计算",
             schedule_time="22:30",

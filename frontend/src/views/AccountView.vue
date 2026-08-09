@@ -6,17 +6,23 @@ import {
   fetchPhddnsWatchdogStatus,
   updatePhddnsWatchdogStatus,
 } from '../api/system'
+import { fetchCodexResetWatchdogHistory } from '../api/notifications'
 import AppSidebar from '../components/AppSidebar.vue'
 import { useAuthStore } from '../stores/auth'
 import type { UpdatePreferencesPayload, UpdateProfilePayload } from '../types/auth'
+import type {
+  CodexResetStatus,
+  CodexResetWatchdogHistory,
+} from '../types/notification'
 import type { PhddnsWatchdogStatus } from '../types/system'
 
-type AccountTab = 'profile' | 'security' | 'preferences' | 'privacy'
+type AccountTab = 'profile' | 'security' | 'preferences' | 'codex' | 'privacy'
 
 const TAB_OPTIONS: Array<{ key: AccountTab; label: string; description: string }> = [
   { key: 'profile', label: '个人资料', description: '管理昵称、邮箱、公司与简介。' },
   { key: 'security', label: '账号安全', description: '管理密码、当前设备与最近登录记录。' },
   { key: 'preferences', label: '偏好设置', description: '设置主题、语言、通知与默认首页。' },
+  { key: 'codex', label: 'Codex 额度动态', description: '查看 Tibo 最近 30 条公开动态与重置信号。' },
   { key: 'privacy', label: '隐私与数据', description: '查看权限说明与后续开放能力。' },
 ]
 
@@ -56,8 +62,13 @@ const phddnsStatus = ref<PhddnsWatchdogStatus | null>(null)
 const phddnsLoading = ref(false)
 const phddnsSaving = ref(false)
 const phddnsMessage = ref('')
+const codexHistory = ref<CodexResetWatchdogHistory | null>(null)
+const codexHistoryLoading = ref(false)
+const codexHistoryError = ref('')
+let codexHistoryRequestId = 0
 
 const canManagePassword = computed(() => authStore.isAuthenticated && !authStore.isGuest)
+const visibleTabOptions = computed(() => TAB_OPTIONS.filter((item) => item.key !== 'codex' || authStore.isRoot))
 const accountDisplayName = computed(() => authStore.displayName || authStore.user?.username || '用户')
 const accountSecondaryLine = computed(() => authStore.secondaryIdentity || authStore.user?.username || '')
 const phddnsStateLabel = computed(() => {
@@ -90,7 +101,25 @@ function syncDrafts() {
 }
 
 function resolveTab(value: unknown): AccountTab {
-  return TAB_OPTIONS.some((item) => item.key === value) ? (value as AccountTab) : 'profile'
+  const tab = TAB_OPTIONS.some((item) => item.key === value) ? (value as AccountTab) : 'profile'
+  return tab === 'codex' && !authStore.isRoot ? 'profile' : tab
+}
+
+async function loadCodexHistory() {
+  if (!authStore.isRoot) return
+  const requestId = ++codexHistoryRequestId
+  codexHistoryLoading.value = true
+  codexHistoryError.value = ''
+  try {
+    const result = await fetchCodexResetWatchdogHistory()
+    if (requestId === codexHistoryRequestId) codexHistory.value = result
+  } catch (loadError) {
+    if (requestId === codexHistoryRequestId) {
+      codexHistoryError.value = loadError instanceof Error ? loadError.message : 'Codex 额度动态加载失败'
+    }
+  } finally {
+    if (requestId === codexHistoryRequestId) codexHistoryLoading.value = false
+  }
 }
 
 async function ensureSessionsLoaded() {
@@ -216,6 +245,18 @@ function formatTime(value: string | null) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function formatSourceTime(value: string | null) {
+  if (!value) return '时间未知'
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`
+  return formatTime(normalized)
+}
+
+function resetStatusLabel(status: CodexResetStatus) {
+  if (status === 'scheduled') return '额度重置预告'
+  if (status === 'completed') return '额度已重置'
+  return '重置信号待核对'
+}
+
 function switchTab(tab: AccountTab) {
   activeTab.value = tab
   void router.replace({
@@ -225,9 +266,10 @@ function switchTab(tab: AccountTab) {
 }
 
 watch(
-  () => route.query.tab,
-  (value) => {
+  [() => route.query.tab, () => authStore.isRoot],
+  ([value]) => {
     activeTab.value = resolveTab(value)
+    if (activeTab.value === 'codex') void loadCodexHistory()
   },
   { immediate: true },
 )
@@ -289,7 +331,7 @@ onMounted(async () => {
       <section class="account-layout">
         <aside class="card account-nav">
           <button
-            v-for="item in TAB_OPTIONS"
+            v-for="item in visibleTabOptions"
             :key="item.key"
             type="button"
             class="account-nav-item"
@@ -522,6 +564,81 @@ onMounted(async () => {
                 <span v-for="line in phddnsStatus.log_lines" :key="line">{{ line }}</span>
               </div>
             </section>
+          </template>
+
+          <template v-else-if="activeTab === 'codex'">
+            <div class="account-panel-head">
+              <div>
+                <h3>Codex 额度动态</h3>
+                <p class="muted">Tibo 最近 30 条公开动态，额度重置相关内容会单独标记。</p>
+              </div>
+              <button class="btn btn-secondary" :disabled="codexHistoryLoading" @click="loadCodexHistory">
+                {{ codexHistoryLoading ? '刷新中...' : '刷新' }}
+              </button>
+            </div>
+
+            <div v-if="codexHistory" class="codex-history-summary">
+              <div>
+                <span>当前归档</span>
+                <strong>{{ codexHistory.archived_count }} / {{ codexHistory.max_items }}</strong>
+              </div>
+              <div>
+                <span>来源账号</span>
+                <strong>@{{ codexHistory.source_handle }}</strong>
+              </div>
+              <div>
+                <span>最近检查</span>
+                <strong>{{ formatTime(codexHistory.last_success_at) }}</strong>
+              </div>
+            </div>
+
+            <p v-if="codexHistoryError" class="banner-error">{{ codexHistoryError }}</p>
+            <p v-if="codexHistoryLoading && !codexHistory" class="muted">正在读取已归档动态...</p>
+
+            <div v-else-if="codexHistory?.items.length" class="codex-history-list">
+              <article v-for="item in codexHistory.items" :key="item.item_id" class="codex-history-item">
+                <div class="codex-history-item-head">
+                  <div class="codex-history-meta">
+                    <strong>@{{ item.author || codexHistory.source_handle }}</strong>
+                    <span>{{ formatSourceTime(item.published_at) }}</span>
+                  </div>
+                  <span
+                    v-if="item.reset_status"
+                    class="codex-reset-badge"
+                    :class="`is-${item.reset_status}`"
+                    :title="item.reset_evidence || undefined"
+                  >
+                    {{ resetStatusLabel(item.reset_status) }}
+                  </span>
+                </div>
+                <div class="codex-history-copy">
+                  <span>英文原文</span>
+                  <p>{{ item.text }}</p>
+                </div>
+                <div v-if="item.translation_zh" class="codex-history-copy is-translation">
+                  <span>中文翻译</span>
+                  <p>{{ item.translation_zh }}</p>
+                </div>
+                <a
+                  v-if="item.url"
+                  class="codex-history-link"
+                  :href="item.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  查看原文
+                </a>
+              </article>
+            </div>
+
+            <p v-else-if="!codexHistoryLoading" class="muted">暂无已归档动态，监控首次成功后会自动写入。</p>
+
+            <p
+              v-if="codexHistory && codexHistory.archived_count < codexHistory.max_items"
+              class="codex-history-note"
+            >
+              公开接口单次只返回最近 10 条；监控会持续归档新动态，补满后固定滚动保留最近 30 条。
+            </p>
           </template>
 
           <template v-else>

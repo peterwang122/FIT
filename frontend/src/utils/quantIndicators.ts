@@ -15,6 +15,7 @@ import type {
   IndexBasisDeltaPoint,
   IndexBreadthPoint,
   IndexCffexNetShortDeltaPoint,
+  IndexCnBaifenweiFearGreedPoint,
   IndexCnMarketFearGreedPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
@@ -60,6 +61,13 @@ function supportsVixSeries(symbolName: string) {
 export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'emotion',
   'cn-market-fear-greed',
+  'cn-baifenwei-fear-greed',
+  'cn-baifenwei-volatility',
+  'cn-baifenwei-relative-turnover',
+  'cn-baifenwei-margin-trading',
+  'cn-baifenwei-market-breadth',
+  'cn-baifenwei-rsi',
+  'cn-baifenwei-limit-up-down-ratio',
   'self-sentiment-score',
   'basis-main',
   'basis-month',
@@ -873,6 +881,7 @@ type IndexDatasetOptions = {
   marginFinancingNetBuySumPoints?: IndexMarginFinancingNetBuySumPoint[]
   selfSentimentPoints?: IndexSelfSentimentPoint[]
   cnMarketFearGreedPoints?: IndexCnMarketFearGreedPoint[]
+  cnBaifenweiFearGreedPoints?: IndexCnBaifenweiFearGreedPoint[]
   usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints?: IndexUsCreditSpreadPoint[]
 }
@@ -920,6 +929,13 @@ function buildIndexQuantFilterFields(
     fields.unshift(
       { key: 'emotion', group: 'emotion', label: '情绪指标' },
       { key: 'cn-market-fear-greed', group: 'emotion', label: '大盘总体恐贪指数' },
+      { key: 'cn-baifenwei-fear-greed', group: 'emotion', label: '百分位恐贪综合分' },
+      { key: 'cn-baifenwei-volatility', group: 'emotion', label: '百分位恐贪·波动率' },
+      { key: 'cn-baifenwei-relative-turnover', group: 'emotion', label: '百分位恐贪·相对换手率' },
+      { key: 'cn-baifenwei-margin-trading', group: 'emotion', label: '百分位恐贪·融资融券' },
+      { key: 'cn-baifenwei-market-breadth', group: 'emotion', label: '百分位恐贪·市场宽度' },
+      { key: 'cn-baifenwei-rsi', group: 'emotion', label: '百分位恐贪·RSI' },
+      { key: 'cn-baifenwei-limit-up-down-ratio', group: 'emotion', label: '百分位恐贪·涨跌停比' },
       { key: 'breadth-up-pct', group: 'breadth', label: '上涨家数百分比' },
     )
   }
@@ -1226,6 +1242,7 @@ export function buildIndexQuantFilterDataset(
   const marginFinancingNetBuySumPoints = options.marginFinancingNetBuySumPoints ?? []
   const selfSentimentPoints = options.selfSentimentPoints ?? []
   const cnMarketFearGreedPoints = options.cnMarketFearGreedPoints ?? []
+  const cnBaifenweiFearGreedPoints = options.cnBaifenweiFearGreedPoints ?? []
   const usTreasuryYieldPoints = options.usTreasuryYieldPoints ?? []
   const usCreditSpreadPoints = options.usCreditSpreadPoints ?? []
   const relatedVixSeries = options.relatedVixSeries ?? []
@@ -1484,6 +1501,9 @@ export function buildIndexQuantFilterDataset(
       Number.isFinite(Number(item.fear_greed_value)) ? Number(item.fear_greed_value) : null,
     ]),
   )
+  const cnBaifenweiFearGreedByDate = new Map(
+    cnBaifenweiFearGreedPoints.map((item) => [item.trade_date, item]),
+  )
   const alignedUsHedgeRows = alignSparseRowsToTradeDates(
     baseSnapshots.map((item) => item.tradeDate),
     usHedgeProxyPoints,
@@ -1505,6 +1525,17 @@ export function buildIndexQuantFilterDataset(
       ...snapshot.values,
       emotion: emotion?.data[index]?.value ?? null,
       'cn-market-fear-greed': cnMarketFearGreedByDate.get(snapshot.tradeDate) ?? null,
+      'cn-baifenwei-fear-greed': cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.fear_greed_value ?? null,
+      'cn-baifenwei-volatility': cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.volatility_score ?? null,
+      'cn-baifenwei-relative-turnover':
+        cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.relative_turnover_score ?? null,
+      'cn-baifenwei-margin-trading':
+        cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.margin_trading_score ?? null,
+      'cn-baifenwei-market-breadth':
+        cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.market_breadth_score ?? null,
+      'cn-baifenwei-rsi': cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.rsi_score ?? null,
+      'cn-baifenwei-limit-up-down-ratio':
+        cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.limit_up_down_ratio_score ?? null,
       'self-sentiment-score': selfSentimentByDate.get(snapshot.tradeDate) ?? null,
       'basis-main': basis?.main.data[index]?.value ?? null,
       'basis-main-adjusted': includeBasisAdjusted ? (basis?.adjusted?.data[index]?.value ?? null) : null,

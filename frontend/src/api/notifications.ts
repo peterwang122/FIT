@@ -1,5 +1,9 @@
 import { http } from './client'
-import type { NotificationListResponse, UserNotification } from '../types/notification'
+import type {
+  CodexResetWatchdogHistory,
+  NotificationListResponse,
+  UserNotification,
+} from '../types/notification'
 
 interface ApiResponse<T> {
   code: number
@@ -19,5 +23,12 @@ export async function markNotificationRead(notificationId: number) {
 
 export async function markAllNotificationsRead() {
   const { data } = await http.post<ApiResponse<NotificationListResponse>>('/notifications/read-all')
+  return data.data
+}
+
+export async function fetchCodexResetWatchdogHistory() {
+  const { data } = await http.get<ApiResponse<CodexResetWatchdogHistory>>(
+    '/notifications/codex-reset-watchdog/history',
+  )
   return data.data
 }

@@ -8,7 +8,7 @@ import KlineChart from '../components/KlineChart.vue'
 import NetPositionLineChart from '../components/NetPositionLineChart.vue'
 import NetPositionTable from '../components/NetPositionTable.vue'
 import { useStockStore } from '../stores/stock'
-import type { CffexSeriesKey } from '../types/stock'
+import type { CffexCustomerMemberKey, CffexSeriesKey } from '../types/stock'
 
 const NET_POSITION_VIEW_OPTIONS = [
   { value: 'table', label: '表格' },
@@ -21,6 +21,11 @@ const NET_POSITION_SERIES_OPTIONS: { value: CffexSeriesKey; label: string }[] = 
   { value: 'IH', label: 'IH' },
   { value: 'IC', label: 'IC' },
   { value: 'IM', label: 'IM' },
+]
+
+const NET_POSITION_MEMBER_OPTIONS: { value: CffexCustomerMemberKey; label: string }[] = [
+  { value: 'citic_customer', label: '中信期货（代客）' },
+  { value: 'guotai_customer', label: '国泰君安（代客）' },
 ]
 
 const stockStore = useStockStore()
@@ -55,6 +60,7 @@ const {
 const netPositionDateInput = ref('')
 const netPositionViewMode = ref<'table' | 'chart'>('table')
 const netPositionSeriesKey = ref<CffexSeriesKey>('OVERALL')
+const netPositionMemberKey = ref<CffexCustomerMemberKey>('citic_customer')
 
 const latestIndexSnapshot = computed(() =>
   indexCandles.value.length ? indexCandles.value[indexCandles.value.length - 1] : undefined,
@@ -64,8 +70,13 @@ const latestForexSnapshot = computed(() =>
 )
 const selectedIndexName = computed(() => stockStore.selectedIndexName)
 const selectedForexName = computed(() => stockStore.selectedForexName)
-const citicNetPositionSeriesPoints = computed(
-  () => netPositionSeries.value?.citic_customer?.series?.[netPositionSeriesKey.value] ?? [],
+const selectedNetPositionMemberLabel = computed(
+  () =>
+    NET_POSITION_MEMBER_OPTIONS.find((item) => item.value === netPositionMemberKey.value)?.label ??
+    '中信期货（代客）',
+)
+const memberNetPositionSeriesPoints = computed(
+  () => netPositionSeries.value?.[netPositionMemberKey.value]?.series?.[netPositionSeriesKey.value] ?? [],
 )
 const top20NetPositionSeriesPoints = computed(
   () => netPositionSeries.value?.top20_institutions?.series?.[netPositionSeriesKey.value] ?? [],
@@ -116,7 +127,11 @@ onMounted(async () => {
                 </div>
 
                 <div class="positions-view-controls">
-                  <select v-model="netPositionViewMode" class="input select">
+                  <select
+                    v-model="netPositionViewMode"
+                    class="input select positions-view-select"
+                    aria-label="净持仓展示方式"
+                  >
                     <option v-for="item in NET_POSITION_VIEW_OPTIONS" :key="item.value" :value="item.value">
                       {{ item.label }}
                     </option>
@@ -124,8 +139,20 @@ onMounted(async () => {
 
                   <select
                     v-if="netPositionViewMode === 'chart'"
+                    v-model="netPositionMemberKey"
+                    class="input select positions-member-select"
+                    aria-label="净持仓机构"
+                  >
+                    <option v-for="item in NET_POSITION_MEMBER_OPTIONS" :key="item.value" :value="item.value">
+                      {{ item.label }}
+                    </option>
+                  </select>
+
+                  <select
+                    v-if="netPositionViewMode === 'chart'"
                     v-model="netPositionSeriesKey"
-                    class="input select"
+                    class="input select positions-series-select"
+                    aria-label="股指期货品种"
                   >
                     <option v-for="item in NET_POSITION_SERIES_OPTIONS" :key="item.value" :value="item.value">
                       {{ item.label }}
@@ -134,7 +161,7 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div class="positions-toolbar-controls">
+              <div v-if="netPositionViewMode === 'table'" class="positions-toolbar-controls">
                 <label for="position-date" class="label-inline">日期</label>
                 <input
                   id="position-date"
@@ -157,9 +184,9 @@ onMounted(async () => {
             </div>
             <div v-else class="net-tables-stack">
               <NetPositionLineChart
-                :key="`citic-${netPositionSeriesKey}`"
-                title="中信期货（代客）净空单折线图"
-                :points="citicNetPositionSeriesPoints"
+                :key="`${netPositionMemberKey}-${netPositionSeriesKey}`"
+                :title="`${selectedNetPositionMemberLabel}净空单折线图`"
+                :points="memberNetPositionSeriesPoints"
                 :loading="netPositionSeriesLoading"
                 :has-more-history="netPositionSeriesHasMoreHistory"
                 :loading-more-history="netPositionSeriesLoadingMore"

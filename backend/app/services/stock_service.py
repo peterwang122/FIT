@@ -64,12 +64,30 @@ CITIC_CUSTOMER_MEMBER_NAME_BROKER = "中信期货(经纪)"
 CITIC_CUSTOMER_MEMBER_NAME_LEGACY = "中信期货"
 CITIC_CUSTOMER_MEMBER_BROKER_START_DATE = date(2024, 2, 26)
 CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE = date(2024, 4, 29)
+GUOTAI_CUSTOMER_MEMBER_NAME = "国泰君安(代客)"
+GUOTAI_CUSTOMER_MEMBER_NAME_BROKER = "国泰君安(经纪)"
+GUOTAI_CUSTOMER_MEMBER_NAME_LEGACY = "国泰君安"
+GUOTAI_CUSTOMER_MEMBER_BROKER_START_DATE = date(2024, 2, 26)
+GUOTAI_CUSTOMER_MEMBER_CURRENT_START_DATE = date(2024, 4, 29)
+
+CFFEX_CUSTOMER_MEMBER_NAME_HISTORY: dict[str, tuple[tuple[date | None, str], ...]] = {
+    CITIC_CUSTOMER_MEMBER_NAME: (
+        (None, CITIC_CUSTOMER_MEMBER_NAME_LEGACY),
+        (CITIC_CUSTOMER_MEMBER_BROKER_START_DATE, CITIC_CUSTOMER_MEMBER_NAME_BROKER),
+        (CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE, CITIC_CUSTOMER_MEMBER_NAME),
+    ),
+    GUOTAI_CUSTOMER_MEMBER_NAME: (
+        (None, GUOTAI_CUSTOMER_MEMBER_NAME_LEGACY),
+        (GUOTAI_CUSTOMER_MEMBER_BROKER_START_DATE, GUOTAI_CUSTOMER_MEMBER_NAME_BROKER),
+        (GUOTAI_CUSTOMER_MEMBER_CURRENT_START_DATE, GUOTAI_CUSTOMER_MEMBER_NAME),
+    ),
+}
 
 INDEX_OPTIONS_CACHE_KEY_PREFIX = "fit:stock:index_options:v6"
 FOREX_OPTIONS_CACHE_KEY = "fit:stock:forex_options:v2"
 INDEX_EMOTIONS_CACHE_KEY_PREFIX = "fit:stock:index_emotions:v2"
 CFFEX_NET_POSITION_TABLES_CACHE_KEY_PREFIX = "fit:stock:cffex:tables:v2"
-CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX = "fit:stock:cffex:series:v2"
+CFFEX_NET_POSITION_SERIES_CACHE_KEY_PREFIX = "fit:stock:cffex:series:v3"
 INDEX_KLINE_CACHE_KEY_PREFIX = "fit:stock:index_kline:v1"
 FOREX_KLINE_CACHE_KEY_PREFIX = "fit:stock:forex_kline:v1"
 CACHE_TTL_SECONDS = 600
@@ -1119,42 +1137,51 @@ class StockService:
         )
 
     def _resolve_member_name_for_trade_date(self, member_name: str, trade_date: date | None) -> str:
-        if member_name != CITIC_CUSTOMER_MEMBER_NAME or trade_date is None:
+        member_name_history = CFFEX_CUSTOMER_MEMBER_NAME_HISTORY.get(member_name)
+        if member_name_history is None or trade_date is None:
             return member_name
-        if trade_date >= CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE:
-            return CITIC_CUSTOMER_MEMBER_NAME
-        if trade_date >= CITIC_CUSTOMER_MEMBER_BROKER_START_DATE:
-            return CITIC_CUSTOMER_MEMBER_NAME_BROKER
-        return CITIC_CUSTOMER_MEMBER_NAME_LEGACY
+
+        resolved_member_name = member_name_history[0][1]
+        for effective_date, historical_member_name in member_name_history:
+            if effective_date is not None and trade_date < effective_date:
+                break
+            resolved_member_name = historical_member_name
+        return resolved_member_name
 
     def _display_member_label_for_trade_date(self, member_name: str, trade_date: date | None) -> str:
         return self._resolve_member_name_for_trade_date(member_name, trade_date)
 
     def _member_match_sql(self, member_column: str, trade_date_column_sql: str, member_name: str) -> str:
         quoted_member_column = f"`{member_column}`"
-        if member_name != CITIC_CUSTOMER_MEMBER_NAME:
+        member_name_history = CFFEX_CUSTOMER_MEMBER_NAME_HISTORY.get(member_name)
+        if member_name_history is None:
             return f"{quoted_member_column} = :member_name"
 
-        return (
-            f"(({trade_date_column_sql} < :citic_member_broker_start_date "
-            f"AND {quoted_member_column} = :citic_member_name_legacy) "
-            f"OR ({trade_date_column_sql} >= :citic_member_broker_start_date "
-            f"AND {trade_date_column_sql} < :citic_member_current_start_date "
-            f"AND {quoted_member_column} = :citic_member_name_broker) "
-            f"OR ({trade_date_column_sql} >= :citic_member_current_start_date "
-            f"AND {quoted_member_column} = :citic_member_name_current))"
-        )
+        clauses: list[str] = []
+        for index, (effective_date, _historical_member_name) in enumerate(member_name_history):
+            next_effective_date = (
+                member_name_history[index + 1][0] if index + 1 < len(member_name_history) else None
+            )
+            conditions: list[str] = []
+            if effective_date is not None:
+                conditions.append(f"{trade_date_column_sql} >= :member_start_{index}")
+            if next_effective_date is not None:
+                conditions.append(f"{trade_date_column_sql} < :member_start_{index + 1}")
+            conditions.append(f"{quoted_member_column} = :member_name_{index}")
+            clauses.append(f"({' AND '.join(conditions)})")
+        return f"({' OR '.join(clauses)})"
 
     def _member_match_params(self, member_name: str) -> dict[str, object]:
-        if member_name != CITIC_CUSTOMER_MEMBER_NAME:
+        member_name_history = CFFEX_CUSTOMER_MEMBER_NAME_HISTORY.get(member_name)
+        if member_name_history is None:
             return {"member_name": member_name}
-        return {
-            "citic_member_broker_start_date": CITIC_CUSTOMER_MEMBER_BROKER_START_DATE,
-            "citic_member_current_start_date": CITIC_CUSTOMER_MEMBER_CURRENT_START_DATE,
-            "citic_member_name_legacy": CITIC_CUSTOMER_MEMBER_NAME_LEGACY,
-            "citic_member_name_broker": CITIC_CUSTOMER_MEMBER_NAME_BROKER,
-            "citic_member_name_current": CITIC_CUSTOMER_MEMBER_NAME,
-        }
+
+        params: dict[str, object] = {}
+        for index, (effective_date, historical_member_name) in enumerate(member_name_history):
+            params[f"member_name_{index}"] = historical_member_name
+            if effective_date is not None:
+                params[f"member_start_{index}"] = effective_date
+        return params
 
     def _query_member_open_interest_series_rows(
         self,
@@ -1287,6 +1314,14 @@ class StockService:
                 member_label=CITIC_CUSTOMER_MEMBER_NAME,
                 rows=self._query_member_open_interest_series_rows(
                     CITIC_CUSTOMER_MEMBER_NAME,
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
+            ),
+            "guotai_customer": self._build_net_position_series(
+                member_label=GUOTAI_CUSTOMER_MEMBER_NAME,
+                rows=self._query_member_open_interest_series_rows(
+                    GUOTAI_CUSTOMER_MEMBER_NAME,
                     start_date=start_date,
                     end_date=end_date,
                 ),
@@ -1803,6 +1838,53 @@ class StockService:
                 "trade_date": row.get("trade_date"),
                 "fear_greed_value": _to_float(row.get("fear_greed_value")),
                 "sentiment_label": str(row.get("sentiment_label") or "").strip(),
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
+    def list_index_cn_baifenwei_fear_greed_daily_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_cn_baifenwei_fear_greed_daily_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+        date_column = settings.index_cn_baifenwei_fear_greed_daily_date_column
+        sql = (
+            f"SELECT `{date_column}` AS trade_date, fear_greed_value, sentiment_label, "
+            "volatility_score, relative_turnover_score, margin_trading_score, "
+            "market_breadth_score, rsi_score, limit_up_down_ratio_score, "
+            "market_index_value, value_origin, source_generated_at "
+            f"FROM `{table_name}` WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{date_column}` ASC"
+        numeric_fields = (
+            "fear_greed_value",
+            "volatility_score",
+            "relative_turnover_score",
+            "margin_trading_score",
+            "market_breadth_score",
+            "rsi_score",
+            "limit_up_down_ratio_score",
+            "market_index_value",
+        )
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                **{field_name: _to_float(row.get(field_name)) for field_name in numeric_fields},
+                "sentiment_label": str(row.get("sentiment_label") or "").strip(),
+                "value_origin": str(row.get("value_origin") or "").strip(),
+                "source_generated_at": row.get("source_generated_at"),
             }
             for row in self.db.execute(text(sql), params).mappings().all()
             if row.get("trade_date") is not None

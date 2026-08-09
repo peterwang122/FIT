@@ -9,7 +9,7 @@ celery_app = Celery(
     "fit-worker",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.tasks.collector", "app.tasks.scheduler"],
+    include=["app.tasks.collector", "app.tasks.scheduler", "app.tasks.codex_reset_watchdog"],
 )
 
 celery_app.conf.update(
@@ -18,12 +18,16 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="Asia/Shanghai",
     enable_utc=False,
-    imports=("app.tasks.collector", "app.tasks.scheduler"),
+    imports=("app.tasks.collector", "app.tasks.scheduler", "app.tasks.codex_reset_watchdog"),
     beat_schedule={
         "dispatch-scheduled-tasks-every-minute": {
             "task": "tasks.dispatch_due_scheduled_tasks",
             "schedule": crontab(minute="*"),
-        }
+        },
+        "check-codex-reset-watchdog-hourly": {
+            "task": "tasks.check_codex_reset_watchdog",
+            "schedule": crontab(minute="8"),
+        },
     },
 )
 

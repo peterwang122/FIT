@@ -36,6 +36,13 @@ INDEX_TO_ETF_CODE = {
 CN_INDEX_STRATEGY_FILTER_KEYS = [
     "emotion",
     "cn-market-fear-greed",
+    "cn-baifenwei-fear-greed",
+    "cn-baifenwei-volatility",
+    "cn-baifenwei-relative-turnover",
+    "cn-baifenwei-margin-trading",
+    "cn-baifenwei-market-breadth",
+    "cn-baifenwei-rsi",
+    "cn-baifenwei-limit-up-down-ratio",
     "self-sentiment-score",
     "basis-main",
     "basis-month",
@@ -170,7 +177,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v28"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v29"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 CN_OPTION_PUT_CALL_FIELD_MAP = [
     (
@@ -2418,9 +2425,24 @@ class QuantService:
         end_date: date | None = None,
     ) -> list[dict]:
         stock_service = getattr(self, "stock_service", None)
-        if stock_service is None:
+        loader = getattr(stock_service, "list_index_cn_market_fear_greed_daily_data", None)
+        if loader is None:
             return []
-        return stock_service.list_index_cn_market_fear_greed_daily_data(
+        return loader(
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def _load_cn_baifenwei_fear_greed_rows(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        stock_service = getattr(self, "stock_service", None)
+        loader = getattr(stock_service, "list_index_cn_baifenwei_fear_greed_daily_data", None)
+        if loader is None:
+            return []
+        return loader(
             start_date=start_date,
             end_date=end_date,
         )
@@ -2834,6 +2856,7 @@ class QuantService:
                 "candles": candles,
                 "emotion_points": [],
                 "cn_market_fear_greed_points": [],
+                "cn_baifenwei_fear_greed_points": [],
                 "basis_points": [
                     self._build_basis_point_payload(row, option["name"], contract_roll_markers)
                     for row in basis_rows
@@ -2971,6 +2994,12 @@ class QuantService:
         )
         if not candles:
             cn_market_fear_greed_rows = []
+        cn_baifenwei_fear_greed_rows = self._load_cn_baifenwei_fear_greed_rows(
+            start_date=resolved_start_date,
+            end_date=end_date,
+        )
+        if not candles:
+            cn_baifenwei_fear_greed_rows = []
         result = {
             "index": {"code": option["code"], "name": option["name"]},
             "market": normalized_market,
@@ -2993,6 +3022,34 @@ class QuantService:
                 }
                 for row in cn_market_fear_greed_rows
                 if _to_float(row.get("fear_greed_value")) is not None
+            ],
+            "cn_baifenwei_fear_greed_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "fear_greed_value": _to_float(row.get("fear_greed_value")),
+                    "sentiment_label": str(row.get("sentiment_label") or "").strip(),
+                    "volatility_score": _to_float(row.get("volatility_score")),
+                    "relative_turnover_score": _to_float(row.get("relative_turnover_score")),
+                    "margin_trading_score": _to_float(row.get("margin_trading_score")),
+                    "market_breadth_score": _to_float(row.get("market_breadth_score")),
+                    "rsi_score": _to_float(row.get("rsi_score")),
+                    "limit_up_down_ratio_score": _to_float(row.get("limit_up_down_ratio_score")),
+                    "market_index_value": _to_float(row.get("market_index_value")),
+                    "value_origin": str(row.get("value_origin") or "").strip(),
+                }
+                for row in cn_baifenwei_fear_greed_rows
+                if all(
+                    _to_float(row.get(field_name)) is not None
+                    for field_name in (
+                        "fear_greed_value",
+                        "volatility_score",
+                        "relative_turnover_score",
+                        "margin_trading_score",
+                        "market_breadth_score",
+                        "rsi_score",
+                        "limit_up_down_ratio_score",
+                    )
+                )
             ],
             "basis_points": [
                 self._build_basis_point_payload(row, auxiliary_source_name, contract_roll_markers)
@@ -3521,6 +3578,27 @@ class QuantService:
             )
             if item.get("trade_date") is not None
         }
+        cn_baifenwei_filter_field_map = {
+            "cn-baifenwei-fear-greed": "fear_greed_value",
+            "cn-baifenwei-volatility": "volatility_score",
+            "cn-baifenwei-relative-turnover": "relative_turnover_score",
+            "cn-baifenwei-margin-trading": "margin_trading_score",
+            "cn-baifenwei-market-breadth": "market_breadth_score",
+            "cn-baifenwei-rsi": "rsi_score",
+            "cn-baifenwei-limit-up-down-ratio": "limit_up_down_ratio_score",
+        }
+        cn_baifenwei_rows = self._load_cn_baifenwei_fear_greed_rows(
+            start_date=sorted_candles[0].get("trade_date"),
+            end_date=sorted_candles[-1].get("trade_date"),
+        )
+        cn_baifenwei_maps = {
+            filter_key: {
+                _date_text(item["trade_date"]): _to_float(item.get(column_name))
+                for item in cn_baifenwei_rows
+                if item.get("trade_date") is not None
+            }
+            for filter_key, column_name in cn_baifenwei_filter_field_map.items()
+        }
 
         snapshots: list[dict] = []
         for index, trade_date in enumerate(times):
@@ -3534,6 +3612,10 @@ class QuantService:
                     "values": {
                         "emotion": emotion_map.get(trade_date, 50.0),
                         "cn-market-fear-greed": cn_market_fear_greed_map.get(trade_date),
+                        **{
+                            filter_key: value_map.get(trade_date)
+                            for filter_key, value_map in cn_baifenwei_maps.items()
+                        },
                         "self-sentiment-score": self_sentiment_map.get(trade_date),
                         "basis-main": basis_main_map.get(trade_date, 0.0),
                         "basis-month": basis_month_map.get(trade_date, 0.0),

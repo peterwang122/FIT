@@ -1,4 +1,8 @@
-export type NotificationCategory = 'strategy_received' | 'collection_required' | 'collection_ready'
+export type NotificationCategory =
+  | 'strategy_received'
+  | 'collection_required'
+  | 'collection_ready'
+  | 'codex_reset_watchdog'
 
 export interface UserNotification {
   id: number
@@ -18,4 +22,26 @@ export interface UserNotification {
 export interface NotificationListResponse {
   unread_count: number
   items: UserNotification[]
+}
+
+export type CodexResetStatus = 'scheduled' | 'completed' | 'possible'
+
+export interface CodexResetWatchdogHistoryItem {
+  item_id: string
+  text: string
+  url: string | null
+  author: string | null
+  published_at: string | null
+  translation_zh: string | null
+  reset_status: CodexResetStatus | null
+  reset_evidence: string | null
+  archived_at: string | null
+}
+
+export interface CodexResetWatchdogHistory {
+  source_handle: string
+  max_items: number
+  archived_count: number
+  last_success_at: string | null
+  items: CodexResetWatchdogHistoryItem[]
 }

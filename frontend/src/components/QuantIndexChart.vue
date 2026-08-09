@@ -29,6 +29,7 @@ import type {
   IndexBasisDeltaPoint,
   IndexBreadthPoint,
   IndexCffexNetShortDeltaPoint,
+  IndexCnBaifenweiFearGreedPoint,
   IndexCnMarketFearGreedPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
@@ -93,7 +94,7 @@ type BasisDeltaWindow = CffexNetShortDeltaWindow
 type BasisDeltaMetricKey = 'main' | 'month'
 type BasisDeltaPayloadKey = `${BasisDeltaMetricKey}_delta_${BasisDeltaWindow}d`
 type FundPurchaseLimitMetricKey = 'count' | 'pct'
-type EmotionMetricKey = 'index' | 'marketFearGreed'
+type EmotionMetricKey = 'index' | 'marketFearGreed' | 'baifenweiFearGreed'
 type MarginTradingMetricKey =
   | 'financing'
   | 'securitiesLending'
@@ -259,6 +260,7 @@ const props = withDefaults(
     candles: KlineCandle[]
     emotionPoints?: IndexEmotionPoint[]
     cnMarketFearGreedPoints?: IndexCnMarketFearGreedPoint[]
+    cnBaifenweiFearGreedPoints?: IndexCnBaifenweiFearGreedPoint[]
     emotionLoading?: boolean
     emotionErrorMessage?: string
     futuresBasisPoints?: FuturesBasisPoint[]
@@ -312,6 +314,7 @@ const props = withDefaults(
   {
     emotionPoints: () => [],
     cnMarketFearGreedPoints: () => [],
+    cnBaifenweiFearGreedPoints: () => [],
     emotionLoading: false,
     emotionErrorMessage: '',
     futuresBasisPoints: () => [],
@@ -459,7 +462,10 @@ function applySubPanelControlPreference() {
   activeFundPurchaseLimitMetric.value = isStoredChoice(preference.fundPurchaseLimitMetric, ['count', 'pct'])
     ? preference.fundPurchaseLimitMetric
     : 'count'
-  activeEmotionMetric.value = isStoredChoice(preference.emotionMetric, ['index', 'marketFearGreed'])
+  activeEmotionMetric.value = isStoredChoice(
+    preference.emotionMetric,
+    ['index', 'marketFearGreed', 'baifenweiFearGreed'],
+  )
     ? preference.emotionMetric
     : 'index'
   activeMarginTradingMetric.value = isStoredChoice(
@@ -797,6 +803,7 @@ const quantDataset = computed(() =>
       marginFinancingNetBuySumPoints: props.marginFinancingNetBuySumPoints,
       selfSentimentPoints: props.selfSentimentPoints,
       cnMarketFearGreedPoints: props.cnMarketFearGreedPoints,
+      cnBaifenweiFearGreedPoints: props.cnBaifenweiFearGreedPoints,
       usTreasuryYieldPoints: props.usTreasuryYieldPoints,
       usCreditSpreadPoints: props.usCreditSpreadPoints,
     },
@@ -808,6 +815,15 @@ const indicatorPayload = computed(() => quantDataset.value.chart)
 const emotionSeriesData = computed(() => {
   if (activeEmotionMetric.value === 'marketFearGreed') {
     return props.cnMarketFearGreedPoints
+      .filter((item) => Number.isFinite(Number(item.fear_greed_value)))
+      .map((item) => ({
+        time: item.trade_date as Time,
+        rawDate: item.trade_date,
+        value: Number(item.fear_greed_value),
+      }))
+  }
+  if (activeEmotionMetric.value === 'baifenweiFearGreed') {
+    return props.cnBaifenweiFearGreedPoints
       .filter((item) => Number.isFinite(Number(item.fear_greed_value)))
       .map((item) => ({
         time: item.trade_date as Time,
@@ -1562,6 +1578,10 @@ const usFearGreedPointByDate = computed(
     ),
 )
 
+const cnBaifenweiFearGreedPointByDate = computed(
+  () => new Map(props.cnBaifenweiFearGreedPoints.map((item) => [item.trade_date, item])),
+)
+
 const usHedgeProxyPointByDate = computed(() => {
   const alignedRows = alignSparseRowsToTradeDates(
     sortedCandles.value.map((item) => item.trade_date),
@@ -1708,11 +1728,19 @@ const emotionLegend = computed(() => [
     color: '#d97706',
     active: activeEmotionMetric.value === 'marketFearGreed',
   },
+  {
+    key: 'baifenweiFearGreed' as const,
+    label: '百分位恐贪',
+    color: '#0891b2',
+    active: activeEmotionMetric.value === 'baifenweiFearGreed',
+  },
 ])
 
-const activeEmotionColor = computed(() =>
-  activeEmotionMetric.value === 'marketFearGreed' ? '#d97706' : '#0f4c75',
-)
+const activeEmotionColor = computed(() => {
+  if (activeEmotionMetric.value === 'marketFearGreed') return '#d97706'
+  if (activeEmotionMetric.value === 'baifenweiFearGreed') return '#0891b2'
+  return '#0f4c75'
+})
 
 const supportsAdjustedBasisSeries = computed(
   () => !props.showBasisMonthLine && Boolean(quantDataset.value.basis?.adjusted?.data?.length),
@@ -2247,7 +2275,11 @@ const indicatorValueMaps = computed(() => {
     },
     rsi: buildValueMap(payload.rsi.data),
     wr: buildValueMap(payload.wr.data),
-    emotion: buildValueMap(quantDataset.value.emotion?.data ?? []),
+    emotion: new Map(
+      emotionSeriesData.value
+        .filter((item) => Number.isFinite(Number(item.value)))
+        .map((item) => [item.rawDate, Number(item.value)]),
+    ),
     basis: {
       main: buildValueMap(quantDataset.value.basis?.main.data ?? []),
       adjusted: buildValueMap(quantDataset.value.basis?.adjusted?.data ?? []),
@@ -2486,6 +2518,25 @@ const summaryCards = computed<SummaryCard[]>(() => {
       ? [{ label: '换月调整幅度', value: formatMetric(indicator.basis.rollDelta) }]
       : []
   const selfSentimentPoint = selfSentimentPointByDate.value.get(indicator.tradeDate)
+  const baifenweiPoint = cnBaifenweiFearGreedPointByDate.value.get(indicator.tradeDate)
+  const emotionHint =
+    activeEmotionMetric.value === 'marketFearGreed'
+      ? '大盘恐贪'
+      : activeEmotionMetric.value === 'baifenweiFearGreed'
+        ? '百分位恐贪'
+        : '指数情绪'
+  const emotionRows =
+    activeEmotionMetric.value === 'baifenweiFearGreed'
+      ? [
+          { label: '综合分', value: formatMetric(indicator.emotion) },
+          { label: '波动率', value: formatMetric(baifenweiPoint?.volatility_score) },
+          { label: '相对换手率', value: formatMetric(baifenweiPoint?.relative_turnover_score) },
+          { label: '融资融券', value: formatMetric(baifenweiPoint?.margin_trading_score) },
+          { label: '市场宽度', value: formatMetric(baifenweiPoint?.market_breadth_score) },
+          { label: 'RSI', value: formatMetric(baifenweiPoint?.rsi_score) },
+          { label: '涨跌停比', value: formatMetric(baifenweiPoint?.limit_up_down_ratio_score) },
+        ]
+      : [{ label: emotionHint, value: formatMetric(indicator.emotion) }]
 
   return [
     {
@@ -2555,13 +2606,8 @@ const summaryCards = computed<SummaryCard[]>(() => {
           {
             key: 'emotion',
             title: '情绪指标',
-            hint: activeEmotionMetric.value === 'marketFearGreed' ? '大盘恐贪' : '指数情绪',
-            rows: [
-              {
-                label: activeEmotionMetric.value === 'marketFearGreed' ? '大盘恐贪' : '指数情绪',
-                value: formatMetric(indicator.emotion),
-              },
-            ],
+            hint: emotionHint,
+            rows: emotionRows,
           },
         ]
       : []),

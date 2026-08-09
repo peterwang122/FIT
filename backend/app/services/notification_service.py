@@ -154,6 +154,7 @@ class NotificationService:
         body: str,
         action_url: str | None = None,
         action_label: str | None = None,
+        dedupe_key: str | None = None,
         payload_json: dict | None = None,
     ) -> UserNotification:
         item = UserNotification(
@@ -163,6 +164,7 @@ class NotificationService:
             body=body,
             action_url=action_url,
             action_label=action_label,
+            dedupe_key=dedupe_key,
             payload_json=payload_json or {},
             is_read=False,
             read_at=None,
@@ -209,6 +211,42 @@ class NotificationService:
 
     def _get_root_user(self) -> User | None:
         return self.db.query(User).filter(User.role == "root").order_by(User.id.asc()).first()
+
+    def create_root_notification_once(
+        self,
+        *,
+        category: str,
+        title: str,
+        body: str,
+        action_url: str | None,
+        action_label: str | None,
+        dedupe_key: str,
+        payload_json: dict | None = None,
+    ) -> bool:
+        root_user = self._get_root_user()
+        if root_user is None:
+            return False
+        existing = (
+            self.db.query(UserNotification)
+            .filter(
+                UserNotification.recipient_user_id == root_user.id,
+                UserNotification.dedupe_key == dedupe_key,
+            )
+            .first()
+        )
+        if existing is not None:
+            return False
+        self._create_notification(
+            recipient_user_id=root_user.id,
+            category=category,
+            title=title,
+            body=body,
+            action_url=action_url,
+            action_label=action_label,
+            dedupe_key=dedupe_key,
+            payload_json=payload_json,
+        )
+        return True
 
     def _get_or_create_request(self, market_scope: str, stock_code: str, stock_name: str) -> CollectionTaskRequest:
         item = (

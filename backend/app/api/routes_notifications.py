@@ -5,7 +5,12 @@ from app.api.deps.auth import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.common import ApiResponse
-from app.schemas.notification import NotificationListResponse, UserNotificationResponse
+from app.schemas.notification import (
+    CodexResetWatchdogHistoryResponse,
+    NotificationListResponse,
+    UserNotificationResponse,
+)
+from app.services.codex_reset_watchdog_service import CodexResetWatchdogService
 from app.services.notification_service import NotificationService
 
 router = APIRouter()
@@ -29,6 +34,19 @@ def mark_all_notifications_read(
     service = NotificationService(db)
     item = service.mark_all_read(current_user.id)
     return ApiResponse(data=NotificationListResponse.model_validate(item))
+
+
+@router.get(
+    "/codex-reset-watchdog/history",
+    response_model=ApiResponse[CodexResetWatchdogHistoryResponse],
+)
+def get_codex_reset_watchdog_history(
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "root":
+        raise HTTPException(status_code=403, detail="仅 root 可查看 Codex 额度动态")
+    item = CodexResetWatchdogService().list_history()
+    return ApiResponse(data=CodexResetWatchdogHistoryResponse.model_validate(item))
 
 
 @router.post("/{notification_id}/read", response_model=ApiResponse[UserNotificationResponse])

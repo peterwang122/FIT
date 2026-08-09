@@ -18,6 +18,7 @@ import type {
   IndexBreadthPoint,
   IndexBasisDeltaPoint,
   IndexCffexNetShortDeltaPoint,
+  IndexCnBaifenweiFearGreedPoint,
   IndexCnMarketFearGreedPoint,
   IndexCnOptionFlowPutCallPoint,
   IndexCnOptionPutCallPoint,
@@ -83,6 +84,7 @@ type IndexDashboardChunkState = {
   candles: KlineCandle[]
   emotionPoints: IndexDashboardEmotionPoint[]
   cnMarketFearGreedPoints: IndexCnMarketFearGreedPoint[]
+  cnBaifenweiFearGreedPoints: IndexCnBaifenweiFearGreedPoint[]
   basisPoints: IndexDashboardBasisPoint[]
   breadthPoints: IndexBreadthPoint[]
   vixPoints: IndexVixPoint[]
@@ -289,6 +291,7 @@ function buildDashboardChunkState(
     | 'candles'
     | 'emotion_points'
     | 'cn_market_fear_greed_points'
+    | 'cn_baifenwei_fear_greed_points'
     | 'basis_points'
     | 'breadth_points'
     | 'vix_points'
@@ -319,6 +322,7 @@ function buildDashboardChunkState(
     candles: payload.candles,
     emotionPoints: payload.emotion_points,
     cnMarketFearGreedPoints: payload.cn_market_fear_greed_points ?? [],
+    cnBaifenweiFearGreedPoints: payload.cn_baifenwei_fear_greed_points ?? [],
     basisPoints: payload.basis_points,
     breadthPoints: payload.breadth_points,
     vixPoints: payload.vix_points,
@@ -502,6 +506,7 @@ const indexCode = ref('')
 const indexCandles = ref<KlineCandle[]>([])
 const emotionPoints = ref<IndexEmotionPoint[]>([])
 const cnMarketFearGreedPoints = ref<IndexCnMarketFearGreedPoint[]>([])
+const cnBaifenweiFearGreedPoints = ref<IndexCnBaifenweiFearGreedPoint[]>([])
 const futuresBasisPoints = ref<FuturesBasisPoint[]>([])
 const breadthPoints = ref<IndexBreadthPoint[]>([])
 const vixPoints = ref<IndexVixPoint[]>([])
@@ -620,6 +625,7 @@ const quantFilterDataset = computed(() => {
         marginFinancingNetBuySumPoints: marginFinancingNetBuySumPoints.value,
         selfSentimentPoints: selfSentimentPoints.value,
         cnMarketFearGreedPoints: cnMarketFearGreedPoints.value,
+        cnBaifenweiFearGreedPoints: cnBaifenweiFearGreedPoints.value,
       },
     )
   }
@@ -1021,6 +1027,9 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
   cnMarketFearGreedPoints.value = supportsAuxiliaryPanels.value
     ? state?.cnMarketFearGreedPoints ?? []
     : []
+  cnBaifenweiFearGreedPoints.value = supportsAuxiliaryPanels.value
+    ? state?.cnBaifenweiFearGreedPoints ?? []
+    : []
   futuresBasisPoints.value = supportsBasisPanel.value
     ? state?.basisPoints.flatMap((item) =>
         (state?.supportsAuxiliaryPanels ? basisIndexNames : [item.index_name || targetName]).map((indexName) => ({
@@ -1099,6 +1108,10 @@ function mergeDashboardState(
     cnMarketFearGreedPoints: mergeByTradeDate(
       currentState.cnMarketFearGreedPoints,
       payload.cn_market_fear_greed_points ?? [],
+    ),
+    cnBaifenweiFearGreedPoints: mergeByTradeDate(
+      currentState.cnBaifenweiFearGreedPoints,
+      payload.cn_baifenwei_fear_greed_points ?? [],
     ),
     basisPoints: mergeByTradeDate(currentState.basisPoints, payload.basis_points),
     breadthPoints: mergeByTradeDate(currentState.breadthPoints, payload.breadth_points),
@@ -1439,6 +1452,7 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     indexCandles.value = []
     emotionPoints.value = []
     cnMarketFearGreedPoints.value = []
+    cnBaifenweiFearGreedPoints.value = []
     futuresBasisPoints.value = []
     breadthPoints.value = []
     vixPoints.value = []
@@ -1597,6 +1611,7 @@ watch(
           :candles="indexCandles"
           :emotion-points="emotionPoints"
           :cn-market-fear-greed-points="cnMarketFearGreedPoints"
+          :cn-baifenwei-fear-greed-points="cnBaifenweiFearGreedPoints"
           :emotion-loading="emotionLoading"
           :emotion-error-message="emotionError"
           :futures-basis-points="futuresBasisPoints"

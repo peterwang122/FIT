@@ -80,6 +80,13 @@ export interface QuantChartPayload {
 export type QuantFilterFieldKey =
   | 'emotion'
   | 'cn-market-fear-greed'
+  | 'cn-baifenwei-fear-greed'
+  | 'cn-baifenwei-volatility'
+  | 'cn-baifenwei-relative-turnover'
+  | 'cn-baifenwei-margin-trading'
+  | 'cn-baifenwei-market-breadth'
+  | 'cn-baifenwei-rsi'
+  | 'cn-baifenwei-limit-up-down-ratio'
   | 'self-sentiment-score'
   | 'basis-main'
   | 'basis-main-adjusted'
