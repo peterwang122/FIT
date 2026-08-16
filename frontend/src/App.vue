@@ -15,8 +15,23 @@ const accountMenuOpen = ref(false)
 const notificationMenuOpen = ref(false)
 const accountMenuRef = ref<HTMLElement | null>(null)
 const notificationMenuRef = ref<HTMLElement | null>(null)
+const isLanTest = ref(false)
 
 const notifications = computed(() => notificationStore.items)
+
+async function checkLanTestEnv() {
+  try {
+    const response = await fetch('/health', { headers: { accept: 'application/json' } })
+    if (!response.ok) {
+      isLanTest.value = false
+      return
+    }
+    const payload = (await response.json()) as { env?: string }
+    isLanTest.value = payload.env === 'lan-test'
+  } catch {
+    isLanTest.value = false
+  }
+}
 
 function closeAccountMenu() {
   accountMenuOpen.value = false
@@ -138,6 +153,7 @@ watch(
 
 onMounted(() => {
   void authStore.ensureInitialized()
+  void checkLanTestEnv()
   document.addEventListener('click', handleDocumentClick)
   document.addEventListener('keydown', handleEscape)
 })
@@ -150,7 +166,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'lan-test-active': isLanTest }">
+    <div v-if="isLanTest" class="lan-test-banner">局域网测试环境</div>
     <header class="site-header">
       <div class="brand-lockup">
         <img src="/logo1-header.png" alt="FIT logo" class="brand-logo" />

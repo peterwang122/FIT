@@ -1,3 +1,4 @@
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.task_service import TaskRunPollingPending, TaskService
 from app.workers.celery_app import celery_app
@@ -5,6 +6,9 @@ from app.workers.celery_app import celery_app
 
 @celery_app.task(name="tasks.dispatch_due_scheduled_tasks")
 def dispatch_due_scheduled_tasks():
+    if not settings.scheduled_tasks_enabled:
+        return {"queued_count": 0, "run_ids": [], "disabled": True}
+
     with SessionLocal() as db:
         service = TaskService(db)
         run_ids = service.enqueue_due_task_runs()

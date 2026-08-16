@@ -7,6 +7,14 @@ class Settings(BaseSettings):
     app_debug: bool = True
     api_prefix: str = "/api/v1"
 
+    # 局域网测试环境（lan-test）隔离开关
+    startup_schema_mode: str = "full"  # full | app-only
+    bootstrap_default_tasks: bool = True
+    scheduled_tasks_enabled: bool = True
+    outbound_notifications_enabled: bool = True
+    collection_execution_mode: str = "enabled"  # enabled | allowlist
+    collection_allowed_keys: str = ""
+
     database_url: str = "mysql+pymysql://fit:fitpass@127.0.0.1:3306/stock_info"
     redis_url: str = "redis://127.0.0.1:6379/0"
     auth_session_cookie_name: str = "fit_session"
@@ -298,6 +306,14 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "*"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def collection_allowed_key_set(self) -> set[str]:
+        return {
+            item.strip().lower()
+            for item in (self.collection_allowed_keys or "").split(",")
+            if item.strip()
+        }
 
 
 settings = Settings()  # type: ignore[call-arg]

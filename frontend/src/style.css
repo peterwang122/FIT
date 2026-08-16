@@ -495,6 +495,33 @@ button.quant-scan-event-item {
   min-height: 100vh;
 }
 
+.lan-test-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  height: var(--lan-banner-height, 36px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  box-shadow: 0 4px 16px rgba(180, 83, 9, 0.35);
+}
+
+.lan-test-active {
+  --lan-banner-height: 36px;
+}
+
+.lan-test-active .site-header {
+  top: var(--lan-banner-height, 36px);
+}
+
 .site-header {
   position: fixed;
   top: 0;
@@ -3342,6 +3369,10 @@ button.quant-scan-event-item {
 }
 
 @media (max-width: 1100px) {
+  .lan-test-banner {
+    position: static;
+  }
+
   .site-header {
     position: static;
     height: auto;

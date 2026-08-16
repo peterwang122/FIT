@@ -45,6 +45,10 @@ def _ensure_columns(table_name: str, statements: list[str]) -> None:
 
 @app.on_event("startup")
 def ensure_runtime_tables() -> None:
+    if settings.app_env == "lan-test" and "stock_info_test" not in settings.database_url:
+        raise RuntimeError("lan-test requires DATABASE_URL pointing to stock_info_test")
+    app_only = settings.startup_schema_mode.strip().lower() == "app-only"
+
     User.__table__.create(bind=engine, checkfirst=True)
     UserSession.__table__.create(bind=engine, checkfirst=True)
     ProgressBoard.__table__.create(bind=engine, checkfirst=True)
@@ -66,7 +70,7 @@ def ensure_runtime_tables() -> None:
     existing_task_run_indexes = {index["name"] for index in inspector.get_indexes(ScheduledTaskRun.__tablename__)}
     existing_stock_indexes = (
         {index["name"] for index in inspector.get_indexes(settings.stock_table_name)}
-        if inspector.has_table(settings.stock_table_name)
+        if (not app_only and inspector.has_table(settings.stock_table_name))
         else set()
     )
 
@@ -371,34 +375,35 @@ def ensure_runtime_tables() -> None:
                 )
             )
 
-    if (
-        inspector.has_table(settings.stock_table_name)
-        and "idx_stock_daily_source_date_code" not in existing_stock_indexes
-    ):
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    f"ALTER TABLE `{settings.stock_table_name}` "
-                    f"ADD INDEX `idx_stock_daily_source_date_code` "
-                    f"(`{settings.stock_data_source_column}`, "
-                    f"`{settings.stock_date_column}`, "
-                    f"`{settings.stock_code_column}`)"
+    if not app_only:
+        if (
+            inspector.has_table(settings.stock_table_name)
+            and "idx_stock_daily_source_date_code" not in existing_stock_indexes
+        ):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE `{settings.stock_table_name}` "
+                        f"ADD INDEX `idx_stock_daily_source_date_code` "
+                        f"(`{settings.stock_data_source_column}`, "
+                        f"`{settings.stock_date_column}`, "
+                        f"`{settings.stock_code_column}`)"
+                    )
                 )
-            )
-    if (
-        inspector.has_table(settings.stock_table_name)
-        and "idx_stock_daily_source_code_date" not in existing_stock_indexes
-    ):
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    f"ALTER TABLE `{settings.stock_table_name}` "
-                    f"ADD INDEX `idx_stock_daily_source_code_date` "
-                    f"(`{settings.stock_data_source_column}`, "
-                    f"`{settings.stock_code_column}`, "
-                    f"`{settings.stock_date_column}`)"
+        if (
+            inspector.has_table(settings.stock_table_name)
+            and "idx_stock_daily_source_code_date" not in existing_stock_indexes
+        ):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE `{settings.stock_table_name}` "
+                        f"ADD INDEX `idx_stock_daily_source_code_date` "
+                        f"(`{settings.stock_data_source_column}`, "
+                        f"`{settings.stock_code_column}`, "
+                        f"`{settings.stock_date_column}`)"
+                    )
                 )
-            )
     if "ix_scheduled_task_runs_status" not in existing_task_run_indexes:
         with engine.begin() as connection:
             connection.execute(
@@ -700,6 +705,8 @@ def _ensure_system_user(db, username: str, password: str, role: str) -> User:
 
 
 def _ensure_default_risk_strategies(db, owner: User) -> list[QuantStrategyConfig]:
+    if not settings.bootstrap_default_tasks:
+        return []
     definitions = (
         (
             "中证1000-黄色脆弱期",
@@ -768,7 +775,9 @@ def _ensure_default_risk_notification_task(
     db,
     owner: User,
     strategies: list[QuantStrategyConfig],
-) -> ScheduledTask:
+) -> ScheduledTask | None:
+    if not settings.bootstrap_default_tasks or not strategies:
+        return None
     name = "中证1000风险状态每日通知"
     item = (
         db.query(ScheduledTask)
@@ -822,7 +831,9 @@ def _ensure_default_collection_task(
     enforce_name: bool = False,
     legacy_names: tuple[str, ...] = (),
     legacy_collector_keys: tuple[str, ...] = (),
-) -> ScheduledTask:
+) -> ScheduledTask | None:
+    if not settings.bootstrap_default_tasks:
+        return None
     existing_items = (
         db.query(ScheduledTask)
         .filter(
@@ -877,4 +888,11 @@ def _ensure_default_collection_task(
 
 @app.get("/health", tags=["system"])
 async def health() -> dict:
-    return {"status": "ok", "env": settings.app_env}
+    return {
+        "status": "ok",
+        "env": settings.app_env,
+        "scheduled_tasks_enabled": settings.scheduled_tasks_enabled,
+        "outbound_notifications_enabled": settings.outbound_notifications_enabled,
+        "collection_execution_mode": settings.collection_execution_mode,
+        "allowed_collectors": sorted(settings.collection_allowed_key_set),
+    }

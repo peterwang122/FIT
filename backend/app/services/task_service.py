@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
+from app.core.collection_allowlist import collection_allowed
 from app.core.config import settings
 from app.models.quant_strategy_config import QuantStrategyConfig
 from app.models.scheduled_task import ScheduledTask
@@ -939,6 +940,25 @@ class TaskService:
             raise ValueError("unsupported collection collector_key")
         return definition
 
+    def _collection_allowlist_key(self, task: ScheduledTask) -> str:
+        if task.task_type != "collection":
+            return ""
+        config = task.config_json or {}
+        try:
+            return self._normalize_collector_key(
+                config.get("collector_key"),
+                task.market_scope,
+                config.get("target_type"),
+                config.get("target_code") or config.get("stock_code"),
+                config.get("target_name"),
+                task.name,
+            )
+        except ValueError:
+            return ""
+
+    def _collection_execution_allowed(self, task: ScheduledTask) -> bool:
+        return collection_allowed(self._collection_allowlist_key(task))
+
     def _normalize_collector_key(
         self,
         collector_key: str | None,
@@ -1835,6 +1855,8 @@ class TaskService:
 
     def create_manual_run(self, task_id: int, owner_user_id: int) -> dict:
         task = self._get_owned_task(task_id, owner_user_id)
+        if task.task_type == "collection" and not self._collection_execution_allowed(task):
+            raise PermissionError("collection allowlist rejected this task")
         run = self._create_run(task, trigger_type="manual", scheduled_for=self._now())
         return self._serialize_run(run)
 
@@ -1861,6 +1883,8 @@ class TaskService:
         )
         created_run_ids: list[int] = []
         for task in candidate_tasks:
+            if task.task_type == "collection" and not self._collection_execution_allowed(task):
+                continue
             scheduled_for = self._due_scheduled_for(task, now)
             if scheduled_for is None:
                 continue
@@ -1941,6 +1965,8 @@ class TaskService:
         self.db.commit()
 
     def _send_email(self, recipient: str, subject: str, body: str) -> None:
+        if not settings.outbound_notifications_enabled:
+            raise RuntimeError("outbound notifications are disabled in this environment")
         if not settings.smtp_host or not settings.smtp_from_email:
             raise RuntimeError("SMTP is not configured")
 
@@ -2025,6 +2051,8 @@ class TaskService:
         task: ScheduledTask,
         reference_dt: datetime | None = None,
     ) -> str:
+        if not settings.outbound_notifications_enabled:
+            raise TaskRunSkipped("outbound notifications are disabled in this environment")
         owner = self.db.get(User, task.owner_user_id)
         if owner is None:
             raise ValueError("task owner not found")
@@ -2731,6 +2759,8 @@ class TaskService:
         task = self.db.get(ScheduledTask, run.scheduled_task_id)
         if task is None:
             raise LookupError("scheduled task not found")
+        if task.task_type == "collection" and not self._collection_execution_allowed(task):
+            raise TaskRunSkipped("collection allowlist rejected this task")
 
         started_at = self._now()
         self._mark_run_state(run, task, status="running", started_at=started_at)

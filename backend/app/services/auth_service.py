@@ -198,6 +198,13 @@ class AuthService:
         return user
 
     def _send_with_aliyun(self, phone: str, code: str) -> None:
+        if not settings.outbound_notifications_enabled:
+            LOGGER.warning(
+                "SMS debug fallback (outbound notifications disabled) for %s: %s",
+                phone,
+                code,
+            )
+            return
         access_key_id = settings.alibaba_cloud_access_key_id or settings.aliyun_sms_access_key_id
         access_key_secret = settings.alibaba_cloud_access_key_secret or settings.aliyun_sms_access_key_secret
         if not (
