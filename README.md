@@ -36,6 +36,12 @@ FIT 是一个基于 `Vue 3 + FastAPI + Celery + Redis + MySQL` 的股票量化�
 - `docs/`：补充文档
 - `docker-compose.yml`：本机 MySQL、Redis、Flower 基础设施
 
+### 局域网测试版本
+
+在另一台 Windows 电脑开发测试版本前，必须先阅读
+[《局域网测试版本开发与 PR 协作规范》](docs/LAN_TEST_DEVELOPMENT_GUIDE.md)。该规范定义了
+正式数据只读映射、测试写入隔离、采集白名单、双仓库 Draft PR 和并行冲突处理要求。
+
 ## 3. 运行前准备
 
 你至少需要准备：
