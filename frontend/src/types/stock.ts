@@ -275,6 +275,18 @@ export interface IndexMarginFinancingNetBuySumPoint {
   sum_120d: number | null
 }
 
+export interface IndexTurnoverConcentrationPoint {
+  trade_date: string
+  top5_pct: number | null
+  top1_pct: number | null
+  top1_raw_pct: number | null
+  stock_count: number | null
+  top1_stock_count: number | null
+  top5_data_source: string | null
+  top1_data_source: string | null
+  source_date: string | null
+}
+
 export interface IndexSelfSentimentPoint {
   trade_date: string
   score: number | null
@@ -297,6 +309,18 @@ export interface IndexUsTreasuryYieldPoint {
 export interface IndexUsCreditSpreadPoint {
   trade_date: string
   high_yield_oas: number | null
+}
+
+export interface IndexRiskStrategyPoint {
+  trade_date: string
+  yellow_vulnerability: boolean | null
+  yellow_score: number | null
+  red_escalation: boolean | null
+  red_score: number | null
+  global_shock: boolean | null
+  global_score: number | null
+  global_mode: string | null
+  components: Record<string, unknown>
 }
 
 export interface IndexDashboardResponse {
@@ -328,9 +352,11 @@ export interface IndexDashboardResponse {
   fund_purchase_limit_points: IndexFundPurchaseLimitPoint[]
   margin_trading_points: IndexMarginTradingPoint[]
   margin_financing_net_buy_sum_points: IndexMarginFinancingNetBuySumPoint[]
+  turnover_concentration_points: IndexTurnoverConcentrationPoint[]
   self_sentiment_points: IndexSelfSentimentPoint[]
   us_treasury_yield_points: IndexUsTreasuryYieldPoint[]
   us_credit_spread_points: IndexUsCreditSpreadPoint[]
+  risk_strategy_points: IndexRiskStrategyPoint[]
 }
 
 export interface NetPositionRow {

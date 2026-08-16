@@ -25,6 +25,7 @@ import type {
   IndexMarginFinancingNetBuySumPoint,
   IndexMarginTradingPoint,
   IndexRelatedVixSeries,
+  IndexRiskStrategyPoint,
   IndexSelfSentimentPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
@@ -69,6 +70,8 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'cn-baifenwei-rsi',
   'cn-baifenwei-limit-up-down-ratio',
   'self-sentiment-score',
+  'self-sentiment-core-score',
+  'self-sentiment-derivative-score',
   'basis-main',
   'basis-month',
   'breadth-up-pct',
@@ -128,6 +131,9 @@ export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'margin-financing-net-buy-sum-30d',
   'margin-financing-net-buy-sum-60d',
   'margin-financing-net-buy-sum-120d',
+  'risk-yellow-vulnerability',
+  'risk-red-escalation',
+  'risk-global-shock',
   'rsi',
   'wr',
   'macd-dif',
@@ -861,6 +867,7 @@ type IndexDatasetOptions = {
   includeFundPurchaseLimit?: boolean
   includeMarginTrading?: boolean
   includeSelfSentiment?: boolean
+  includeRiskStrategy?: boolean
   includeUsVix?: boolean
   includeUsFearGreed?: boolean
   includeUsHedge?: boolean
@@ -880,6 +887,7 @@ type IndexDatasetOptions = {
   marginTradingPoints?: IndexMarginTradingPoint[]
   marginFinancingNetBuySumPoints?: IndexMarginFinancingNetBuySumPoint[]
   selfSentimentPoints?: IndexSelfSentimentPoint[]
+  riskStrategyPoints?: IndexRiskStrategyPoint[]
   cnMarketFearGreedPoints?: IndexCnMarketFearGreedPoint[]
   cnBaifenweiFearGreedPoints?: IndexCnBaifenweiFearGreedPoint[]
   usTreasuryYieldPoints?: IndexUsTreasuryYieldPoint[]
@@ -904,6 +912,7 @@ function buildIndexQuantFilterFields(
     includeFundPurchaseLimit: boolean
     includeMarginTrading: boolean
     includeSelfSentiment: boolean
+    includeRiskStrategy: boolean
     includeUsVix: boolean
     includeUsFearGreed: boolean
     includeUsHedge: boolean
@@ -940,7 +949,18 @@ function buildIndexQuantFilterFields(
     )
   }
   if (options.includeSelfSentiment) {
-    fields.unshift({ key: 'self-sentiment-score', group: 'emotion', label: '自建情绪综合分' })
+    fields.unshift(
+      { key: 'self-sentiment-score', group: 'emotion', label: '自建情绪综合分' },
+      { key: 'self-sentiment-core-score', group: 'emotion', label: '自建情绪核心分' },
+      { key: 'self-sentiment-derivative-score', group: 'emotion', label: '自建情绪衍生分' },
+    )
+  }
+  if (options.includeRiskStrategy) {
+    fields.unshift(
+      { key: 'risk-yellow-vulnerability', group: 'risk', label: '中证1000 黄色脆弱期' },
+      { key: 'risk-red-escalation', group: 'risk', label: '中证1000 红色风险升级' },
+      { key: 'risk-global-shock', group: 'risk', label: '中证1000 全球冲击' },
+    )
   }
   if (options.includeBasis) {
     const basisFields: QuantFilterFieldMeta[] = [{ key: 'basis-main', group: 'basis', label: options.basisMainLabel }]
@@ -1222,6 +1242,7 @@ export function buildIndexQuantFilterDataset(
   const includeFundPurchaseLimit = options.includeFundPurchaseLimit ?? false
   const includeMarginTrading = options.includeMarginTrading ?? false
   const includeSelfSentiment = options.includeSelfSentiment ?? false
+  const includeRiskStrategy = options.includeRiskStrategy ?? symbolName === '中证1000'
   const includeUsVix = options.includeUsVix ?? false
   const includeUsFearGreed = options.includeUsFearGreed ?? false
   const includeUsHedge = options.includeUsHedge ?? false
@@ -1241,6 +1262,7 @@ export function buildIndexQuantFilterDataset(
   const marginTradingPoints = options.marginTradingPoints ?? []
   const marginFinancingNetBuySumPoints = options.marginFinancingNetBuySumPoints ?? []
   const selfSentimentPoints = options.selfSentimentPoints ?? []
+  const riskStrategyPoints = options.riskStrategyPoints ?? []
   const cnMarketFearGreedPoints = options.cnMarketFearGreedPoints ?? []
   const cnBaifenweiFearGreedPoints = options.cnBaifenweiFearGreedPoints ?? []
   const usTreasuryYieldPoints = options.usTreasuryYieldPoints ?? []
@@ -1461,7 +1483,21 @@ export function buildIndexQuantFilterDataset(
   const selfSentimentByDate = new Map(
     selfSentimentPoints.map((item) => [
       item.trade_date,
-      toFiniteNullableNumber(item.score),
+      {
+        'self-sentiment-score': toFiniteNullableNumber(item.score),
+        'self-sentiment-core-score': toFiniteNullableNumber(item.core_score),
+        'self-sentiment-derivative-score': toFiniteNullableNumber(item.derivative_score),
+      },
+    ]),
+  )
+  const riskStrategyByDate = new Map(
+    riskStrategyPoints.map((item) => [
+      item.trade_date,
+      {
+        'risk-yellow-vulnerability': item.yellow_vulnerability === null ? null : item.yellow_vulnerability ? 1 : 0,
+        'risk-red-escalation': item.red_escalation === null ? null : item.red_escalation ? 1 : 0,
+        'risk-global-shock': item.global_shock === null ? null : item.global_shock ? 1 : 0,
+      },
     ]),
   )
   const usTreasuryByDate = new Map(
@@ -1536,7 +1572,15 @@ export function buildIndexQuantFilterDataset(
       'cn-baifenwei-rsi': cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.rsi_score ?? null,
       'cn-baifenwei-limit-up-down-ratio':
         cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.limit_up_down_ratio_score ?? null,
-      'self-sentiment-score': selfSentimentByDate.get(snapshot.tradeDate) ?? null,
+      'self-sentiment-score': selfSentimentByDate.get(snapshot.tradeDate)?.['self-sentiment-score'] ?? null,
+      'self-sentiment-core-score':
+        selfSentimentByDate.get(snapshot.tradeDate)?.['self-sentiment-core-score'] ?? null,
+      'self-sentiment-derivative-score':
+        selfSentimentByDate.get(snapshot.tradeDate)?.['self-sentiment-derivative-score'] ?? null,
+      'risk-yellow-vulnerability':
+        riskStrategyByDate.get(snapshot.tradeDate)?.['risk-yellow-vulnerability'] ?? null,
+      'risk-red-escalation': riskStrategyByDate.get(snapshot.tradeDate)?.['risk-red-escalation'] ?? null,
+      'risk-global-shock': riskStrategyByDate.get(snapshot.tradeDate)?.['risk-global-shock'] ?? null,
       'basis-main': basis?.main.data[index]?.value ?? null,
       'basis-main-adjusted': includeBasisAdjusted ? (basis?.adjusted?.data[index]?.value ?? null) : null,
       'basis-month': basis?.month.data[index]?.value ?? null,
@@ -1648,6 +1692,7 @@ export function buildIndexQuantFilterDataset(
       includeFundPurchaseLimit,
       includeMarginTrading,
       includeSelfSentiment,
+      includeRiskStrategy,
       includeUsVix,
       includeUsFearGreed,
       includeUsHedge,

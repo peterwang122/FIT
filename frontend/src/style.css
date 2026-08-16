@@ -2387,6 +2387,11 @@ button.quant-scan-event-item {
   background: rgba(220, 38, 38, 0.1);
 }
 
+.quant-strategy-chart-legend-item.tone-amber {
+  color: #a16207;
+  background: rgba(245, 158, 11, 0.12);
+}
+
 .quant-strategy-chart-legend-item.tone-purple {
   color: #7e22ce;
   background: rgba(126, 34, 206, 0.1);
@@ -2394,6 +2399,60 @@ button.quant-scan-event-item {
 
 .quant-strategy-chart-empty {
   min-height: 260px;
+}
+
+.quant-risk-detail-card {
+  display: grid;
+  gap: 16px;
+  margin: 18px 0;
+  padding-top: 18px;
+  border-top: 1px solid rgba(20, 33, 61, 0.12);
+}
+
+.quant-risk-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.quant-risk-status.tone-amber {
+  color: #a16207;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.24);
+}
+
+.quant-risk-status.tone-red {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
+.quant-risk-status.tone-purple {
+  color: #7e22ce;
+  background: rgba(126, 34, 206, 0.1);
+  border-color: rgba(126, 34, 206, 0.2);
+}
+
+.quant-risk-status.tone-success {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
+.quant-risk-status.tone-muted {
+  color: #475569;
+  background: rgba(100, 116, 139, 0.1);
+  border-color: rgba(100, 116, 139, 0.18);
+}
+
+.quant-risk-component-table tbody tr {
+  cursor: default;
 }
 
 .quant-scan-backtest-card {

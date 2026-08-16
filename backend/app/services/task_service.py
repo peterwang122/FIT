@@ -75,6 +75,16 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "requires_target": False,
         "endpoint": "/collect-index-cn-daily",
     },
+    "index_csi_dividend_daily": {
+        "label": "中证红利指数日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-csi-dividend-daily",
+        "poll_end_time": "23:55",
+        "poll_interval_minutes": 5,
+        "poll_inside_run": True,
+    },
     "index_bj50_daily": {
         "label": "北证50日更",
         "market_scope": "cn_stock",
@@ -91,17 +101,33 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
     },
     "forex_daily": {
         "label": "汇率日更",
-        "market_scope": "cn_stock",
+        "market_scope": "us_index",
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-forex-daily",
+        "accept_previous_trading_day": True,
+    },
+    "forex_intraday": {
+        "label": "汇率18时盘中更新",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-forex-intraday",
     },
     "usd_index_daily": {
         "label": "美元指数日更",
-        "market_scope": "cn_stock",
+        "market_scope": "us_index",
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-usd-index-daily",
+        "accept_previous_trading_day": True,
+    },
+    "usd_index_intraday": {
+        "label": "美元指数18时盘中更新",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-usd-index-intraday",
     },
     "futures_daily": {
         "label": "中金所期货日更",
@@ -182,6 +208,30 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-quant-index-daily",
+    },
+    "global_risk_daily": {
+        "label": "全球冲击因子日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-global-risk-daily",
+    },
+    "a_share_turnover_concentration_daily": {
+        "label": "A股成交集中度日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-a-share-turnover-concentration-daily",
+        "poll_end_time": "22:25",
+        "poll_interval_minutes": 5,
+        "poll_inside_run": True,
+    },
+    "csi_tech_concentration_daily": {
+        "label": "中证科技成交集中度日更（旧）",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-csi-tech-concentration-daily",
     },
     "index_hk_daily": {
         "label": "港股指数日更",
@@ -325,10 +375,13 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "stock_daily": "股票日更",
     "stock_exchange_official_daily": "沪深官网股票日更",
     "index_cn_daily": "A股指数日更",
+    "index_csi_dividend_daily": "中证红利指数日更",
     "index_bj50_daily": "北证50日更",
     "cffex_daily": "中金所会员持仓日更",
     "forex_daily": "汇率日更",
+    "forex_intraday": "汇率18时盘中更新",
     "usd_index_daily": "美元指数日更",
+    "usd_index_intraday": "美元指数18时盘中更新",
     "futures_daily": "中金所期货日更",
     "etf_daily": "ETF 日更",
     "option_daily": "中金所期权日更",
@@ -339,6 +392,9 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "cn_macro_daily": "A股宏观指标日更",
     "margin_trading_daily": "A股融资融券日更",
     "quant_index_daily": "量化指数看板日更",
+    "global_risk_daily": "全球冲击因子日更",
+    "csi_tech_concentration_daily": "中证科技成交集中度日更",
+    "a_share_turnover_concentration_daily": "A股成交集中度日更",
     "index_hk_daily": "港股指数日更",
     "index_us_daily": "美股指数日更",
     "hk_index_futures_daily": "港股股指期货日更",
@@ -372,6 +428,7 @@ class CollectionDataProbe:
     minimum_rows: int = 1
     distinct_count_column: str | None = None
     warning_below_rows: int | None = None
+    count_unit: str | None = None
 
 
 def _quoted_identifier(value: str) -> str:
@@ -380,7 +437,9 @@ def _quoted_identifier(value: str) -> str:
 
 COLLECTION_VALIDATION_MARKET_SCOPE_OVERRIDES: dict[str, str] = {
     "forex_daily": "us_index",
+    "forex_intraday": "us_index",
     "usd_index_daily": "us_index",
+    "usd_index_intraday": "us_index",
 }
 
 COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
@@ -404,7 +463,18 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
         ),
     ],
     "index_cn_daily": [
-        CollectionDataProbe(settings.index_daily_table_name, settings.index_daily_date_column, "A股指数日线"),
+        CollectionDataProbe(
+            settings.index_daily_table_name,
+            settings.index_daily_date_column,
+            "A股指数日线",
+            where_sql=(
+                f"AND {_quoted_identifier(settings.index_daily_code_column)} "
+                "<> :csi_dividend_code"
+            ),
+            params={"csi_dividend_code": "sh000922"},
+        ),
+    ],
+    "index_csi_dividend_daily": [
         CollectionDataProbe(
             settings.index_daily_table_name,
             settings.index_daily_date_column,
@@ -489,13 +559,65 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
         ),
     ],
     "forex_daily": [
-        CollectionDataProbe(settings.forex_daily_table_name, settings.forex_daily_date_column, "汇率日线"),
+        CollectionDataProbe(
+            settings.forex_daily_table_name,
+            settings.forex_daily_date_column,
+            "汇率日线",
+            where_sql=(
+                f"AND {_quoted_identifier(settings.forex_daily_code_column)} IN ("
+                ":usdcnh, :cnhjpy, :cnheur, :cnhhkd, :usdhkd, :usdjpy, :usdeur)"
+            ),
+            params={
+                "usdcnh": "USDCNH",
+                "cnhjpy": "CNHJPY",
+                "cnheur": "CNHEUR",
+                "cnhhkd": "CNHHKD",
+                "usdhkd": "USDHKD",
+                "usdjpy": "USDJPY",
+                "usdeur": "USDEUR",
+            },
+            minimum_rows=7,
+            distinct_count_column=settings.forex_daily_code_column,
+            count_unit="个货币对",
+        ),
+    ],
+    "forex_intraday": [
+        CollectionDataProbe(
+            settings.forex_daily_table_name,
+            settings.forex_daily_date_column,
+            "汇率盘中日线",
+            where_sql=(
+                f"AND {_quoted_identifier(settings.forex_daily_code_column)} IN ("
+                ":usdcnh, :cnhjpy, :cnheur, :cnhhkd, :usdhkd, :usdjpy, :usdeur)"
+            ),
+            params={
+                "usdcnh": "USDCNH",
+                "cnhjpy": "CNHJPY",
+                "cnheur": "CNHEUR",
+                "cnhhkd": "CNHHKD",
+                "usdhkd": "USDHKD",
+                "usdjpy": "USDJPY",
+                "usdeur": "USDEUR",
+            },
+            minimum_rows=7,
+            distinct_count_column=settings.forex_daily_code_column,
+            count_unit="个货币对",
+        ),
     ],
     "usd_index_daily": [
         CollectionDataProbe(
             settings.forex_daily_table_name,
             settings.forex_daily_date_column,
             "美元指数日线",
+            where_sql=f"AND {_quoted_identifier(settings.forex_daily_code_column)} = :usd_index_code",
+            params={"usd_index_code": "UDI"},
+        ),
+    ],
+    "usd_index_intraday": [
+        CollectionDataProbe(
+            settings.forex_daily_table_name,
+            settings.forex_daily_date_column,
+            "美元指数盘中日线",
             where_sql=f"AND {_quoted_identifier(settings.forex_daily_code_column)} = :usd_index_code",
             params={"usd_index_code": "UDI"},
         ),
@@ -662,6 +784,29 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
             settings.quant_index_dashboard_table_name,
             settings.quant_index_dashboard_date_column,
             "量化指数看板",
+        ),
+    ],
+    "a_share_turnover_concentration_daily": [
+        CollectionDataProbe(
+            "a_share_turnover_concentration_daily",
+            "trade_date",
+            "A股前5%/前1%成交集中度",
+            where_sql="AND top5_pct IS NOT NULL AND top1_pct IS NOT NULL",
+        ),
+    ],
+    "csi_tech_concentration_daily": [
+        CollectionDataProbe(
+            settings.index_daily_table_name,
+            settings.index_daily_date_column,
+            "中证全指与全指信息成交额",
+            where_sql=(
+                f"AND {_quoted_identifier(settings.index_daily_code_column)} "
+                "IN (:csi_all, :csi_info)"
+            ),
+            params={"csi_all": "sh000985", "csi_info": "sh000993"},
+            minimum_rows=2,
+            distinct_count_column=settings.index_daily_code_column,
+            count_unit="条指数",
         ),
     ],
     "douyin_coze_emotion_daily": [
@@ -1847,22 +1992,32 @@ class TaskService:
         ]
 
         actionable_count = 0
+        active_risk_count = 0
         for item in summaries:
             signal_text = str(item.get("signal_text", "无操作")).strip() or "无操作"
             if signal_text in {"蓝", "红", "紫"}:
                 actionable_count += 1
+            if item.get("is_risk") and item.get("risk_state") is True:
+                active_risk_count += 1
+            status_label = "当日状态" if item.get("is_risk") else "当日信号"
             lines.extend(
                 [
                     f"- 策略：{item.get('strategy_name', '-')}",
                     f"  标的：{item.get('target_name', '-')}",
                     f"  最新交易日：{item.get('latest_trade_date', '-')}",
-                    f"  当日信号：{signal_text}",
+                    f"  {status_label}：{signal_text}",
                     f"  说明：{item.get('note', '无操作')}",
                     "",
                 ]
             )
 
         lines.append(f"本次汇总共 {len(summaries)} 条策略，其中 {actionable_count} 条存在操作信号。")
+        if any(item.get("is_risk") for item in summaries):
+            lines.append(
+                f"风险状态策略不产生买卖交易；本次共有 {active_risk_count} 条风险状态命中。"
+            )
+        if summaries and all(item.get("is_risk") for item in summaries) and active_risk_count == 0:
+            raise TaskRunSkipped("中证1000三条风险状态当日均未命中，本次无需发送风险通知。")
         return subject, "\n".join(lines).strip()
 
     def _execute_notification_task(
@@ -2142,7 +2297,7 @@ class TaskService:
                         f"（要求至少{probe.minimum_rows}行，当前最新{latest_date or '-'}）"
                     )
                     continue
-                suffix = "分钟" if probe.distinct_count_column else "行"
+                suffix = probe.count_unit or ("分钟" if probe.distinct_count_column else "行")
                 success = f"{probe.label}{target_count}{suffix}"
                 if probe.warning_below_rows and target_count < probe.warning_below_rows:
                     success += (
@@ -2223,6 +2378,9 @@ class TaskService:
             "cn_macro_daily",
             "margin_trading_daily",
             "fund_purchase_limit_daily",
+            "index_csi_dividend_daily",
+            "a_share_turnover_concentration_daily",
+            "csi_tech_concentration_daily",
             "quant_index_daily",
             "index_qvix_daily",
             "index_cn_market_fear_greed_daily",
@@ -2239,6 +2397,9 @@ class TaskService:
                 "cn_macro_daily",
                 "margin_trading_daily",
                 "fund_purchase_limit_daily",
+                "index_csi_dividend_daily",
+                "a_share_turnover_concentration_daily",
+                "csi_tech_concentration_daily",
                 "index_cn_market_fear_greed_daily",
                 "index_cn_baifenwei_fear_greed_daily",
                 "hk_index_futures_daily",
@@ -2343,6 +2504,52 @@ class TaskService:
             raise TaskRunSkipped(
                 f"{label}官方源尚未发布完整：目标交易日 {target_date}，"
                 f"已发布 {available}，应有 {expected}，最近完整日期 {latest_complete}。"
+            )
+        if collector_key == "index_csi_dividend_daily" and result_status == "SOURCE_NOT_READY":
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            latest_trade_date = str(result_value.get("latest_trade_date") or "-")
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, interval_minutes = polling_window
+                checked_at = self._now()
+                end_at = datetime.combine(checked_at.date(), end_time)
+                if checked_at < end_at:
+                    raise TaskRunPollingPending(
+                        f"{label}官网收盘数据尚未发布：目标交易日 {target_date}，"
+                        f"官网当前最新 {latest_trade_date}；将在同一条运行记录内继续检查。",
+                        countdown_seconds=interval_minutes * 60,
+                    )
+            raise TaskRunSkipped(
+                f"{label}截至 23:55 官网仍未发布目标交易日 {target_date} 的收盘数据，"
+                f"官网当前最新 {latest_trade_date}。"
+            )
+        if (
+            collector_key == "a_share_turnover_concentration_daily"
+            and result_status == "SOURCE_NOT_READY"
+        ):
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            missing = "、".join(result_value.get("missing") or []) or "成交集中度数据"
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, interval_minutes = polling_window
+                checked_at = self._now()
+                end_at = datetime.combine(checked_at.date(), end_time)
+                if checked_at < end_at:
+                    raise TaskRunPollingPending(
+                        f"{label}目标交易日 {target_date} 尚缺 {missing}；"
+                        "将在同一条运行记录内继续检查。",
+                        countdown_seconds=interval_minutes * 60,
+                    )
+            raise TaskRunSkipped(
+                f"{label}截至22:25仍缺目标交易日 {target_date} 的 {missing}。"
             )
         if collector_key == "hk_index_futures_daily" and result_status == "SOURCE_NOT_READY":
             target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
@@ -2500,6 +2707,12 @@ class TaskService:
                         f"沪深300={values.get('hs300_emotion', '-')}，"
                         f"中证500={values.get('zz500_emotion', '-')}，"
                         f"中证1000={values.get('zz1000_emotion', '-')}。"
+                    )
+                elif collector_key == "index_csi_dividend_daily":
+                    summary = (
+                        f"{label}执行完成：目标交易日 {target_date}，"
+                        f"官网最新 {result_value.get('latest_trade_date') or '-'}，"
+                        f"最近窗口写入 {result_value.get('daily_upserted') or 0} 行。"
                     )
                 else:
                     summary = f"{label}执行完成，结果：{result_value}。"

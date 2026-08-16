@@ -33,6 +33,7 @@ import type {
   QuantTargetMarket,
   QuantTargetOption,
 } from '../types/quant'
+import type { QuantRiskDashboardResponse, QuantRiskEvidenceResponse } from '../types/risk'
 
 interface ApiResponse<T> {
   code: number
@@ -137,6 +138,40 @@ export async function fetchIndexDashboard(
       market: options.market ?? 'cn',
     },
   })
+  return data.data
+}
+
+export async function fetchQuantRiskDashboard(
+  options: {
+    mode?: 'default' | 'full' | 'custom'
+    startDate?: string
+    endDate?: string
+    signal?: AbortSignal
+  } = {},
+) {
+  const { data } = await http.get<ApiResponse<QuantRiskDashboardResponse>>('/stocks/quant/risk-dashboard', {
+    params: {
+      mode: options.mode ?? 'default',
+      start_date: options.startDate,
+      end_date: options.endDate,
+    },
+    signal: options.signal,
+  })
+  return data.data
+}
+
+export async function fetchQuantRiskEvidence(
+  startDate: string,
+  endDate: string,
+  signal?: AbortSignal,
+) {
+  const { data } = await http.get<ApiResponse<QuantRiskEvidenceResponse>>(
+    '/stocks/quant/risk-dashboard/evidence',
+    {
+      params: { start_date: startDate, end_date: endDate },
+      signal,
+    },
+  )
   return data.data
 }
 

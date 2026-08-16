@@ -33,6 +33,48 @@ INDEX_TO_ETF_CODE = {
     "中证1000": "512100",
 }
 
+SELF_SENTIMENT_FILTER_FIELD_MAP = [
+    ("self-sentiment-score", "self_sentiment_score"),
+    ("self-sentiment-core-score", "self_sentiment_core_score"),
+    ("self-sentiment-derivative-score", "self_sentiment_derivative_score"),
+]
+SELF_SENTIMENT_FILTER_KEYS = [
+    field_key for field_key, _column_name in SELF_SENTIMENT_FILTER_FIELD_MAP
+]
+
+RISK_STRATEGY_FIELD_MAP = [
+    ("risk-yellow-vulnerability", "risk_yellow_vulnerability"),
+    ("risk-red-escalation", "risk_red_escalation"),
+    ("risk-global-shock", "risk_global_shock"),
+]
+RISK_STRATEGY_FILTER_KEYS = [field_key for field_key, _column_name in RISK_STRATEGY_FIELD_MAP]
+RISK_STRATEGY_DEFINITIONS = {
+    "yellow_vulnerability": {
+        "field_key": "risk-yellow-vulnerability",
+        "column": "risk_yellow_vulnerability",
+        "score_column": "risk_yellow_vulnerability_score",
+        "component_key": "yellow",
+        "color": "amber",
+        "label": "黄色脆弱期",
+    },
+    "red_escalation": {
+        "field_key": "risk-red-escalation",
+        "column": "risk_red_escalation",
+        "score_column": "risk_red_escalation_score",
+        "component_key": "red",
+        "color": "red",
+        "label": "红色风险升级",
+    },
+    "global_shock": {
+        "field_key": "risk-global-shock",
+        "column": "risk_global_shock",
+        "score_column": "risk_global_shock_score",
+        "component_key": "global",
+        "color": "purple",
+        "label": "全球冲击",
+    },
+}
+
 CN_INDEX_STRATEGY_FILTER_KEYS = [
     "emotion",
     "cn-market-fear-greed",
@@ -43,7 +85,7 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
     "cn-baifenwei-market-breadth",
     "cn-baifenwei-rsi",
     "cn-baifenwei-limit-up-down-ratio",
-    "self-sentiment-score",
+    *SELF_SENTIMENT_FILTER_KEYS,
     "basis-main",
     "basis-month",
     "breadth-up-pct",
@@ -101,6 +143,7 @@ CN_INDEX_STRATEGY_FILTER_KEYS = [
     "margin-financing-net-buy-sum-30d",
     "margin-financing-net-buy-sum-60d",
     "margin-financing-net-buy-sum-120d",
+    *RISK_STRATEGY_FILTER_KEYS,
     "rsi",
     "wr",
     "macd-dif",
@@ -177,8 +220,22 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v29"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v32"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
+RISK_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:v1"
+RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:evidence:v1"
+RISK_DASHBOARD_CACHE_TTL_SECONDS = 600
+STRATEGY_TARGET_CHART_CACHE_KEY_PREFIX = "fit:quant:strategy_target_chart:v1"
+STRATEGY_TARGET_CHART_CACHE_TTL_SECONDS = 300
+CSI1000_RISK_INDEX_CODE = "sh000852"
+CSI1000_RISK_INDEX_NAME = "中证1000"
+CSI1000_RISK_DEFAULT_START_DATE = date(2024, 9, 1)
+RISK_STRATEGY_ORDER = ("yellow_vulnerability", "red_escalation", "global_shock")
+RISK_STRATEGY_LABELS = {
+    "yellow_vulnerability": "黄色脆弱期",
+    "red_escalation": "红色风险升级",
+    "global_shock": "全球冲击",
+}
 CN_OPTION_PUT_CALL_FIELD_MAP = [
     (
         "option_pc_current_month",
@@ -1065,17 +1122,37 @@ class QuantService:
             else f"{INDEX_DASHBOARD_CACHE_KEY_PREFIX}:*"
         )
         cache_keys = list(redis_client.scan_iter(pattern))
+        if not normalized_market or normalized_market == "cn":
+            cache_keys.extend(redis_client.scan_iter(f"{RISK_DASHBOARD_CACHE_KEY_PREFIX}:*"))
+            cache_keys.extend(
+                redis_client.scan_iter(f"{RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX}:*")
+            )
+        cache_keys = list(dict.fromkeys(cache_keys))
         if not cache_keys:
             return 0
         return int(redis_client.delete(*cache_keys))
 
     def _normalize_strategy_engine(self, value: object) -> str:
         normalized = str(value or "snapshot").strip().lower()
-        return "sequence" if normalized == "sequence" else "snapshot"
+        if normalized in {"sequence", "risk"}:
+            return normalized
+        return "snapshot"
 
     def _normalize_sequence_mode(self, value: object) -> str:
         normalized = str(value or "single_target").strip().lower()
         return "market_scan" if normalized == "market_scan" else "single_target"
+
+    def _risk_strategy_definition(self, strategy_or_params: object) -> dict | None:
+        if isinstance(strategy_or_params, QuantStrategyConfig):
+            params = strategy_or_params.indicator_params or {}
+        elif isinstance(strategy_or_params, dict):
+            params = strategy_or_params
+        else:
+            return None
+        raw = params.get("risk_strategy")
+        key = str((raw or {}).get("key") if isinstance(raw, dict) else raw or "").strip()
+        definition = RISK_STRATEGY_DEFINITIONS.get(key)
+        return {"key": key, **definition} if definition else None
 
     def _default_scan_trade_config(self) -> dict:
         return {
@@ -1342,6 +1419,18 @@ class QuantService:
             "399852",
             "sz399852",
         }
+
+    def _index_supports_risk_strategy(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> bool:
+        return self._index_supports_csi1000_reference_vix(
+            target_code,
+            target_name,
+            target_market,
+        )
 
     def _index_supports_fund_purchase_limit(
         self,
@@ -1676,6 +1765,7 @@ class QuantService:
                     keys = [key for key in keys if key not in FUND_PURCHASE_LIMIT_FILTER_KEYS]
                 if self._index_supports_csi1000_reference_vix(target_code, target_name, target_market):
                     keys += CSI1000_REFERENCE_VIX_FILTER_KEYS
+                    keys += RISK_STRATEGY_FILTER_KEYS
                 return keys
             if self._is_technical_only_cn_index(target_code, target_name, target_market):
                 keys = [
@@ -1867,9 +1957,57 @@ class QuantService:
         except SQLAlchemyError:
             return set()
 
-    def _optional_index_dashboard_selects(self) -> str:
+    def _optional_index_dashboard_selects(
+        self,
+        required_filter_keys: set[str] | None = None,
+    ) -> str:
         existing_columns = self._index_dashboard_column_names()
         select_parts: list[str] = []
+
+        def append_optional_column(column_name: str, fallback: str = "NULL") -> None:
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"{fallback} AS {column_name}")
+
+        if required_filter_keys is not None:
+            for field_key, column_name in CN_OPTION_PUT_CALL_FILTER_FIELD_MAP:
+                if field_key in required_filter_keys:
+                    append_optional_column(column_name)
+            for field_key, column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP:
+                if field_key in required_filter_keys or (
+                    field_key == "cn-option-flow-pc-turnover"
+                    and "cn-option-flow-cp-turnover" in required_filter_keys
+                ):
+                    append_optional_column(column_name)
+            if required_filter_keys.intersection(EXCHANGE_OPTION_FILTER_KEYS):
+                append_optional_column("exchange_option_pc_json")
+            if required_filter_keys.intersection(OPTION_VIX_FILTER_KEYS):
+                append_optional_column("option_vix_json")
+            for field_key, column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP:
+                if field_key in required_filter_keys:
+                    append_optional_column(column_name)
+            for field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP:
+                if field_key in required_filter_keys:
+                    append_optional_column(column_name)
+            if "fund-purchase-limit-count" in required_filter_keys:
+                append_optional_column("fund_purchase_limit_count")
+            if "fund-purchase-limit-pct" in required_filter_keys:
+                append_optional_column("fund_purchase_limit_pct")
+            for field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP:
+                if field_key in required_filter_keys:
+                    append_optional_column(column_name)
+            for field_key, column_name, _payload_key in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP:
+                if field_key in required_filter_keys:
+                    append_optional_column(column_name)
+            for field_key, column_name in SELF_SENTIMENT_FILTER_FIELD_MAP:
+                if field_key in required_filter_keys:
+                    append_optional_column(column_name)
+            for field_key, column_name in RISK_STRATEGY_FIELD_MAP:
+                if field_key in required_filter_keys:
+                    append_optional_column(column_name)
+            return ", " + ", ".join(select_parts) if select_parts else ""
+
         for (
             ratio_column,
             month_column,
@@ -1948,7 +2086,645 @@ class QuantService:
                 select_parts.append(f"`{column_name}` AS {column_name}")
             else:
                 select_parts.append(f"NULL AS {column_name}")
+        for column_name in (
+            "risk_yellow_vulnerability",
+            "risk_yellow_vulnerability_score",
+            "risk_red_escalation",
+            "risk_red_escalation_score",
+            "risk_global_shock",
+            "risk_global_shock_score",
+            "risk_global_shock_mode",
+            "risk_strategy_components_json",
+        ):
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
+        for column_name in (
+            "turnover_concentration_top5_pct",
+            "turnover_concentration_top1_pct",
+            "turnover_concentration_top1_raw_pct",
+            "turnover_concentration_meta_json",
+        ):
+            if column_name in existing_columns:
+                select_parts.append(f"`{column_name}` AS {column_name}")
+            else:
+                select_parts.append(f"NULL AS {column_name}")
         return ", " + ", ".join(select_parts) if select_parts else ""
+
+    def _build_risk_strategy_point_payload(self, row: dict) -> dict:
+        components = self._parse_exchange_option_pc_json(
+            row.get("risk_strategy_components_json")
+        )
+        return {
+            "trade_date": row.get("trade_date"),
+            "yellow_vulnerability": self._to_optional_bool(
+                row.get("risk_yellow_vulnerability")
+            ),
+            "yellow_score": _to_float(row.get("risk_yellow_vulnerability_score")),
+            "red_escalation": self._to_optional_bool(row.get("risk_red_escalation")),
+            "red_score": _to_float(row.get("risk_red_escalation_score")),
+            "global_shock": self._to_optional_bool(row.get("risk_global_shock")),
+            "global_score": _to_float(row.get("risk_global_shock_score")),
+            "global_mode": str(row.get("risk_global_shock_mode") or "").strip() or None,
+            "components": components,
+        }
+
+    @staticmethod
+    def _to_optional_bool(value: object) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        parsed = _to_float(value)
+        return None if parsed is None else bool(parsed)
+
+    @staticmethod
+    def _coerce_date(value: object) -> date | None:
+        if isinstance(value, date):
+            return value
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        try:
+            return date.fromisoformat(normalized[:10])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _risk_level_payload(score: float | None) -> tuple[str | None, str | None]:
+        if score is None:
+            return None, None
+        if score < 25:
+            return "stable", "平稳"
+        if score < 50:
+            return "vulnerable", "脆弱"
+        if score < 75:
+            return "high", "高风险"
+        return "severe", "严重"
+
+    def _build_risk_dashboard_point_payload(
+        self,
+        row: dict,
+        *,
+        include_components: bool = False,
+    ) -> dict:
+        payload = self._build_risk_strategy_point_payload(row)
+        scores = (
+            _to_float(payload.get("yellow_score")),
+            _to_float(payload.get("red_score")),
+            _to_float(payload.get("global_score")),
+        )
+        composite_score = None
+        if all(value is not None for value in scores):
+            composite_score = round(
+                float(scores[0]) * 0.25
+                + float(scores[1]) * 0.45
+                + float(scores[2]) * 0.30,
+                4,
+            )
+        risk_level, risk_level_label = self._risk_level_payload(composite_score)
+        point = {
+            "trade_date": payload.get("trade_date"),
+            "yellow_vulnerability": payload.get("yellow_vulnerability"),
+            "yellow_score": scores[0],
+            "red_escalation": payload.get("red_escalation"),
+            "red_score": scores[1],
+            "global_shock": payload.get("global_shock"),
+            "global_score": scores[2],
+            "global_mode": payload.get("global_mode"),
+            "composite_score": composite_score,
+            "risk_level": risk_level,
+            "risk_level_label": risk_level_label,
+            "data_complete": composite_score is not None,
+        }
+        if include_components:
+            point["components"] = payload.get("components") or {}
+        return point
+
+    @staticmethod
+    def _risk_point_state(point: dict | None, strategy_key: str) -> bool | None:
+        if not point:
+            return None
+        value = point.get(strategy_key)
+        return value if isinstance(value, bool) else None
+
+    @staticmethod
+    def _collect_matched_component_labels(value: object) -> list[str]:
+        labels: list[str] = []
+        if isinstance(value, list):
+            for item in value:
+                labels.extend(QuantService._collect_matched_component_labels(item))
+        elif isinstance(value, dict):
+            label = str(value.get("label") or "").strip()
+            if label and value.get("matched") is True:
+                labels.append(label)
+            for key, item in value.items():
+                if key not in {"label", "matched"}:
+                    labels.extend(QuantService._collect_matched_component_labels(item))
+        return labels
+
+    def _risk_strategy_evidence_labels(self, point: dict, strategy_key: str) -> list[str]:
+        component_key = {
+            "yellow_vulnerability": "yellow",
+            "red_escalation": "red",
+            "global_shock": "global",
+        }[strategy_key]
+        components = point.get("components") if isinstance(point.get("components"), dict) else {}
+        labels = self._collect_matched_component_labels(components.get(component_key))
+        return list(dict.fromkeys(labels))
+
+    def _build_risk_strategy_spans(
+        self,
+        event_points: list[dict],
+        *,
+        event_release_date: date | None,
+        event_end_reason: str,
+    ) -> list[dict]:
+        spans: list[dict] = []
+        for strategy_key in RISK_STRATEGY_ORDER:
+            active_points: list[dict] = []
+
+            def flush(release_date: date | None) -> None:
+                if not active_points:
+                    return
+                evidence_counts: dict[str, int] = defaultdict(int)
+                modes: dict[str, int] = defaultdict(int)
+                for active_point in active_points:
+                    for label in self._risk_strategy_evidence_labels(active_point, strategy_key):
+                        evidence_counts[label] += 1
+                    mode = str(active_point.get("global_mode") or "").strip()
+                    if strategy_key == "global_shock" and mode:
+                        modes[mode] += 1
+                key_evidence = [
+                    label
+                    for label, _count in sorted(
+                        evidence_counts.items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:4]
+                ]
+                dominant_mode = None
+                if modes:
+                    dominant_mode = sorted(modes.items(), key=lambda item: (-item[1], item[0]))[0][0]
+                spans.append(
+                    {
+                        "strategy_key": strategy_key,
+                        "strategy_label": RISK_STRATEGY_LABELS[strategy_key],
+                        "start_date": active_points[0]["trade_date"],
+                        "end_date": active_points[-1]["trade_date"],
+                        "release_date": release_date,
+                        "active_days": len(active_points),
+                        "mode": dominant_mode,
+                        "key_evidence": key_evidence,
+                    }
+                )
+                active_points.clear()
+
+            for index, point in enumerate(event_points):
+                if self._risk_point_state(point, strategy_key) is True:
+                    active_points.append(point)
+                    continue
+                if active_points:
+                    point_date = self._coerce_date(point.get("trade_date"))
+                    release = point_date if self._risk_point_state(point, strategy_key) is False else None
+                    flush(release)
+            if active_points:
+                release = event_release_date if event_end_reason == "released" else None
+                flush(release)
+        return spans
+
+    def _build_risk_event_drawdowns(
+        self,
+        first_trigger_date: date,
+        candles: list[dict],
+    ) -> list[dict]:
+        normalized_candles = [
+            {**item, "trade_date": self._coerce_date(item.get("trade_date"))}
+            for item in candles
+            if self._coerce_date(item.get("trade_date")) is not None
+        ]
+        date_indexes = {
+            item["trade_date"]: index for index, item in enumerate(normalized_candles)
+        }
+        start_index = date_indexes.get(first_trigger_date)
+        if start_index is None:
+            return [
+                {"trading_days": horizon, "status": "pending"}
+                for horizon in (5, 10, 20)
+            ]
+        base_close = _to_float(normalized_candles[start_index].get("close"))
+        if base_close is None or base_close <= 0:
+            return [
+                {"trading_days": horizon, "status": "pending"}
+                for horizon in (5, 10, 20)
+            ]
+
+        results: list[dict] = []
+        for horizon in (5, 10, 20):
+            end_index = start_index + 1 + horizon
+            future = normalized_candles[start_index + 1 : end_index]
+            if len(future) < horizon:
+                results.append({"trading_days": horizon, "status": "pending"})
+                continue
+            lows = [(_to_float(item.get("low")), item) for item in future]
+            lows = [(value, item) for value, item in lows if value is not None]
+            if len(lows) < horizon:
+                results.append({"trading_days": horizon, "status": "pending"})
+                continue
+            trough_value, trough_item = min(lows, key=lambda item: float(item[0]))
+            trough_index = future.index(trough_item) + 1
+            drawdown = min(0.0, (float(trough_value) / base_close - 1.0) * 100.0)
+            results.append(
+                {
+                    "trading_days": horizon,
+                    "value_pct": round(drawdown, 4),
+                    "trough_date": trough_item["trade_date"],
+                    "days_to_trough": trough_index,
+                    "status": "complete",
+                }
+            )
+        return results
+
+    def _build_risk_events(self, points: list[dict], candles: list[dict]) -> list[dict]:
+        points_by_date = {
+            self._coerce_date(point.get("trade_date")): {
+                **point,
+                "trade_date": self._coerce_date(point.get("trade_date")),
+            }
+            for point in points
+            if self._coerce_date(point.get("trade_date")) is not None
+        }
+        trading_dates = [
+            candle_date
+            for candle in candles
+            if (candle_date := self._coerce_date(candle.get("trade_date"))) is not None
+        ]
+        events: list[dict] = []
+        current_points: list[dict] = []
+
+        def close_event(release_date: date | None, end_reason: str) -> None:
+            if not current_points:
+                return
+            first_trigger = current_points[0]["trade_date"]
+            active_strategies = [
+                key
+                for key in RISK_STRATEGY_ORDER
+                if any(self._risk_point_state(point, key) is True for point in current_points)
+            ]
+            events.append(
+                {
+                    "event_id": f"risk-{first_trigger.isoformat()}",
+                    "start_date": first_trigger,
+                    "end_date": current_points[-1]["trade_date"],
+                    "release_date": release_date,
+                    "end_reason": end_reason,
+                    "is_open": end_reason == "open",
+                    "duration_trade_days": len(current_points),
+                    "first_trigger_date": first_trigger,
+                    "active_strategies": active_strategies,
+                    "strategy_spans": self._build_risk_strategy_spans(
+                        current_points,
+                        event_release_date=release_date,
+                        event_end_reason=end_reason,
+                    ),
+                    "drawdowns": self._build_risk_event_drawdowns(first_trigger, candles),
+                }
+            )
+            current_points.clear()
+
+        for trade_date in trading_dates:
+            point = points_by_date.get(trade_date)
+            states = [self._risk_point_state(point, key) for key in RISK_STRATEGY_ORDER]
+            if any(state is True for state in states):
+                current_points.append(point or {"trade_date": trade_date})
+                continue
+            if all(state is False for state in states):
+                close_event(trade_date, "released")
+                continue
+            close_event(None, "data_gap")
+        close_event(None, "open")
+        return events
+
+    @staticmethod
+    def _risk_component_direction(component: dict) -> str | None:
+        percentile_threshold = _to_float(component.get("percentile_threshold"))
+        if percentile_threshold is not None:
+            if percentile_threshold < 50:
+                return "low"
+            if percentile_threshold > 50:
+                return "high"
+        absolute_threshold = _to_float(component.get("absolute_threshold"))
+        if absolute_threshold is None:
+            return None
+        return "low" if absolute_threshold < 0 else "high"
+
+    def _risk_component_is_partial(self, component: dict, direction: str | None) -> bool:
+        if component.get("matched") is True or direction not in {"high", "low"}:
+            return False
+        value = _to_float(component.get("value"))
+        percentile = _to_float(component.get("percentile"))
+        absolute_threshold = _to_float(component.get("absolute_threshold"))
+        percentile_threshold = _to_float(component.get("percentile_threshold"))
+        checks: list[bool] = []
+        if value is not None and absolute_threshold is not None:
+            checks.append(value >= absolute_threshold if direction == "high" else value <= absolute_threshold)
+        if percentile is not None and percentile_threshold is not None:
+            checks.append(
+                percentile >= percentile_threshold if direction == "high" else percentile <= percentile_threshold
+            )
+        return bool(checks) and any(checks) and not all(checks)
+
+    @staticmethod
+    def _flatten_risk_components(components: dict) -> list[dict]:
+        entries: list[dict] = []
+        strategy_sections = [
+            ("yellow_vulnerability", "黄色脆弱期", "yellow", "yellow", "黄色条件"),
+            ("red_escalation", "红色风险升级", "red", "red", "红色条件"),
+        ]
+        for strategy_key, strategy_label, component_key, section_key, section_label in strategy_sections:
+            group = components.get(component_key)
+            values = group.get("components") if isinstance(group, dict) else []
+            for component in values if isinstance(values, list) else []:
+                if not isinstance(component, dict):
+                    continue
+                label = str(component.get("label") or "").strip()
+                if label:
+                    entries.append(
+                        {
+                            "key": f"{strategy_key}:{section_key}:{label}",
+                            "strategy_key": strategy_key,
+                            "strategy_label": strategy_label,
+                            "section_key": section_key,
+                            "section_label": section_label,
+                            "label": label,
+                            "component": component,
+                        }
+                    )
+
+        yellow_group = components.get("yellow") if isinstance(components.get("yellow"), dict) else {}
+        observations = (
+            yellow_group.get("observations")
+            if isinstance(yellow_group.get("observations"), dict)
+            else {}
+        )
+        for observation_key, observation in observations.items():
+            if not isinstance(observation, dict):
+                continue
+            section_label = str(observation.get("label") or observation_key).strip()
+            values = observation.get("components") if isinstance(observation.get("components"), list) else []
+            for component in values:
+                if not isinstance(component, dict):
+                    continue
+                label = str(component.get("label") or "").strip()
+                if label:
+                    entries.append(
+                        {
+                            "key": f"yellow_vulnerability:{observation_key}:{label}",
+                            "strategy_key": "yellow_vulnerability",
+                            "strategy_label": "黄色脆弱期",
+                            "section_key": observation_key,
+                            "section_label": section_label,
+                            "label": label,
+                            "component": component,
+                        }
+                    )
+
+        global_group = components.get("global") if isinstance(components.get("global"), dict) else {}
+        broad = global_group.get("broad_risk_off") if isinstance(global_group.get("broad_risk_off"), dict) else {}
+        modules = broad.get("modules") if isinstance(broad.get("modules"), dict) else {}
+        broad_sections = [
+            ("global_equities", "全球股市同步急跌"),
+            ("oil_and_copper", "原油与铜共跌"),
+            ("vix", "VIX快速上冲"),
+            ("hy_oas", "信用利差扩大"),
+        ]
+        for section_key, section_label in broad_sections:
+            module = modules.get(section_key) if isinstance(modules.get(section_key), dict) else {}
+            values = module.get("components") if isinstance(module.get("components"), list) else []
+            for component in values:
+                if not isinstance(component, dict):
+                    continue
+                label = str(component.get("label") or "").strip()
+                if label:
+                    entries.append(
+                        {
+                            "key": f"global_shock:{section_key}:{label}",
+                            "strategy_key": "global_shock",
+                            "strategy_label": "全球冲击",
+                            "section_key": section_key,
+                            "section_label": section_label,
+                            "label": label,
+                            "component": component,
+                        }
+                    )
+
+        tech = global_group.get("tech_deleveraging") if isinstance(global_group.get("tech_deleveraging"), dict) else {}
+        tech_sections = [
+            ("tech_markets", "海外科技相对强弱", tech.get("market_components")),
+        ]
+        for section_key, section_label, values in tech_sections:
+            for component in values if isinstance(values, list) else []:
+                if not isinstance(component, dict):
+                    continue
+                label = str(component.get("label") or "").strip()
+                if label:
+                    entries.append(
+                        {
+                            "key": f"global_shock:{section_key}:{label}",
+                            "strategy_key": "global_shock",
+                            "strategy_label": "全球冲击",
+                            "section_key": section_key,
+                            "section_label": section_label,
+                            "label": label,
+                            "component": component,
+                        }
+                    )
+        return entries
+
+    def get_risk_dashboard_evidence(self, start_date: date, end_date: date) -> dict:
+        if start_date > end_date:
+            raise ValueError("start_date must not be later than end_date")
+        cache_key = (
+            f"{RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX}:"
+            f"{start_date.isoformat()}:{end_date.isoformat()}"
+        )
+        cached = redis_client.get(cache_key)
+        if cached:
+            try:
+                payload = json.loads(cached)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                pass
+
+        rows = self._load_risk_dashboard_rows(
+            CSI1000_RISK_INDEX_CODE,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        candles = self.stock_service.list_index_daily_kline(
+            CSI1000_RISK_INDEX_CODE,
+            market="cn",
+            start_date=start_date,
+            end_date=end_date,
+        )
+        dates = [
+            trade_date
+            for candle in candles
+            if (trade_date := self._coerce_date(candle.get("trade_date"))) is not None
+        ]
+        row_entries: dict[date, dict[str, dict]] = {}
+        definitions: dict[str, dict] = {}
+        for row in rows:
+            point = self._build_risk_dashboard_point_payload(row, include_components=True)
+            trade_date = self._coerce_date(point.get("trade_date"))
+            if trade_date is None:
+                continue
+            entries = self._flatten_risk_components(point.get("components") or {})
+            row_entries[trade_date] = {entry["key"]: entry for entry in entries}
+            for entry in entries:
+                definitions.setdefault(entry["key"], {key: value for key, value in entry.items() if key != "component"})
+
+        evidence_rows: list[dict] = []
+        for key, definition in definitions.items():
+            cells: list[dict] = []
+            for trade_date in dates:
+                entry = row_entries.get(trade_date, {}).get(key)
+                if entry is None:
+                    cells.append(
+                        {
+                            "trade_date": trade_date,
+                            "matched": None,
+                            "partial": False,
+                            "missing_reason": "当日风险证据数据缺失",
+                        }
+                    )
+                    continue
+                component = entry["component"]
+                value = _to_float(component.get("value"))
+                missing_reason = str(component.get("missing_reason") or "").strip() or None
+                direction = self._risk_component_direction(component)
+                matched = None if value is None or missing_reason else component.get("matched") is True
+                cells.append(
+                    {
+                        "trade_date": trade_date,
+                        "value": value,
+                        "unit": str(component.get("unit") or "").strip() or None,
+                        "percentile": _to_float(component.get("percentile")),
+                        "absolute_threshold": _to_float(component.get("absolute_threshold")),
+                        "percentile_threshold": _to_float(component.get("percentile_threshold")),
+                        "direction": direction,
+                        "matched": matched,
+                        "partial": False if matched is None else self._risk_component_is_partial(component, direction),
+                        "data_date": self._coerce_date(component.get("data_date")),
+                        "data_source": str(component.get("data_source") or "").strip() or None,
+                        "missing_reason": missing_reason,
+                    }
+                )
+            evidence_rows.append({**definition, "cells": cells})
+
+        result = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "dates": dates,
+            "rows": evidence_rows,
+        }
+        redis_client.set(
+            cache_key,
+            json.dumps(result, ensure_ascii=False, default=str),
+            ex=RISK_DASHBOARD_CACHE_TTL_SECONDS,
+        )
+        return result
+
+    def get_risk_dashboard(
+        self,
+        *,
+        mode: str = "default",
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        normalized_mode = str(mode or "default").strip().lower()
+        if normalized_mode not in {"default", "full", "custom"}:
+            raise ValueError("unsupported risk dashboard mode")
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("start_date must not be later than end_date")
+        cache_key = (
+            f"{RISK_DASHBOARD_CACHE_KEY_PREFIX}:{normalized_mode}:"
+            f"{start_date.isoformat() if start_date else 'none'}:"
+            f"{end_date.isoformat() if end_date else 'none'}"
+        )
+        cached = redis_client.get(cache_key)
+        if cached:
+            try:
+                payload = json.loads(cached)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                pass
+
+        rows = self._load_risk_dashboard_rows(CSI1000_RISK_INDEX_CODE)
+        candles = self.stock_service.list_index_daily_kline(CSI1000_RISK_INDEX_CODE, market="cn")
+        if not rows or not candles:
+            raise RuntimeError("中证1000风险监控数据暂不可用")
+        full_points = [
+            self._build_risk_dashboard_point_payload(row, include_components=True)
+            for row in rows
+        ]
+        available_dates = [
+            trade_date
+            for point in full_points
+            if (trade_date := self._coerce_date(point.get("trade_date"))) is not None
+        ]
+        if not available_dates:
+            raise RuntimeError("中证1000风险监控数据暂不可用")
+        latest_date = max(available_dates)
+        earliest_date = min(available_dates)
+        resolved_end = min(end_date or latest_date, latest_date)
+        if normalized_mode == "full":
+            resolved_start = start_date or earliest_date
+        elif normalized_mode == "custom":
+            resolved_start = start_date or CSI1000_RISK_DEFAULT_START_DATE
+        else:
+            resolved_start = start_date or CSI1000_RISK_DEFAULT_START_DATE
+        resolved_start = max(resolved_start, earliest_date)
+        if resolved_start > resolved_end:
+            raise ValueError("risk dashboard range has no available data")
+
+        filtered_points = [
+            {key: value for key, value in point.items() if key != "components"}
+            for point in full_points
+            if (trade_date := self._coerce_date(point.get("trade_date"))) is not None
+            and resolved_start <= trade_date <= resolved_end
+        ]
+        filtered_candles = [
+            candle
+            for candle in candles
+            if (trade_date := self._coerce_date(candle.get("trade_date"))) is not None
+            and resolved_start <= trade_date <= resolved_end
+        ]
+        all_events = self._build_risk_events(full_points, candles)
+        events = [
+            event
+            for event in all_events
+            if event["start_date"] <= resolved_end and event["end_date"] >= resolved_start
+        ]
+        result = {
+            "target_code": CSI1000_RISK_INDEX_CODE,
+            "target_name": CSI1000_RISK_INDEX_NAME,
+            "range_mode": normalized_mode,
+            "start_date": resolved_start,
+            "end_date": resolved_end,
+            "as_of_date": latest_date,
+            "candles": filtered_candles,
+            "points": filtered_points,
+            "events": events,
+        }
+        redis_client.set(
+            cache_key,
+            json.dumps(result, ensure_ascii=False, default=str),
+            ex=RISK_DASHBOARD_CACHE_TTL_SECONDS,
+        )
+        return result
 
     def _build_self_sentiment_point_payload(self, row: dict) -> dict:
         payload = self._parse_exchange_option_pc_json(
@@ -2370,6 +3146,23 @@ class QuantService:
             payload[payload_key] = _to_float(row.get(column_name))
         return payload
 
+    def _build_margin_trading_point_payload(self, row: dict) -> dict:
+        return {
+            "trade_date": row["trade_date"],
+            "financing_balance": _to_float(row.get("margin_financing_balance")),
+            "securities_lending_balance": _to_float(
+                row.get("margin_securities_lending_balance")
+            ),
+            "total_balance": _to_float(row.get("margin_total_balance")),
+            "financing_net_buy_amount": _to_float(
+                row.get("margin_financing_net_buy_amount")
+            ),
+            "leverage_ratio_pct": _to_float(row.get("margin_leverage_ratio_pct")),
+            "total_market_cap_leverage_ratio_pct": _to_float(
+                row.get("margin_total_market_cap_leverage_ratio_pct")
+            ),
+        }
+
     def _resolve_recent_index_start_date(self, index_code: str, market: str = "cn") -> date | None:
         config = self.stock_service._get_index_market_config(self._normalize_target_market(market))
         sql = text(
@@ -2668,6 +3461,7 @@ class QuantService:
         symbol_name: str,
         params: dict,
         candles: list[dict],
+        required_filter_keys: set[str] | None = None,
     ) -> list[dict]:
         normalized_market = self._normalize_target_market(target_market)
         if normalized_market == "cn" and (
@@ -2675,7 +3469,20 @@ class QuantService:
             or self._index_supports_vix(target_code, symbol_name, normalized_market)
             or self._index_supports_csi1000_reference_vix(target_code, symbol_name, normalized_market)
         ):
-            return self._build_index_snapshots(target_code, symbol_name, params, candles)
+            if required_filter_keys is None:
+                return self._build_index_snapshots(
+                    target_code,
+                    symbol_name,
+                    params,
+                    candles,
+                )
+            return self._build_index_snapshots(
+                target_code,
+                symbol_name,
+                params,
+                candles,
+                required_filter_keys=required_filter_keys,
+            )
         if normalized_market == "hk":
             return self._build_hk_index_snapshots(target_code, params, candles)
         if self._index_supports_us_auxiliary_panels(normalized_market):
@@ -2700,6 +3507,48 @@ class QuantService:
             f"`{settings.quant_index_dashboard_breadth_total_count_column}` AS total_count, "
             f"`{settings.quant_index_dashboard_breadth_up_pct_column}` AS up_ratio_pct"
             f"{optional_selects} "
+            f"FROM `{settings.quant_index_dashboard_table_name}` "
+            f"WHERE `{settings.quant_index_dashboard_code_column}` = :index_code"
+        )
+        params: dict[str, object] = {"index_code": index_code}
+        if start_date is not None:
+            sql += f" AND `{settings.quant_index_dashboard_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date is not None:
+            sql += f" AND `{settings.quant_index_dashboard_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.quant_index_dashboard_date_column}` ASC"
+        return [dict(row) for row in self.db.execute(text(sql), params).mappings().all()]
+
+    def _load_risk_dashboard_rows(
+        self,
+        index_code: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        self._ensure_index_dashboard_table_ready()
+        existing_columns = self._index_dashboard_column_names()
+        risk_columns = (
+            "risk_yellow_vulnerability",
+            "risk_yellow_vulnerability_score",
+            "risk_red_escalation",
+            "risk_red_escalation_score",
+            "risk_global_shock",
+            "risk_global_shock_score",
+            "risk_global_shock_mode",
+            "risk_strategy_components_json",
+        )
+        select_parts = [
+            f"`{settings.quant_index_dashboard_date_column}` AS trade_date",
+            *[
+                f"`{column_name}` AS {column_name}"
+                if column_name in existing_columns
+                else f"NULL AS {column_name}"
+                for column_name in risk_columns
+            ],
+        ]
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
             f"FROM `{settings.quant_index_dashboard_table_name}` "
             f"WHERE `{settings.quant_index_dashboard_code_column}` = :index_code"
         )
@@ -2929,8 +3778,24 @@ class QuantService:
                 "cffex_net_short_delta_points": [],
                 "basis_delta_points": [],
                 "fund_purchase_limit_points": [],
-                "margin_trading_points": [],
-                "margin_financing_net_buy_sum_points": [],
+                "margin_trading_points": [
+                    self._build_margin_trading_point_payload(row)
+                    for row in exchange_option_rows
+                    if any(
+                        _to_float(row.get(column_name)) is not None
+                        for _field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP
+                    )
+                ],
+                "margin_financing_net_buy_sum_points": [
+                    self._build_margin_financing_net_buy_sum_point_payload(row)
+                    for row in exchange_option_rows
+                    if any(
+                        _to_float(row.get(column_name)) is not None
+                        for _field_key, column_name, _payload_key
+                        in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
+                    )
+                ],
+                "turnover_concentration_points": [],
                 "self_sentiment_points": [],
                 "us_treasury_yield_points": [
                     {
@@ -2950,6 +3815,7 @@ class QuantService:
                     }
                     for row in auxiliary_rows["us_credit_spread_rows"]
                 ],
+                "risk_strategy_points": [],
             }
             redis_client.set(
                 cache_key,
@@ -3130,23 +3996,7 @@ class QuantService:
                 and row.get("fund_purchase_limit_pct") is not None
             ],
             "margin_trading_points": [
-                {
-                    "trade_date": row["trade_date"],
-                    "financing_balance": _to_float(row.get("margin_financing_balance")),
-                    "securities_lending_balance": _to_float(
-                        row.get("margin_securities_lending_balance")
-                    ),
-                    "total_balance": _to_float(row.get("margin_total_balance")),
-                    "financing_net_buy_amount": _to_float(
-                        row.get("margin_financing_net_buy_amount")
-                    ),
-                    "leverage_ratio_pct": _to_float(
-                        row.get("margin_leverage_ratio_pct")
-                    ),
-                    "total_market_cap_leverage_ratio_pct": _to_float(
-                        row.get("margin_total_market_cap_leverage_ratio_pct")
-                    ),
-                }
+                self._build_margin_trading_point_payload(row)
                 for row in rows
                 if any(
                     _to_float(row.get(column_name)) is not None
@@ -3162,6 +4012,36 @@ class QuantService:
                     in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
                 )
             ],
+            "turnover_concentration_points": [
+                {
+                    "trade_date": row["trade_date"],
+                    "top5_pct": _to_float(row.get("turnover_concentration_top5_pct")),
+                    "top1_pct": _to_float(row.get("turnover_concentration_top1_pct")),
+                    "top1_raw_pct": _to_float(row.get("turnover_concentration_top1_raw_pct")),
+                    "stock_count": (
+                        int(meta.get("stock_count"))
+                        if meta.get("stock_count") is not None
+                        else None
+                    ),
+                    "top1_stock_count": (
+                        int(meta.get("top1_stock_count"))
+                        if meta.get("top1_stock_count") is not None
+                        else None
+                    ),
+                    "top5_data_source": str(meta.get("top5_data_source") or "").strip() or None,
+                    "top1_data_source": str(meta.get("top1_data_source") or "").strip() or None,
+                    "source_date": meta.get("source_date") or None,
+                }
+                for row in rows
+                if option["name"] == SHANGHAI_INDEX_NAME
+                and (
+                    _to_float(row.get("turnover_concentration_top5_pct")) is not None
+                    or _to_float(row.get("turnover_concentration_top1_pct")) is not None
+                )
+                for meta in [self._parse_exchange_option_pc_json(
+                    row.get("turnover_concentration_meta_json")
+                )]
+            ],
             "self_sentiment_points": [
                 self._build_self_sentiment_point_payload(row)
                 for row in rows
@@ -3169,6 +4049,14 @@ class QuantService:
             ],
             "us_treasury_yield_points": [],
             "us_credit_spread_points": [],
+            "risk_strategy_points": [
+                self._build_risk_strategy_point_payload(row)
+                for row in rows
+                if any(
+                    row.get(column_name) is not None
+                    for _field_key, column_name in RISK_STRATEGY_FIELD_MAP
+                )
+            ],
         }
         redis_client.set(
             cache_key,
@@ -3284,13 +4172,17 @@ class QuantService:
             grouped[trade_date].append(emotion_value)
         return {trade_date: sum(values) / len(values) for trade_date, values in grouped.items() if values}
 
-    def _load_precomputed_index_indicator_rows(self, symbol_name: str) -> list[dict]:
+    def _load_precomputed_index_indicator_rows(
+        self,
+        symbol_name: str,
+        required_filter_keys: set[str] | None = None,
+    ) -> list[dict]:
         try:
             self._ensure_index_dashboard_table_ready()
         except RuntimeError:
             return []
         source_name = self._resolve_index_auxiliary_source_name(symbol_name)
-        optional_selects = self._optional_index_dashboard_selects()
+        optional_selects = self._optional_index_dashboard_selects(required_filter_keys)
 
         sql = text(
             f"SELECT "
@@ -3343,7 +4235,15 @@ class QuantService:
             for item in self.list_index_breadth()
         }
 
-    def _build_index_snapshots(self, target_code: str, symbol_name: str, params: dict, candles: list[dict]) -> list[dict]:
+    def _build_index_snapshots(
+        self,
+        target_code: str,
+        symbol_name: str,
+        params: dict,
+        candles: list[dict],
+        *,
+        required_filter_keys: set[str] | None = None,
+    ) -> list[dict]:
         sorted_candles = _sort_candles(candles)
         if not sorted_candles:
             return []
@@ -3384,115 +4284,169 @@ class QuantService:
         )
         wr_values = _calc_wr(sorted_candles, int(wr_params.get("period", 14)))
         rsi_values = _calc_rsi(closes, int(rsi_params.get("period", 14)))
-        precomputed_rows = self._load_precomputed_index_indicator_rows(symbol_name)
+        include_all_filters = required_filter_keys is None
+
+        def includes_filter(field_key: str) -> bool:
+            return include_all_filters or field_key in required_filter_keys
+
+        precomputed_rows = (
+            self._load_precomputed_index_indicator_rows(symbol_name)
+            if required_filter_keys is None
+            else self._load_precomputed_index_indicator_rows(
+                symbol_name,
+                required_filter_keys,
+            )
+        )
         if precomputed_rows:
-            emotion_map = {
-                _date_text(item["trade_date"]): _to_float(item.get("emotion_value")) or 50.0
-                for item in precomputed_rows
-            }
-            basis_main_map = {
-                _date_text(item["trade_date"]): _to_float(item.get("main_basis")) or 0.0
-                for item in precomputed_rows
-            }
-            basis_month_map = {
-                _date_text(item["trade_date"]): _to_float(item.get("month_basis")) or 0.0
-                for item in precomputed_rows
-            }
-            breadth_map = {
-                _date_text(item["trade_date"]): _to_float(item.get("up_ratio_pct")) or 0.0
-                for item in precomputed_rows
-            }
+            emotion_map: dict[str, float] = {}
+            basis_main_map: dict[str, float] = {}
+            basis_month_map: dict[str, float] = {}
+            breadth_map: dict[str, float] = {}
             option_put_call_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
-                    for item in precomputed_rows
-                }
-                for field_key, column_name in CN_OPTION_PUT_CALL_FILTER_FIELD_MAP
+                field_key: {} for field_key, _column_name in CN_OPTION_PUT_CALL_FILTER_FIELD_MAP
             }
             option_flow_put_call_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
-                    for item in precomputed_rows
-                }
-                for field_key, column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
+                field_key: {}
+                for field_key, _column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP
             }
             exchange_option_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): (
-                        _positive_reciprocal(
-                            self._parse_exchange_option_pc_json(
-                                item.get("exchange_option_pc_json")
-                            ).get(source_key, {}).get("option_turnover_pc_ratio")
-                        )
-                        if column_name == "option_turnover_cp_ratio"
-                        else _to_float(
-                            self._parse_exchange_option_pc_json(
-                                item.get("exchange_option_pc_json")
-                            ).get(source_key, {}).get(column_name)
-                        )
-                    )
-                    for item in precomputed_rows
-                }
-                for field_key, source_key, column_name in EXCHANGE_OPTION_FILTER_FIELD_MAP
+                field_key: {} for field_key in EXCHANGE_OPTION_FILTER_KEYS
             }
             option_vix_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): _to_float(
-                        self._parse_exchange_option_pc_json(
-                            item.get("option_vix_json")
-                        ).get(source_key, {}).get(value_field)
-                    )
-                    for item in precomputed_rows
-                }
-                for field_key, source_key, value_field in OPTION_VIX_FILTER_FIELD_MAP
+                field_key: {} for field_key in OPTION_VIX_FILTER_KEYS
             }
             cffex_net_short_delta_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
-                    for item in precomputed_rows
-                }
-                for field_key, column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP
+                field_key: {}
+                for field_key, _column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP
             }
             basis_delta_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
-                    for item in precomputed_rows
-                }
-                for field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP
+                field_key: {}
+                for field_key, _column_name, _payload_key in BASIS_DELTA_FIELD_MAP
             }
             fund_purchase_limit_maps = {
-                "fund-purchase-limit-count": {
-                    _date_text(item["trade_date"]): _to_float(
-                        item.get("fund_purchase_limit_count")
-                    )
-                    for item in precomputed_rows
-                },
-                "fund-purchase-limit-pct": {
-                    _date_text(item["trade_date"]): _to_float(
-                        item.get("fund_purchase_limit_pct")
-                    )
-                    for item in precomputed_rows
-                },
+                field_key: {} for field_key in FUND_PURCHASE_LIMIT_FILTER_KEYS
             }
             margin_trading_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
-                    for item in precomputed_rows
-                }
-                for field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP
+                field_key: {}
+                for field_key, _column_name in MARGIN_TRADING_FILTER_FIELD_MAP
             }
             margin_financing_net_buy_sum_maps = {
-                field_key: {
-                    _date_text(item["trade_date"]): _to_float(item.get(column_name))
-                    for item in precomputed_rows
-                }
-                for field_key, column_name, _payload_key
+                field_key: {}
+                for field_key, _column_name, _payload_key
                 in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
             }
-            self_sentiment_map = {
-                _date_text(item["trade_date"]): _to_float(item.get("self_sentiment_score"))
-                for item in precomputed_rows
+            self_sentiment_maps = {
+                field_key: {} for field_key in SELF_SENTIMENT_FILTER_KEYS
             }
+            risk_strategy_maps = {
+                field_key: {} for field_key in RISK_STRATEGY_FILTER_KEYS
+            }
+
+            # Each dashboard row carries the same JSON payload for every option field.
+            # Parse it once per date instead of once per field to keep strategy charts fast.
+            for item in precomputed_rows:
+                trade_date = _date_text(item["trade_date"])
+                emotion_map[trade_date] = _to_float(item.get("emotion_value")) or 50.0
+                basis_main_map[trade_date] = _to_float(item.get("main_basis")) or 0.0
+                basis_month_map[trade_date] = _to_float(item.get("month_basis")) or 0.0
+                breadth_map[trade_date] = _to_float(item.get("up_ratio_pct")) or 0.0
+
+                for field_key, column_name in CN_OPTION_PUT_CALL_FILTER_FIELD_MAP:
+                    if not includes_filter(field_key):
+                        continue
+                    option_put_call_maps[field_key][trade_date] = _to_float(
+                        item.get(column_name)
+                    )
+                for field_key, column_name in CN_OPTION_FLOW_PUT_CALL_FILTER_FIELD_MAP:
+                    if not includes_filter(field_key) and not (
+                        field_key == "cn-option-flow-pc-turnover"
+                        and includes_filter("cn-option-flow-cp-turnover")
+                    ):
+                        continue
+                    option_flow_put_call_maps[field_key][trade_date] = _to_float(
+                        item.get(column_name)
+                    )
+
+                if include_all_filters or required_filter_keys.intersection(
+                    EXCHANGE_OPTION_FILTER_KEYS
+                ):
+                    exchange_option_payload = self._parse_exchange_option_pc_json(
+                        item.get("exchange_option_pc_json")
+                    )
+                    for field_key, source_key, column_name in EXCHANGE_OPTION_FILTER_FIELD_MAP:
+                        if not includes_filter(field_key):
+                            continue
+                        source_payload = exchange_option_payload.get(source_key, {})
+                        if column_name == "option_turnover_cp_ratio":
+                            value = _positive_reciprocal(
+                                source_payload.get("option_turnover_pc_ratio")
+                            )
+                        else:
+                            value = _to_float(source_payload.get(column_name))
+                        exchange_option_maps[field_key][trade_date] = value
+
+                if include_all_filters or required_filter_keys.intersection(
+                    OPTION_VIX_FILTER_KEYS
+                ):
+                    option_vix_payload = self._parse_exchange_option_pc_json(
+                        item.get("option_vix_json")
+                    )
+                    for field_key, source_key, value_field in OPTION_VIX_FILTER_FIELD_MAP:
+                        if not includes_filter(field_key):
+                            continue
+                        option_vix_maps[field_key][trade_date] = _to_float(
+                            option_vix_payload.get(source_key, {}).get(value_field)
+                        )
+
+                for field_key, column_name, _payload_key in CFFEX_NET_SHORT_DELTA_FIELD_MAP:
+                    if not includes_filter(field_key):
+                        continue
+                    cffex_net_short_delta_maps[field_key][trade_date] = _to_float(
+                        item.get(column_name)
+                    )
+                for field_key, column_name, _payload_key in BASIS_DELTA_FIELD_MAP:
+                    if not includes_filter(field_key):
+                        continue
+                    basis_delta_maps[field_key][trade_date] = _to_float(
+                        item.get(column_name)
+                    )
+                if includes_filter("fund-purchase-limit-count"):
+                    fund_purchase_limit_maps["fund-purchase-limit-count"][trade_date] = _to_float(
+                        item.get("fund_purchase_limit_count")
+                    )
+                if includes_filter("fund-purchase-limit-pct"):
+                    fund_purchase_limit_maps["fund-purchase-limit-pct"][trade_date] = _to_float(
+                        item.get("fund_purchase_limit_pct")
+                    )
+                for field_key, column_name in MARGIN_TRADING_FILTER_FIELD_MAP:
+                    if not includes_filter(field_key):
+                        continue
+                    margin_trading_maps[field_key][trade_date] = _to_float(
+                        item.get(column_name)
+                    )
+                for (
+                    field_key,
+                    column_name,
+                    _payload_key,
+                ) in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP:
+                    if not includes_filter(field_key):
+                        continue
+                    margin_financing_net_buy_sum_maps[field_key][trade_date] = _to_float(
+                        item.get(column_name)
+                    )
+                for field_key, column_name in SELF_SENTIMENT_FILTER_FIELD_MAP:
+                    if not includes_filter(field_key):
+                        continue
+                    self_sentiment_maps[field_key][trade_date] = _to_float(
+                        item.get(column_name)
+                    )
+                for field_key, column_name in RISK_STRATEGY_FIELD_MAP:
+                    if not includes_filter(field_key):
+                        continue
+                    state = self._to_optional_bool(item.get(column_name))
+                    risk_strategy_maps[field_key][trade_date] = (
+                        1.0 if state is True else 0.0 if state is False else None
+                    )
         else:
             emotion_map = self._build_emotion_value_by_date(symbol_name)
             basis_main_map, basis_month_map = self._build_basis_value_by_date(symbol_name)
@@ -3525,7 +4479,12 @@ class QuantService:
                 for field_key, _column_name, _payload_key
                 in MARGIN_FINANCING_NET_BUY_SUM_FIELD_MAP
             }
-            self_sentiment_map = {}
+            self_sentiment_maps = {
+                field_key: {} for field_key in SELF_SENTIMENT_FILTER_KEYS
+            }
+            risk_strategy_maps = {
+                field_key: {} for field_key in RISK_STRATEGY_FILTER_KEYS
+            }
         option_flow_put_call_maps["cn-option-flow-cp-turnover"] = {
             trade_date: _positive_reciprocal(value)
             for trade_date, value in option_flow_put_call_maps["cn-option-flow-pc-turnover"].items()
@@ -3533,7 +4492,7 @@ class QuantService:
 
         vix_by_date: dict[str, dict[str, float | None]] = {}
         qvix_code = self._resolve_index_vix_code(target_code, symbol_name, "cn")
-        if qvix_code:
+        if qvix_code and any(includes_filter(field_key) for field_key in VIX_FILTER_KEYS):
             first_trade_date = sorted_candles[0].get("trade_date")
             last_trade_date = sorted_candles[-1].get("trade_date")
             qvix_rows = self.stock_service.list_index_qvix_daily_data(
@@ -3555,10 +4514,14 @@ class QuantService:
         reference_vix_maps: dict[str, dict[str, float | None]] = {
             field_key: {} for field_key in CSI1000_REFERENCE_VIX_FILTER_KEYS
         }
-        if self._index_supports_csi1000_reference_vix(target_code, symbol_name, "cn"):
+        if self._index_supports_csi1000_reference_vix(target_code, symbol_name, "cn") and any(
+            includes_filter(field_key) for field_key in CSI1000_REFERENCE_VIX_FILTER_KEYS
+        ):
             first_trade_date = sorted_candles[0].get("trade_date")
             last_trade_date = sorted_candles[-1].get("trade_date")
             for field_key, (_source_name, reference_qvix_code) in CSI1000_REFERENCE_VIX_FILTER_MAP.items():
+                if not includes_filter(field_key):
+                    continue
                 reference_rows = self.stock_service.list_index_qvix_daily_data(
                     reference_qvix_code,
                     start_date=first_trade_date if isinstance(first_trade_date, date) else None,
@@ -3570,14 +4533,16 @@ class QuantService:
                     if item.get("trade_date") is not None
                 }
 
-        cn_market_fear_greed_map = {
-            _date_text(item["trade_date"]): _to_float(item.get("fear_greed_value"))
-            for item in self._load_cn_market_fear_greed_rows(
-                start_date=sorted_candles[0].get("trade_date"),
-                end_date=sorted_candles[-1].get("trade_date"),
-            )
-            if item.get("trade_date") is not None
-        }
+        cn_market_fear_greed_map = {}
+        if includes_filter("cn-market-fear-greed"):
+            cn_market_fear_greed_map = {
+                _date_text(item["trade_date"]): _to_float(item.get("fear_greed_value"))
+                for item in self._load_cn_market_fear_greed_rows(
+                    start_date=sorted_candles[0].get("trade_date"),
+                    end_date=sorted_candles[-1].get("trade_date"),
+                )
+                if item.get("trade_date") is not None
+            }
         cn_baifenwei_filter_field_map = {
             "cn-baifenwei-fear-greed": "fear_greed_value",
             "cn-baifenwei-volatility": "volatility_score",
@@ -3587,9 +4552,18 @@ class QuantService:
             "cn-baifenwei-rsi": "rsi_score",
             "cn-baifenwei-limit-up-down-ratio": "limit_up_down_ratio_score",
         }
-        cn_baifenwei_rows = self._load_cn_baifenwei_fear_greed_rows(
-            start_date=sorted_candles[0].get("trade_date"),
-            end_date=sorted_candles[-1].get("trade_date"),
+        requested_baifenwei_fields = {
+            filter_key
+            for filter_key in cn_baifenwei_filter_field_map
+            if includes_filter(filter_key)
+        }
+        cn_baifenwei_rows = (
+            self._load_cn_baifenwei_fear_greed_rows(
+                start_date=sorted_candles[0].get("trade_date"),
+                end_date=sorted_candles[-1].get("trade_date"),
+            )
+            if requested_baifenwei_fields
+            else []
         )
         cn_baifenwei_maps = {
             filter_key: {
@@ -3598,6 +4572,7 @@ class QuantService:
                 if item.get("trade_date") is not None
             }
             for filter_key, column_name in cn_baifenwei_filter_field_map.items()
+            if filter_key in requested_baifenwei_fields
         }
 
         snapshots: list[dict] = []
@@ -3616,7 +4591,14 @@ class QuantService:
                             filter_key: value_map.get(trade_date)
                             for filter_key, value_map in cn_baifenwei_maps.items()
                         },
-                        "self-sentiment-score": self_sentiment_map.get(trade_date),
+                        **{
+                            field_key: self_sentiment_maps[field_key].get(trade_date)
+                            for field_key in SELF_SENTIMENT_FILTER_KEYS
+                        },
+                        **{
+                            field_key: risk_strategy_maps[field_key].get(trade_date)
+                            for field_key in RISK_STRATEGY_FILTER_KEYS
+                        },
                         "basis-main": basis_main_map.get(trade_date, 0.0),
                         "basis-month": basis_month_map.get(trade_date, 0.0),
                         "breadth-up-pct": breadth_map.get(trade_date, 0.0),
@@ -5364,6 +6346,29 @@ class QuantService:
         target_code = str(payload.get("target_code", "")).strip()
         target_name = str(payload.get("target_name", "")).strip()
 
+        if strategy_engine == "risk":
+            if strategy_type != "index" or not self._index_supports_risk_strategy(
+                target_code,
+                target_name,
+                target_market,
+            ):
+                raise ValueError("风险状态策略仅支持中证1000指数。")
+            if self._risk_strategy_definition(payload.get("indicator_params") or {}) is None:
+                raise ValueError("风险状态策略类型无效。")
+            if any(
+                payload.get(key)
+                for key in (
+                    "buy_sequence_groups",
+                    "sell_sequence_groups",
+                    "blue_filter_groups",
+                    "red_filter_groups",
+                    "blue_filters",
+                    "red_filters",
+                )
+            ):
+                raise ValueError("风险状态策略不能包含买卖规则。")
+            return
+
         if (
             strategy_engine == "sequence"
             and strategy_type == "index"
@@ -5448,7 +6453,10 @@ class QuantService:
             raise ValueError("当前指数不支持对冲基金代理条件，请先移除相关规则。")
 
     def _build_signal_map(self, strategy: QuantStrategyConfig, snapshots: list[dict]) -> dict[str, str]:
-        if self._normalize_strategy_engine(strategy.strategy_engine) == "sequence":
+        strategy_engine = self._normalize_strategy_engine(strategy.strategy_engine)
+        if strategy_engine == "risk":
+            return {}
+        if strategy_engine == "sequence":
             return self._build_sequence_signal_map(strategy, snapshots)
 
         allowed_keys = self._allowed_snapshot_filter_keys(
@@ -5500,6 +6508,30 @@ class QuantService:
         start_date_text = start_date.isoformat() if isinstance(start_date, date) else str(start_date or "").strip()
         strategy_engine = self._normalize_strategy_engine(strategy.strategy_engine)
         highlights: list[dict] = []
+
+        if strategy_engine == "risk":
+            definition = self._risk_strategy_definition(strategy)
+            if definition is None:
+                return []
+            rows = self._load_precomputed_index_indicator_rows(strategy.target_name)
+            for row in rows:
+                trade_date = _date_text(row.get("trade_date"))
+                if start_date_text and trade_date < start_date_text:
+                    continue
+                if self._to_optional_bool(row.get(definition["column"])) is not True:
+                    continue
+                point = self._build_risk_strategy_point_payload(row)
+                highlights.append(
+                    {
+                        "tradeDate": trade_date,
+                        "color": definition["color"],
+                        "variant": "solid",
+                        "blueHitGroups": [],
+                        "redHitGroups": [],
+                        "riskDetails": point,
+                    }
+                )
+            return highlights
 
         if strategy_engine == "sequence":
             blue_groups = self._get_sequence_groups(strategy, "buy")
@@ -5557,12 +6589,29 @@ class QuantService:
                 strategy.target_code,
                 market=target_market,
             )
+            allowed_keys = self._allowed_snapshot_filter_keys(
+                strategy.strategy_type,
+                target_market,
+                strategy.target_code,
+                strategy.target_name,
+            )
+            rule_groups = [
+                *self._get_rule_groups(strategy, "blue", allowed_keys),
+                *self._get_rule_groups(strategy, "red", allowed_keys),
+            ]
+            required_filter_keys = {
+                str(condition.get("field") or "").strip()
+                for group in rule_groups
+                for condition in group.get("conditions", [])
+                if condition.get("type") == "numeric" and condition.get("field")
+            }
             snapshots = self._build_index_snapshots_for_market(
                 target_market,
                 strategy.target_code,
                 strategy.target_name,
                 strategy.indicator_params or {},
                 candles,
+                required_filter_keys,
             )
             return candles, snapshots
         if strategy_type == "stock":
@@ -5650,26 +6699,78 @@ class QuantService:
         target_code: str | None = None,
     ) -> dict:
         strategy = self._get_owned_strategy(strategy_id, owner_user_id)
+        cache_key = None
+        strategy_updated_at = getattr(strategy, "updated_at", None)
+        if strategy_updated_at is not None:
+            cache_fingerprint = sha1(
+                json.dumps(
+                    {
+                        "updated_at": str(strategy_updated_at),
+                        "scan_result_id": str(scan_result_id or "").strip(),
+                        "target_code": str(target_code or "").strip(),
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            cache_key = (
+                f"{STRATEGY_TARGET_CHART_CACHE_KEY_PREFIX}:"
+                f"{owner_user_id}:{strategy_id}:{cache_fingerprint}"
+            )
+            cached = redis_client.get(cache_key)
+            if cached:
+                try:
+                    cached_payload = json.loads(cached)
+                except (TypeError, json.JSONDecodeError):
+                    cached_payload = None
+                if isinstance(cached_payload, dict):
+                    return cached_payload
+
         if (
             self._normalize_strategy_engine(strategy.strategy_engine) == "sequence"
             and self._normalize_sequence_mode(strategy.sequence_mode) == "market_scan"
         ):
-            return self._get_market_scan_target_chart(
+            result = self._get_market_scan_target_chart(
                 strategy,
                 owner_user_id,
                 scan_result_id,
                 target_code,
             )
+            if cache_key:
+                redis_client.set(
+                    cache_key,
+                    json.dumps(result, ensure_ascii=False, default=str),
+                    ex=STRATEGY_TARGET_CHART_CACHE_TTL_SECONDS,
+                )
+            return result
 
         candles, snapshots = self._load_fixed_strategy_target_chart(strategy)
-        return {
+        risk_points = []
+        if self._normalize_strategy_engine(strategy.strategy_engine) == "risk":
+            risk_points = [
+                self._build_risk_strategy_point_payload(row)
+                for row in self._load_precomputed_index_indicator_rows(strategy.target_name)
+                if any(
+                    row.get(column_name) is not None
+                    for _field_key, column_name in RISK_STRATEGY_FIELD_MAP
+                )
+            ]
+        result = {
             "target_type": str(strategy.strategy_type or "").strip().lower(),
             "target_market": self._normalize_target_market(getattr(strategy, "target_market", "cn")),
             "target_code": str(strategy.target_code or "").strip(),
             "target_name": str(strategy.target_name or strategy.target_code or "").strip(),
             "candles": candles,
             "highlight_bands": self._build_strategy_highlight_bands(strategy, snapshots),
+            "risk_strategy_points": risk_points,
         }
+        if cache_key:
+            redis_client.set(
+                cache_key,
+                json.dumps(result, ensure_ascii=False, default=str),
+                ex=STRATEGY_TARGET_CHART_CACHE_TTL_SECONDS,
+            )
+        return result
 
     def _serialize_strategy(self, item: QuantStrategyConfig) -> dict:
         allowed_keys = self._allowed_snapshot_filter_keys(
@@ -5928,6 +7029,83 @@ class QuantService:
 
             strategy_engine = self._normalize_strategy_engine(item.strategy_engine)
             sequence_mode = self._normalize_sequence_mode(item.sequence_mode)
+            if strategy_engine == "risk":
+                definition = self._risk_strategy_definition(item)
+                rows = self._load_precomputed_index_indicator_rows(item.target_name)
+                if basis_trade_date is not None:
+                    rows = [
+                        row
+                        for row in rows
+                        if row.get("trade_date") is not None
+                        and row["trade_date"] <= basis_trade_date
+                    ]
+                row = rows[-1] if rows else None
+                if definition is None or row is None:
+                    results.append(
+                        {
+                            "strategy_id": item.id,
+                            "strategy_name": item.name,
+                            "target_name": item.target_name,
+                            "latest_trade_date": "-",
+                            "signal": None,
+                            "signal_text": "数据不完整",
+                            "note": "风险状态缺少可用看板数据",
+                            "is_risk": True,
+                        }
+                    )
+                    continue
+
+                point = self._build_risk_strategy_point_payload(row)
+                state = self._to_optional_bool(row.get(definition["column"]))
+                component_payload = point.get("components", {}).get(
+                    definition["component_key"], {}
+                )
+                if not isinstance(component_payload, dict):
+                    component_payload = {}
+                matched_labels = [
+                    str(component.get("label") or "").strip()
+                    for component in component_payload.get("components", [])
+                    if isinstance(component, dict) and component.get("matched") is True
+                ]
+                missing_reasons = [
+                    str(component.get("missing_reason") or "").strip()
+                    for component in component_payload.get("components", [])
+                    if isinstance(component, dict) and component.get("missing_reason")
+                ]
+                if definition["key"] == "global_shock":
+                    mode = str(point.get("global_mode") or "").strip()
+                    mode_label = {
+                        "broad_risk_off": "全面避险",
+                        "tech_deleveraging": "科技去杠杆",
+                        "broad_risk_off+tech_deleveraging": "全面避险+科技去杠杆",
+                    }.get(mode, mode)
+                    if state is True and mode_label:
+                        matched_labels = [f"命中模式：{mode_label}"]
+                if state is True:
+                    signal_text = "风险命中"
+                    note = "；".join(filter(None, matched_labels)) or "风险条件全部满足"
+                elif state is False:
+                    signal_text = "风险解除"
+                    note = "当日条件不满足，风险状态已立即解除"
+                else:
+                    signal_text = "数据不完整"
+                    note = "；".join(filter(None, missing_reasons)) or "关键输入不足，未判断状态"
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": _date_text(row.get("trade_date")),
+                        "signal": "risk" if state is True else None,
+                        "signal_text": signal_text,
+                        "note": note,
+                        "is_risk": True,
+                        "risk_state": state,
+                        "risk_score": _to_float(row.get(definition["score_column"])),
+                        "risk_mode": point.get("global_mode"),
+                    }
+                )
+                continue
             if strategy_engine == "sequence" and sequence_mode == "market_scan":
                 scan_payload = {
                     "strategy_type": item.strategy_type,
@@ -6084,6 +7262,97 @@ class QuantService:
 
             strategy_engine = self._normalize_strategy_engine(item.strategy_engine)
             sequence_mode = self._normalize_sequence_mode(item.sequence_mode)
+            if strategy_engine == "risk":
+                definition = self._risk_strategy_definition(item)
+                rows = self._load_precomputed_index_indicator_rows(item.target_name)
+                if basis_trade_date is not None:
+                    rows = [
+                        row
+                        for row in rows
+                        if row.get("trade_date") is not None
+                        and row["trade_date"] <= basis_trade_date
+                    ]
+                row = rows[-1] if rows else None
+                if definition is None or row is None:
+                    results.append(
+                        {
+                            "strategy_id": item.id,
+                            "strategy_name": item.name,
+                            "target_name": item.target_name,
+                            "latest_trade_date": "-",
+                            "signal": None,
+                            "signal_text": "数据不完整",
+                            "note": "风险状态缺少可用看板数据",
+                            "is_risk": True,
+                            "risk_state": None,
+                        }
+                    )
+                    continue
+
+                point = self._build_risk_strategy_point_payload(row)
+                state = self._to_optional_bool(row.get(definition["column"]))
+                component_payload = point.get("components", {}).get(
+                    definition["component_key"], {}
+                )
+                if not isinstance(component_payload, dict):
+                    component_payload = {}
+
+                def iter_components(value: object):
+                    if isinstance(value, list):
+                        for child in value:
+                            yield from iter_components(child)
+                    elif isinstance(value, dict):
+                        if isinstance(value.get("label"), str):
+                            yield value
+                        for key, child in value.items():
+                            if key != "label":
+                                yield from iter_components(child)
+
+                components = list(iter_components(component_payload))
+                matched_labels = [
+                    str(component.get("label") or "").strip()
+                    for component in components
+                    if component.get("matched") is True
+                ]
+                missing_reasons = [
+                    str(component.get("missing_reason") or "").strip()
+                    for component in components
+                    if component.get("missing_reason")
+                ]
+                if definition["key"] == "global_shock":
+                    mode = str(point.get("global_mode") or "").strip()
+                    mode_label = {
+                        "broad_risk_off": "全面避险",
+                        "tech_deleveraging": "科技去杠杆",
+                        "broad_risk_off+tech_deleveraging": "全面避险+科技去杠杆",
+                    }.get(mode, mode)
+                    if state is True and mode_label:
+                        matched_labels = [f"命中模式：{mode_label}"]
+                if state is True:
+                    signal_text = "风险命中"
+                    note = "；".join(filter(None, matched_labels)) or "风险条件全部满足"
+                elif state is False:
+                    signal_text = "风险解除"
+                    note = "当日条件不满足，风险状态已立即解除"
+                else:
+                    signal_text = "数据不完整"
+                    note = "；".join(filter(None, missing_reasons)) or "关键输入不足，未判断状态"
+                results.append(
+                    {
+                        "strategy_id": item.id,
+                        "strategy_name": item.name,
+                        "target_name": item.target_name,
+                        "latest_trade_date": _date_text(row.get("trade_date")),
+                        "signal": "risk" if state is True else None,
+                        "signal_text": signal_text,
+                        "note": note,
+                        "is_risk": True,
+                        "risk_state": state,
+                        "risk_score": _to_float(row.get(definition["score_column"])),
+                        "risk_mode": point.get("global_mode"),
+                    }
+                )
+                continue
             if strategy_engine == "sequence" and sequence_mode == "market_scan":
                 scan_payload = {
                     "strategy_type": item.strategy_type,
@@ -6517,6 +7786,8 @@ class QuantService:
 
     def calculate_research_option_trades(self, strategy_id: int, owner_user_id: int) -> dict:
         strategy = self._get_owned_strategy(strategy_id, owner_user_id)
+        if self._normalize_strategy_engine(strategy.strategy_engine) == "risk":
+            raise ValueError("风险状态策略不产生期权交易。")
         template = self._normalize_research_option_template(
             getattr(strategy, "research_option_template", None)
         )
@@ -6532,6 +7803,8 @@ class QuantService:
 
     def calculate_equity_curve(self, strategy_id: int, owner_user_id: int) -> dict:
         strategy = self._get_owned_strategy(strategy_id, owner_user_id)
+        if self._normalize_strategy_engine(strategy.strategy_engine) == "risk":
+            raise ValueError("风险状态策略不产生买卖交易或收益回测。")
         if (
             self._normalize_strategy_engine(strategy.strategy_engine) == "sequence"
             and self._normalize_sequence_mode(strategy.sequence_mode) == "market_scan"

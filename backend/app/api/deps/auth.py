@@ -13,15 +13,20 @@ def get_current_user(
     session_id: str | None = Cookie(default=None, alias=settings.auth_session_cookie_name),
     db: Session = Depends(get_db),
 ) -> User:
-    if not session_id:
-        raise HTTPException(status_code=401, detail="请先登录")
-    service = AuthService(db)
-    user = service.get_user_from_session(session_id)
-    if user is None:
-        service.logout(session_id, response)
-        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
-    service.refresh_session(session_id, response, user, request)
-    return user
+    try:
+        if not session_id:
+            raise HTTPException(status_code=401, detail="请先登录")
+        service = AuthService(db)
+        user = service.get_user_from_session(session_id)
+        if user is None:
+            service.logout(session_id, response)
+            raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+        service.refresh_session(session_id, response, user, request)
+        return user
+    finally:
+        # Authentication finishes before the route handler. Release its checkout
+        # now so chart requests do not hold a connection through route processing.
+        db.close()
 
 
 def get_current_user_optional(
@@ -30,15 +35,18 @@ def get_current_user_optional(
     session_id: str | None = Cookie(default=None, alias=settings.auth_session_cookie_name),
     db: Session = Depends(get_db),
 ) -> User | None:
-    if not session_id:
-        return None
-    service = AuthService(db)
-    user = service.get_user_from_session(session_id)
-    if user is None:
-        service.logout(session_id, response)
-        return None
-    service.refresh_session(session_id, response, user, request)
-    return user
+    try:
+        if not session_id:
+            return None
+        service = AuthService(db)
+        user = service.get_user_from_session(session_id)
+        if user is None:
+            service.logout(session_id, response)
+            return None
+        service.refresh_session(session_id, response, user, request)
+        return user
+    finally:
+        db.close()
 
 
 def require_authenticated_user(_: User = Depends(get_current_user)) -> None:

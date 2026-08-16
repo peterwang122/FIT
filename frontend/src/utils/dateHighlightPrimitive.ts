@@ -14,12 +14,14 @@ type VisibleRect = {
   left: number
   right: number
   color: QuantHighlightColor
+  fillColor: string
   variant: QuantHighlightVariant
 }
 
 const HIGHLIGHT_FILL: Record<QuantHighlightColor, string> = {
   blue: 'rgba(29, 78, 216, 0.24)',
   red: 'rgba(220, 38, 38, 0.24)',
+  green: 'rgba(22, 163, 74, 0.22)',
   purple: 'rgba(126, 34, 206, 0.26)',
   amber: 'rgba(245, 158, 11, 0.22)',
 }
@@ -42,7 +44,7 @@ class DateHighlightRenderer implements IPrimitivePaneRenderer {
         const left = Math.round(rect.left * horizontalPixelRatio)
         const right = Math.round(rect.right * horizontalPixelRatio)
         const width = Math.max(1, right - left)
-        context.fillStyle = HIGHLIGHT_FILL[rect.color]
+        context.fillStyle = rect.fillColor
         context.fillRect(left, 0, width, bitmapSize.height)
         if (rect.variant === 'striped') {
           const stripeGap = Math.max(6, Math.round(10 * horizontalPixelRatio))
@@ -166,6 +168,7 @@ export class DateHighlightPrimitive implements ISeriesPrimitive<Time> {
         left: point.x - leftHalf,
         right: point.x + rightHalf,
         color: band.color,
+        fillColor: band.fillColor ?? HIGHLIGHT_FILL[band.color],
         variant: band.variant ?? 'solid',
       })
     }
@@ -185,7 +188,12 @@ function mergeRects(rects: VisibleRect[]) {
     const current = rects[index]
     const previous = merged[merged.length - 1]
 
-    if (previous.color === current.color && previous.variant === current.variant && current.left <= previous.right + 1) {
+    if (
+      previous.color === current.color
+      && previous.fillColor === current.fillColor
+      && previous.variant === current.variant
+      && current.left <= previous.right + 1
+    ) {
       previous.right = Math.max(previous.right, current.right)
       continue
     }

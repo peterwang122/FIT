@@ -30,7 +30,9 @@ import type {
   IndexFundPurchaseLimitPoint,
   IndexMarginFinancingNetBuySumPoint,
   IndexMarginTradingPoint,
+  IndexTurnoverConcentrationPoint,
   IndexRelatedVixSeries,
+  IndexRiskStrategyPoint,
   IndexSelfSentimentPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
@@ -101,7 +103,9 @@ type IndexDashboardChunkState = {
   fundPurchaseLimitPoints: IndexFundPurchaseLimitPoint[]
   marginTradingPoints: IndexMarginTradingPoint[]
   marginFinancingNetBuySumPoints: IndexMarginFinancingNetBuySumPoint[]
+  turnoverConcentrationPoints: IndexTurnoverConcentrationPoint[]
   selfSentimentPoints: IndexSelfSentimentPoint[]
+  riskStrategyPoints: IndexRiskStrategyPoint[]
   usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints: IndexUsCreditSpreadPoint[]
   earliestLoadedDate: string | null
@@ -308,7 +312,9 @@ function buildDashboardChunkState(
     | 'fund_purchase_limit_points'
     | 'margin_trading_points'
     | 'margin_financing_net_buy_sum_points'
+    | 'turnover_concentration_points'
     | 'self_sentiment_points'
+    | 'risk_strategy_points'
     | 'us_treasury_yield_points'
     | 'us_credit_spread_points'
   >,
@@ -339,7 +345,9 @@ function buildDashboardChunkState(
     fundPurchaseLimitPoints: payload.fund_purchase_limit_points ?? [],
     marginTradingPoints: payload.margin_trading_points ?? [],
     marginFinancingNetBuySumPoints: payload.margin_financing_net_buy_sum_points ?? [],
+    turnoverConcentrationPoints: payload.turnover_concentration_points ?? [],
     selfSentimentPoints: payload.self_sentiment_points ?? [],
+    riskStrategyPoints: payload.risk_strategy_points ?? [],
     usTreasuryYieldPoints: payload.us_treasury_yield_points ?? [],
     usCreditSpreadPoints: payload.us_credit_spread_points ?? [],
     earliestLoadedDate: payload.candles[0]?.trade_date ?? null,
@@ -523,7 +531,9 @@ const basisDeltaPoints = ref<IndexBasisDeltaPoint[]>([])
 const fundPurchaseLimitPoints = ref<IndexFundPurchaseLimitPoint[]>([])
 const marginTradingPoints = ref<IndexMarginTradingPoint[]>([])
 const marginFinancingNetBuySumPoints = ref<IndexMarginFinancingNetBuySumPoint[]>([])
+const turnoverConcentrationPoints = ref<IndexTurnoverConcentrationPoint[]>([])
 const selfSentimentPoints = ref<IndexSelfSentimentPoint[]>([])
+const riskStrategyPoints = ref<IndexRiskStrategyPoint[]>([])
 const usTreasuryYieldPoints = ref<IndexUsTreasuryYieldPoint[]>([])
 const usCreditSpreadPoints = ref<IndexUsCreditSpreadPoint[]>([])
 const loading = ref(false)
@@ -578,6 +588,9 @@ const supportsFundPurchaseLimitPanel = computed(
   () => isCnMarket.value && selectedIndexName.value === DEFAULT_INDEX_NAME,
 )
 const supportsMarginTradingPanel = computed(() => isCnMarket.value)
+const supportsTurnoverConcentrationPanel = computed(
+  () => isCnMarket.value && selectedIndexName.value === DEFAULT_INDEX_NAME,
+)
 const supportsSelfSentimentPanel = computed(
   () => isCnMarket.value && supportsAuxiliaryPanels.value,
 )
@@ -614,6 +627,7 @@ const quantFilterDataset = computed(() => {
         includeFundPurchaseLimit: supportsFundPurchaseLimitPanel.value,
         includeMarginTrading: supportsMarginTradingPanel.value,
         includeSelfSentiment: supportsSelfSentimentPanel.value,
+        includeRiskStrategy: selectedIndexName.value === '中证1000',
         cnOptionPutCallPoints: cnOptionPutCallPoints.value,
         cnOptionFlowPutCallPoints: cnOptionFlowPutCallPoints.value,
         cnOptionSeries: cnOptionSeries.value,
@@ -624,6 +638,7 @@ const quantFilterDataset = computed(() => {
         marginTradingPoints: marginTradingPoints.value,
         marginFinancingNetBuySumPoints: marginFinancingNetBuySumPoints.value,
         selfSentimentPoints: selfSentimentPoints.value,
+        riskStrategyPoints: riskStrategyPoints.value,
         cnMarketFearGreedPoints: cnMarketFearGreedPoints.value,
         cnBaifenweiFearGreedPoints: cnBaifenweiFearGreedPoints.value,
       },
@@ -1077,9 +1092,16 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
     targetMarket.value === 'cn' ? state?.marginTradingPoints ?? [] : []
   marginFinancingNetBuySumPoints.value =
     targetMarket.value === 'cn' ? state?.marginFinancingNetBuySumPoints ?? [] : []
+  turnoverConcentrationPoints.value = supportsTurnoverConcentrationPanel.value
+    ? state?.turnoverConcentrationPoints ?? []
+    : []
   selfSentimentPoints.value = supportsSelfSentimentPanel.value
     ? state?.selfSentimentPoints ?? []
     : []
+  riskStrategyPoints.value =
+    targetMarket.value === 'cn' && targetName === '中证1000'
+      ? state?.riskStrategyPoints ?? []
+      : []
   usTreasuryYieldPoints.value = targetMarket.value === 'us' ? state?.usTreasuryYieldPoints ?? [] : []
   usCreditSpreadPoints.value = targetMarket.value === 'us' ? state?.usCreditSpreadPoints ?? [] : []
   hasMoreHistory.value = state?.hasMoreHistory ?? false
@@ -1167,9 +1189,17 @@ function mergeDashboardState(
       currentState.marginFinancingNetBuySumPoints,
       payload.margin_financing_net_buy_sum_points ?? [],
     ),
+    turnoverConcentrationPoints: mergeByTradeDate(
+      currentState.turnoverConcentrationPoints,
+      payload.turnover_concentration_points ?? [],
+    ),
     selfSentimentPoints: mergeByTradeDate(
       currentState.selfSentimentPoints,
       payload.self_sentiment_points ?? [],
+    ),
+    riskStrategyPoints: mergeByTradeDate(
+      currentState.riskStrategyPoints,
+      payload.risk_strategy_points ?? [],
     ),
     usTreasuryYieldPoints: mergeByTradeDate(currentState.usTreasuryYieldPoints, payload.us_treasury_yield_points ?? []),
     usCreditSpreadPoints: mergeByTradeDate(currentState.usCreditSpreadPoints, payload.us_credit_spread_points ?? []),
@@ -1458,6 +1488,7 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     vixPoints.value = []
     relatedVixSeries.value = []
     selfSentimentPoints.value = []
+    riskStrategyPoints.value = []
     usVixPoints.value = []
     usFearGreedPoints.value = []
     usHedgeProxyPoints.value = []
@@ -1634,6 +1665,7 @@ watch(
           :fund-purchase-limit-points="fundPurchaseLimitPoints"
           :margin-trading-points="marginTradingPoints"
           :margin-financing-net-buy-sum-points="marginFinancingNetBuySumPoints"
+          :turnover-concentration-points="turnoverConcentrationPoints"
           :self-sentiment-points="selfSentimentPoints"
           :us-treasury-yield-points="usTreasuryYieldPoints"
           :us-credit-spread-points="usCreditSpreadPoints"
@@ -1644,6 +1676,7 @@ watch(
           :supports-cn-option-put-call-panel="supportsCnOptionPutCallPanel"
           :supports-fund-purchase-limit-panel="supportsFundPurchaseLimitPanel"
           :supports-margin-trading-panel="supportsMarginTradingPanel"
+          :supports-turnover-concentration-panel="supportsTurnoverConcentrationPanel"
           :supports-self-sentiment-panel="supportsSelfSentimentPanel"
           :supports-us-treasury-yield-panel="supportsUsTreasuryYieldPanel"
           :supports-us-credit-spread-panel="supportsUsCreditSpreadPanel"

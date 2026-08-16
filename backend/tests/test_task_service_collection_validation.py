@@ -697,6 +697,158 @@ def test_us_futures_validation_rejects_data_older_than_previous_trade_date(monke
     assert "2026-04-29" in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("collector_key", "previous_count", "expected_label"),
+    [
+        ("forex_daily", 7, "汇率日线7个货币对"),
+        ("usd_index_daily", 1, "美元指数日线1行"),
+    ],
+)
+def test_forex_collectors_accept_only_the_immediately_previous_us_trade_date(
+    monkeypatch,
+    collector_key,
+    previous_count,
+    expected_label,
+):
+    task = _make_collection_task(collector_key, market_scope="us_index")
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 5, 2, 9, 15)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": 0, "latest_date": date(2026, 4, 30)},
+            {"target_count": previous_count, "latest_date": date(2026, 4, 30)},
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 5, 1))
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": collector_key,
+                "result": previous_count,
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert "实际更新并确认的是前一美股交易日 2026-04-30" in result["summary"]
+    assert expected_label in result["summary"]
+
+
+def test_forex_probe_requires_all_seven_configured_pairs():
+    probe = task_service_module.COLLECTION_DATA_PROBES["forex_daily"][0]
+
+    assert probe.minimum_rows == 7
+    assert probe.distinct_count_column == task_service_module.settings.forex_daily_code_column
+    assert set(probe.params.values()) == {
+        "USDCNH",
+        "CNHJPY",
+        "CNHEUR",
+        "CNHHKD",
+        "USDHKD",
+        "USDJPY",
+        "USDEUR",
+    }
+
+
+@pytest.mark.parametrize(
+    ("collector_key", "expected_endpoint", "target_count", "expected_label"),
+    [
+        (
+            "forex_intraday",
+            "/collect-forex-intraday",
+            7,
+            "汇率盘中日线7个货币对",
+        ),
+        (
+            "usd_index_intraday",
+            "/collect-usd-index-intraday",
+            1,
+            "美元指数盘中日线1行",
+        ),
+    ],
+)
+def test_intraday_forex_collectors_require_the_current_us_trade_date(
+    monkeypatch,
+    collector_key,
+    expected_endpoint,
+    target_count,
+    expected_label,
+):
+    definition = task_service_module.COLLECTION_TASK_DEFINITIONS[collector_key]
+    assert definition["endpoint"] == expected_endpoint
+    assert definition.get("accept_previous_trading_day") is not True
+
+    task = _make_collection_task(collector_key, market_scope="us_index")
+    task.schedule_time = "18:00"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 5, 1, 18, 0)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": target_count, "latest_date": date(2026, 5, 1)},
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 5, 1))
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": collector_key,
+                "result": target_count,
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert "已确认 2026-05-01 数据入库" in result["summary"]
+    assert expected_label in result["summary"]
+
+
+@pytest.mark.parametrize("collector_key", ["forex_intraday", "usd_index_intraday"])
+def test_intraday_forex_collectors_do_not_accept_only_previous_day_rows(
+    collector_key,
+):
+    service = TaskService(
+        _FakeSession(
+            execute_rows=[
+                {"target_count": 0, "latest_date": date(2026, 4, 30)},
+            ]
+        )
+    )
+    service.market_calendar = _FixedMarketCalendar(
+        date(2026, 5, 1),
+        previous_date=date(2026, 4, 30),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service._validate_collection_result(
+            collector_key,
+            task_service_module.COLLECTION_TASK_DEFINITIONS[collector_key]["label"],
+            {"upstream_response": {"result": 1}},
+            datetime(2026, 5, 1, 18, 0),
+        )
+
+    assert "目标交易日 2026-05-01 数据未完整入库" in str(exc_info.value)
+
+
 def test_cme_network_block_is_skipped_with_latest_official_date(monkeypatch):
     task = _make_collection_task("us_index_futures_official_daily", market_scope="us_index")
     run = _make_run(task.id)
@@ -1002,6 +1154,95 @@ def test_hk_index_futures_waits_in_same_run_when_report_is_not_ready(monkeypatch
     assert run.status == "running"
 
 
+def test_csi_dividend_waits_in_same_run_until_official_close_is_published(monkeypatch):
+    task = _make_collection_task("index_csi_dividend_daily")
+    task.schedule_time = "17:10"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 8, 10, 17, 10)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 8, 10), trading=True)
+    service._now = lambda: datetime(2026, 8, 10, 17, 20)
+    captured_kwargs = {}
+
+    def _fake_run_daily_collection_request(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "index_csi_dividend_daily",
+                "result": {
+                    "status": "SOURCE_NOT_READY",
+                    "target_date": "2026-08-10",
+                    "latest_trade_date": "2026-08-07",
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        _fake_run_daily_collection_request,
+    )
+
+    with pytest.raises(TaskRunPollingPending) as exc_info:
+        service.execute_run(run.id)
+
+    assert exc_info.value.countdown_seconds == 300
+    assert "官网当前最新 2026-08-07" in str(exc_info.value)
+    assert captured_kwargs["payload"] == {"target_date": "2026-08-10"}
+    assert run.status == "running"
+
+
+def test_csi_dividend_success_validates_only_its_official_row(monkeypatch):
+    task = _make_collection_task("index_csi_dividend_daily")
+    task.schedule_time = "17:10"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 8, 10, 17, 10)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[{"target_count": 1, "latest_date": date(2026, 8, 10)}],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 8, 10), trading=True)
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "index_csi_dividend_daily",
+                "result": {
+                    "status": "SUCCESS",
+                    "target_date": "2026-08-10",
+                    "latest_trade_date": "2026-08-10",
+                    "daily_upserted": 10,
+                },
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert "官网最新 2026-08-10" in result["summary"]
+    assert "中证红利指数日线1行" in result["summary"]
+    assert db.executed[0][1]["csi_dividend_code"] == "sh000922"
+
+
+def test_cn_index_validation_no_longer_depends_on_csi_dividend():
+    cn_probes = task_service_module.COLLECTION_DATA_PROBES["index_cn_daily"]
+    dividend_probes = task_service_module.COLLECTION_DATA_PROBES["index_csi_dividend_daily"]
+
+    assert [probe.label for probe in cn_probes] == ["A股指数日线"]
+    assert [probe.label for probe in dividend_probes] == ["中证红利指数日线"]
+    assert cn_probes[0].params["csi_dividend_code"] == "sh000922"
+
+
 def test_quant_index_manual_run_uses_previous_trade_date_before_schedule(monkeypatch):
     task = _make_collection_task("quant_index_daily")
     task.schedule_time = "17:30"
@@ -1084,6 +1325,44 @@ def test_cn_macro_manual_run_passes_trade_date_and_requires_complete_indicator(m
     assert captured_kwargs["endpoint"] == "/collect-cn-macro-daily"
     assert captured_kwargs["payload"] == {"target_date": "2026-07-10"}
     assert db.executed[0][1]["target_trade_date"] == date(2026, 7, 10)
+    assert result["status"] == "success"
+
+
+def test_csi_tech_concentration_manual_run_passes_target_trade_date(monkeypatch):
+    task = _make_collection_task("csi_tech_concentration_daily")
+    task.schedule_time = "17:20"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 8, 10, 17, 20)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[{"target_count": 2, "latest_date": date(2026, 8, 10)}],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 8, 10), trading=True)
+    captured_kwargs = {}
+
+    def _fake_run_daily_collection_request(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "csi_tech_concentration_daily",
+                "result": {"status": "SUCCESS"},
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        _fake_run_daily_collection_request,
+    )
+
+    result = service.execute_run(run.id)
+
+    assert captured_kwargs["endpoint"] == "/collect-csi-tech-concentration-daily"
+    assert captured_kwargs["payload"] == {"target_date": "2026-08-10"}
     assert result["status"] == "success"
 
 

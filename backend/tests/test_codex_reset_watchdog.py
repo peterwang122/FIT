@@ -86,10 +86,35 @@ def test_classifies_scheduled_and_completed_quota_resets():
     assert completed.status == "completed"
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_status"),
+    [
+        (
+            "I previously promised a reset for every 1M in additional active users for Codex, "
+            "until 10M. We blew past that and have been silent since 10M. Little surprise for you tomorrow.",
+            "scheduled",
+        ),
+        (
+            "Old news actually from a bunch of days ago, but crossed that 15M. "
+            "Enjoy a nice reset everyone. Landing in the next hour or so, go /fast.",
+            "scheduled",
+        ),
+    ],
+)
+def test_classifies_global_reset_posts_without_explicit_quota_words(text, expected_status):
+    finding = classify_reset_finding(text)
+
+    assert finding is not None
+    assert finding.status == expected_status
+
+
 def test_ignores_negated_and_non_quota_resets():
     assert classify_reset_finding("No reset is planned for Codex weekly usage limits.") is None
     assert classify_reset_finding("Reset your local Codex workspace and git branch.") is None
     assert classify_reset_finding("Codex is faster today.") is None
+    assert classify_reset_finding("I receive a DM every few minutes asking me for a reset.") is None
+    assert classify_reset_finding("I feel Theo is in need of a reset.") is None
+    assert classify_reset_finding("Why did you switch to Codex? Don't say reset.") is None
 
 
 def test_extracts_dayclaw_public_items():
@@ -214,6 +239,59 @@ def test_first_run_primes_then_only_notifies_for_new_actionable_items(tmp_path):
     assert history["archived_count"] == 2
     assert [item["item_id"] for item in history["items"]] == ["101", "100"]
     assert history["items"][0]["reset_status"] == "scheduled"
+
+
+def test_notifies_when_an_archived_item_becomes_actionable_after_classifier_update(tmp_path):
+    state_store = JsonWatchdogStateStore(tmp_path / "state.json")
+    reset_item = _item(
+        "101",
+        "Enjoy a nice reset everyone. Landing in the next hour or so.",
+        "2026-08-13T08:00:00",
+    )
+    state = state_store.load()
+    state.update(
+        {
+            "initialized_at": "2026-08-13T09:00:00+00:00",
+            "last_success_at": "2026-08-13T09:00:00+00:00",
+            "seen_item_ids": {reset_item.item_id: "2026-08-13T09:00:00+00:00"},
+            "items": {
+                reset_item.item_id: {
+                    "item_id": reset_item.item_id,
+                    "text": reset_item.text,
+                    "url": reset_item.url,
+                    "author": reset_item.author,
+                    "published_at": reset_item.published_at,
+                    "translation_zh": None,
+                    "translated_at": None,
+                    "translation_error": None,
+                    "reset_status": None,
+                    "reset_evidence": None,
+                    "archived_at": "2026-08-13T09:00:00+00:00",
+                }
+            },
+        }
+    )
+    state_store.save(state)
+    notifications = []
+    service = CodexResetWatchdogService(
+        state_store=state_store,
+        fetcher=lambda: [reset_item],
+        notifier=lambda item: notifications.append(item) is None,
+        now=lambda: datetime(2026, 8, 15, tzinfo=timezone.utc),
+    )
+
+    result = service.check()
+
+    assert result == {
+        "status": "ok",
+        "fetched": 1,
+        "new_items": 0,
+        "findings": 1,
+        "notifications_created": 1,
+    }
+    assert len(notifications) == 1
+    assert notifications[0].dedupe_key == "codex-reset-watchdog:item:101"
+    assert service.check()["notifications_created"] == 0
 
 
 def test_history_keeps_latest_thirty_items(tmp_path):

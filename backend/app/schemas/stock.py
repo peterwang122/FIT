@@ -343,6 +343,18 @@ class IndexDashboardMarginFinancingNetBuySumPointResponse(BaseModel):
     sum_120d: float | None = None
 
 
+class IndexDashboardTurnoverConcentrationPointResponse(BaseModel):
+    trade_date: date
+    top5_pct: float | None = None
+    top1_pct: float | None = None
+    top1_raw_pct: float | None = None
+    stock_count: int | None = None
+    top1_stock_count: int | None = None
+    top5_data_source: str | None = None
+    top1_data_source: str | None = None
+    source_date: date | None = None
+
+
 class IndexDashboardSelfSentimentPointResponse(BaseModel):
     trade_date: date
     score: float | None = None
@@ -365,6 +377,110 @@ class IndexDashboardUsTreasuryYieldPointResponse(BaseModel):
 class IndexDashboardUsCreditSpreadPointResponse(BaseModel):
     trade_date: date
     high_yield_oas: float | None = None
+
+
+class IndexDashboardRiskStrategyPointResponse(BaseModel):
+    trade_date: date
+    yellow_vulnerability: bool | None = None
+    yellow_score: float | None = None
+    red_escalation: bool | None = None
+    red_score: float | None = None
+    global_shock: bool | None = None
+    global_score: float | None = None
+    global_mode: str | None = None
+    components: dict = Field(default_factory=dict)
+
+
+class QuantRiskDashboardPointResponse(BaseModel):
+    trade_date: date
+    yellow_vulnerability: bool | None = None
+    yellow_score: float | None = None
+    red_escalation: bool | None = None
+    red_score: float | None = None
+    global_shock: bool | None = None
+    global_score: float | None = None
+    global_mode: str | None = None
+    composite_score: float | None = None
+    risk_level: str | None = None
+    risk_level_label: str | None = None
+    data_complete: bool = False
+
+
+class QuantRiskStrategySpanResponse(BaseModel):
+    strategy_key: str
+    strategy_label: str
+    start_date: date
+    end_date: date
+    release_date: date | None = None
+    active_days: int
+    mode: str | None = None
+    key_evidence: list[str] = Field(default_factory=list)
+
+
+class QuantRiskDrawdownResponse(BaseModel):
+    trading_days: int
+    value_pct: float | None = None
+    trough_date: date | None = None
+    days_to_trough: int | None = None
+    status: str
+
+
+class QuantRiskEventResponse(BaseModel):
+    event_id: str
+    start_date: date
+    end_date: date
+    release_date: date | None = None
+    end_reason: str
+    is_open: bool = False
+    duration_trade_days: int
+    first_trigger_date: date
+    active_strategies: list[str] = Field(default_factory=list)
+    strategy_spans: list[QuantRiskStrategySpanResponse] = Field(default_factory=list)
+    drawdowns: list[QuantRiskDrawdownResponse] = Field(default_factory=list)
+
+
+class QuantRiskDashboardResponse(BaseModel):
+    target_code: str
+    target_name: str
+    range_mode: str
+    start_date: date
+    end_date: date
+    as_of_date: date | None = None
+    candles: list[StockCandle] = Field(default_factory=list)
+    points: list[QuantRiskDashboardPointResponse] = Field(default_factory=list)
+    events: list[QuantRiskEventResponse] = Field(default_factory=list)
+
+
+class QuantRiskEvidenceCellResponse(BaseModel):
+    trade_date: date
+    value: float | None = None
+    unit: str | None = None
+    percentile: float | None = None
+    absolute_threshold: float | None = None
+    percentile_threshold: float | None = None
+    direction: str | None = None
+    matched: bool | None = None
+    partial: bool = False
+    data_date: date | None = None
+    data_source: str | None = None
+    missing_reason: str | None = None
+
+
+class QuantRiskEvidenceRowResponse(BaseModel):
+    key: str
+    strategy_key: str
+    strategy_label: str
+    section_key: str
+    section_label: str
+    label: str
+    cells: list[QuantRiskEvidenceCellResponse] = Field(default_factory=list)
+
+
+class QuantRiskEvidenceResponse(BaseModel):
+    start_date: date
+    end_date: date
+    dates: list[date] = Field(default_factory=list)
+    rows: list[QuantRiskEvidenceRowResponse] = Field(default_factory=list)
 
 
 class IndexDashboardResponse(BaseModel):
@@ -395,9 +511,11 @@ class IndexDashboardResponse(BaseModel):
     fund_purchase_limit_points: list[IndexDashboardFundPurchaseLimitPointResponse] = Field(default_factory=list)
     margin_trading_points: list[IndexDashboardMarginTradingPointResponse] = Field(default_factory=list)
     margin_financing_net_buy_sum_points: list[IndexDashboardMarginFinancingNetBuySumPointResponse] = Field(default_factory=list)
+    turnover_concentration_points: list[IndexDashboardTurnoverConcentrationPointResponse] = Field(default_factory=list)
     self_sentiment_points: list[IndexDashboardSelfSentimentPointResponse] = Field(default_factory=list)
     us_treasury_yield_points: list[IndexDashboardUsTreasuryYieldPointResponse] = Field(default_factory=list)
     us_credit_spread_points: list[IndexDashboardUsCreditSpreadPointResponse] = Field(default_factory=list)
+    risk_strategy_points: list[IndexDashboardRiskStrategyPointResponse] = Field(default_factory=list)
 
 
 class HfqCollectTaskPayload(BaseModel):
@@ -528,6 +646,7 @@ class QuantStrategyHighlightBandResponse(BaseModel):
     variant: str = "solid"
     blueHitGroups: list[int] = Field(default_factory=list)
     redHitGroups: list[int] = Field(default_factory=list)
+    riskDetails: dict | None = None
 
 
 class QuantStrategyTargetChartResponse(BaseModel):
@@ -537,6 +656,7 @@ class QuantStrategyTargetChartResponse(BaseModel):
     target_name: str
     candles: list[StockCandle] = Field(default_factory=list)
     highlight_bands: list[QuantStrategyHighlightBandResponse] = Field(default_factory=list)
+    risk_strategy_points: list[IndexDashboardRiskStrategyPointResponse] = Field(default_factory=list)
 
 
 class QuantOptionTradeResponse(BaseModel):

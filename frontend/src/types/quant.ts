@@ -36,6 +36,7 @@ export interface QuantIndicatorParams {
   wr: WrParams
   rsi: RsiParams
   boll: BollParams
+  risk_strategy?: { key: 'yellow_vulnerability' | 'red_escalation' | 'global_shock' }
 }
 
 export interface QuantLinePoint {
@@ -88,6 +89,8 @@ export type QuantFilterFieldKey =
   | 'cn-baifenwei-rsi'
   | 'cn-baifenwei-limit-up-down-ratio'
   | 'self-sentiment-score'
+  | 'self-sentiment-core-score'
+  | 'self-sentiment-derivative-score'
   | 'basis-main'
   | 'basis-main-adjusted'
   | 'basis-month'
@@ -151,6 +154,9 @@ export type QuantFilterFieldKey =
   | 'margin-financing-net-buy-sum-30d'
   | 'margin-financing-net-buy-sum-60d'
   | 'margin-financing-net-buy-sum-120d'
+  | 'risk-yellow-vulnerability'
+  | 'risk-red-escalation'
+  | 'risk-global-shock'
   | 'us-vix-open'
   | 'us-vix-high'
   | 'us-vix-low'
@@ -203,6 +209,7 @@ export type QuantFilterGroupKey =
   | 'margin-trading'
   | 'treasury'
   | 'credit'
+  | 'risk'
   | 'change'
   | 'turnover'
   | 'rsi'
@@ -240,15 +247,43 @@ export interface QuantDailyIndicatorSnapshot {
   values: Partial<Record<QuantFilterFieldKey, number | null>>
 }
 
-export type QuantHighlightColor = 'blue' | 'red' | 'purple' | 'amber'
+export type QuantHighlightColor = 'blue' | 'red' | 'green' | 'purple' | 'amber'
 export type QuantHighlightVariant = 'solid' | 'striped'
 
 export interface QuantHighlightBand {
   tradeDate: string
   color: QuantHighlightColor
+  fillColor?: string
   variant?: QuantHighlightVariant
   blueHitGroups?: number[]
   redHitGroups?: number[]
+  riskDetails?: QuantRiskStrategyPoint | null
+}
+
+export interface QuantRiskComponent {
+  label?: string
+  value?: number | null
+  percentile?: number | null
+  absolute_threshold?: number | null
+  percentile_threshold?: number | null
+  direction?: 'high' | 'low'
+  unit?: string
+  matched?: boolean | null
+  data_date?: string | null
+  data_source?: string | null
+  missing_reason?: string | null
+}
+
+export interface QuantRiskStrategyPoint {
+  trade_date: string
+  yellow_vulnerability: boolean | null
+  yellow_score: number | null
+  red_escalation: boolean | null
+  red_score: number | null
+  global_shock: boolean | null
+  global_score: number | null
+  global_mode: string | null
+  components: Record<string, unknown>
 }
 
 export interface QuantChartOverlayLine {
@@ -282,7 +317,7 @@ export interface QuantFilterDataset {
 }
 
 export type QuantStrategyType = 'index' | 'stock' | 'etf'
-export type QuantStrategyEngine = 'snapshot' | 'sequence'
+export type QuantStrategyEngine = 'snapshot' | 'sequence' | 'risk'
 export type QuantTargetMarket = 'cn' | 'hk' | 'us'
 export type QuantExecutionPriceMode = 'next_open' | 'next_close' | 'next_best'
 export type QuantConflictMode = 'sell_first' | 'buy_first' | 'skip'
@@ -528,6 +563,7 @@ export interface QuantStrategyTargetChartResponse {
   target_name: string
   candles: KlineCandle[]
   highlight_bands: QuantHighlightBand[]
+  risk_strategy_points: QuantRiskStrategyPoint[]
 }
 
 export interface QuantEquityCurvePoint {

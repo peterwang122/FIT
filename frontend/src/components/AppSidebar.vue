@@ -3,7 +3,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{
-  active: 'overview' | 'macro' | 'stocks' | 'markets' | 'progress' | 'quant' | 'research' | 'account' | 'tasks'
+  active: 'overview' | 'macro' | 'stocks' | 'markets' | 'progress' | 'quant' | 'risk' | 'research' | 'account' | 'tasks'
 }>()
 
 const router = useRouter()
@@ -37,6 +37,10 @@ function goResearch() {
   void router.push('/research/vix-options')
 }
 
+function goRisk() {
+  void router.push('/risk/csi1000')
+}
+
 function goProgress() {
   void router.push('/progress')
 }
@@ -67,6 +71,9 @@ function goAccount() {
       </button>
       <button type="button" class="sidebar-link" :class="{ active: active === 'quant' }" @click="goQuant">
         量化分析
+      </button>
+      <button v-if="!authStore.isGuest" type="button" class="sidebar-link" :class="{ active: active === 'risk' }" @click="goRisk">
+        风险监控
       </button>
       <button v-if="!authStore.isGuest" type="button" class="sidebar-link" :class="{ active: active === 'research' }" @click="goResearch">
         研究成果

@@ -88,6 +88,42 @@ def test_index_snapshots_include_precomputed_cn_option_put_call_values():
     assert values["cn-option-flow-cp-turnover"] == pytest.approx(1 / 0.6)
 
 
+def test_index_snapshots_parse_option_json_only_once_per_payload_and_date():
+    service = _service()
+    service.stock_service = SimpleNamespace(
+        list_index_qvix_daily_data=lambda *_args, **_kwargs: [],
+    )
+    service._load_precomputed_index_indicator_rows = lambda _symbol_name: [
+        {
+            "trade_date": date(2026, 7, 3),
+            "emotion_value": 50,
+            "main_basis": 0,
+            "month_basis": 0,
+            "up_ratio_pct": 0,
+            "exchange_option_pc_json": {},
+            "option_vix_json": {},
+        }
+    ]
+    service._load_cn_market_fear_greed_rows = lambda **_kwargs: []
+    service._load_cn_baifenwei_fear_greed_rows = lambda **_kwargs: []
+    parse_calls: list[object] = []
+
+    def parse_payload(payload):
+        parse_calls.append(payload)
+        return payload if isinstance(payload, dict) else {}
+
+    service._parse_exchange_option_pc_json = parse_payload
+
+    service._build_index_snapshots(
+        "sh000300",
+        "沪深300",
+        {},
+        [_candle("2026-07-03", 4000)],
+    )
+
+    assert parse_calls == [{}, {}]
+
+
 def test_cn_option_flow_put_call_payload_includes_volume_turnover_and_reciprocal():
     service = _service()
     payload = service._build_cn_option_flow_put_call_point_payload(

@@ -39,6 +39,7 @@ import type {
   IndexFundPurchaseLimitPoint,
   IndexMarginFinancingNetBuySumPoint,
   IndexMarginTradingPoint,
+  IndexTurnoverConcentrationPoint,
   IndexSelfSentimentPoint,
   IndexUsCreditSpreadPoint,
   IndexUsFearGreedPoint,
@@ -71,6 +72,7 @@ type PanelKey =
   | 'fundPurchaseLimit'
   | 'marginTrading'
   | 'marginFinancingNetBuySum'
+  | 'turnoverConcentration'
   | 'selfSentiment'
   | 'usVix'
   | 'usFearGreed'
@@ -105,6 +107,7 @@ type MarginTradingMetricKey =
 type MarginTradingMetricUnit = 'cnyYi' | 'percent'
 type MarginFinancingNetBuySumWindow = CffexNetShortDeltaWindow
 type MarginFinancingNetBuySumPayloadKey = `sum_${MarginFinancingNetBuySumWindow}d`
+type TurnoverConcentrationMetricKey = 'top5' | 'top1'
 type UsCreditMetricKey = 'hyOas' | 'change5d'
 type BasisMetricKey = 'adjusted' | 'main'
 type SubPanelControlPreference = {
@@ -122,6 +125,7 @@ type SubPanelControlPreference = {
   emotionMetric: EmotionMetricKey
   marginTradingMetric: MarginTradingMetricKey
   marginFinancingNetBuySumWindow: MarginFinancingNetBuySumWindow
+  turnoverConcentrationMetric: TurnoverConcentrationMetricKey
   selfSentimentMetric: SelfSentimentMetricKey
   usCreditMetric: UsCreditMetricKey
   basisMetric: BasisMetricKey
@@ -158,6 +162,7 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'fundPurchaseLimit',
   'marginTrading',
   'marginFinancingNetBuySum',
+  'turnoverConcentration',
   'selfSentiment',
   'usVix',
   'usFearGreed',
@@ -280,6 +285,8 @@ const props = withDefaults(
     supportsFundPurchaseLimitPanel?: boolean
     marginTradingPoints?: IndexMarginTradingPoint[]
     marginFinancingNetBuySumPoints?: IndexMarginFinancingNetBuySumPoint[]
+    turnoverConcentrationPoints?: IndexTurnoverConcentrationPoint[]
+    supportsTurnoverConcentrationPanel?: boolean
     supportsMarginTradingPanel?: boolean
     selfSentimentPoints?: IndexSelfSentimentPoint[]
     supportsSelfSentimentPanel?: boolean
@@ -334,6 +341,8 @@ const props = withDefaults(
     supportsFundPurchaseLimitPanel: false,
     marginTradingPoints: () => [],
     marginFinancingNetBuySumPoints: () => [],
+    turnoverConcentrationPoints: () => [],
+    supportsTurnoverConcentrationPanel: false,
     supportsMarginTradingPanel: false,
     selfSentimentPoints: () => [],
     supportsSelfSentimentPanel: false,
@@ -386,6 +395,7 @@ const basisDeltaContainerRef = ref<HTMLDivElement | null>(null)
 const fundPurchaseLimitContainerRef = ref<HTMLDivElement | null>(null)
 const marginTradingContainerRef = ref<HTMLDivElement | null>(null)
 const marginFinancingNetBuySumContainerRef = ref<HTMLDivElement | null>(null)
+const turnoverConcentrationContainerRef = ref<HTMLDivElement | null>(null)
 const selfSentimentContainerRef = ref<HTMLDivElement | null>(null)
 const usVixContainerRef = ref<HTMLDivElement | null>(null)
 const usFearGreedContainerRef = ref<HTMLDivElement | null>(null)
@@ -411,6 +421,7 @@ const activeFundPurchaseLimitMetric = ref<FundPurchaseLimitMetricKey>('count')
 const activeEmotionMetric = ref<EmotionMetricKey>('index')
 const activeMarginTradingMetric = ref<MarginTradingMetricKey>('financing')
 const activeMarginFinancingNetBuySumWindow = ref<MarginFinancingNetBuySumWindow>(20)
+const activeTurnoverConcentrationMetric = ref<TurnoverConcentrationMetricKey>('top5')
 const activeSelfSentimentMetric = ref<SelfSentimentMetricKey>('score')
 const activeUsCreditKey = ref<UsCreditMetricKey>('hyOas')
 const activeBasisKey = ref<BasisMetricKey>('adjusted')
@@ -480,6 +491,12 @@ function applySubPanelControlPreference() {
   )
     ? preference.marginFinancingNetBuySumWindow
     : 20
+  activeTurnoverConcentrationMetric.value = isStoredChoice(
+    preference.turnoverConcentrationMetric,
+    ['top5', 'top1'],
+  )
+    ? preference.turnoverConcentrationMetric
+    : 'top5'
   activeSelfSentimentMetric.value = isStoredChoice(preference.selfSentimentMetric, ['score', 'core', 'derivative'])
     ? preference.selfSentimentMetric
     : 'score'
@@ -526,6 +543,8 @@ let fundPurchaseLimitSeries: LineSeriesApi | null = null
 let marginTradingSeries: LineSeriesApi | null = null
 let marginFinancingNetBuySumSeries: LineSeriesApi | null = null
 let marginFinancingNetBuySumReferenceSeries: LineSeriesApi | null = null
+let turnoverConcentrationSeries: LineSeriesApi | null = null
+let turnoverConcentrationReferenceSeries: LineSeriesApi | null = null
 let selfSentimentSeries: LineSeriesApi | null = null
 let selfSentimentReferenceSeries: LineSeriesApi | null = null
 let usVixSeries: CandleSeriesApi | null = null
@@ -541,6 +560,7 @@ const timelineAnchorSeriesMap = new Map<PanelKey, LineSeriesApi>()
 let isSyncingRange = false
 let isSyncingCrosshair = false
 let shouldResetVisibleRange = true
+let pendingSymbolRangeReset = false
 let chartRebuildRequested = false
 let chartRebuildPromise: Promise<void> | null = null
 let unsubs: Array<() => void> = []
@@ -568,6 +588,11 @@ const visiblePanelOptions = computed<SubPanelOption[]>(() => [
   { key: 'fundPurchaseLimit', label: '公募限购', available: props.supportsFundPurchaseLimitPanel },
   { key: 'marginTrading', label: '融资融券', available: props.supportsMarginTradingPanel },
   { key: 'marginFinancingNetBuySum', label: '融资净买入累计', available: props.supportsMarginTradingPanel },
+  {
+    key: 'turnoverConcentration',
+    label: '成交集中度',
+    available: props.supportsTurnoverConcentrationPanel,
+  },
   { key: 'selfSentiment', label: '自建情绪', available: props.supportsSelfSentimentPanel },
   { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
   { key: 'usFearGreed', label: '恐贪', available: props.supportsUsFearGreedPanel },
@@ -608,6 +633,7 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   if (panelKey === 'fundPurchaseLimit') return fundPurchaseLimitContainerRef.value
   if (panelKey === 'marginTrading') return marginTradingContainerRef.value
   if (panelKey === 'marginFinancingNetBuySum') return marginFinancingNetBuySumContainerRef.value
+  if (panelKey === 'turnoverConcentration') return turnoverConcentrationContainerRef.value
   if (panelKey === 'selfSentiment') return selfSentimentContainerRef.value
   if (panelKey === 'usVix') return usVixContainerRef.value
   if (panelKey === 'usFearGreed') return usFearGreedContainerRef.value
@@ -626,12 +652,17 @@ function rebuildChartsPreservingRange(): Promise<void> {
     try {
       while (chartRebuildRequested) {
         chartRebuildRequested = false
-        const visibleRange = charts.main?.timeScale().getVisibleLogicalRange() ?? null
+        const visibleRange = pendingSymbolRangeReset
+          ? null
+          : charts.main?.timeScale().getVisibleLogicalRange() ?? null
         const candleCount = mainCandles.value.length
         const shouldRestoreRange =
           visibleRange !== null &&
           Number.isFinite(visibleRange.from) &&
           Number.isFinite(visibleRange.to) &&
+          visibleRange.to > visibleRange.from &&
+          visibleRange.from >= -20 &&
+          visibleRange.to <= candleCount + 20 &&
           visibleRange.to >= 0 &&
           visibleRange.from <= candleCount - 1
 
@@ -646,6 +677,7 @@ function rebuildChartsPreservingRange(): Promise<void> {
         } else {
           applyDefaultVisibleRange()
         }
+        shouldResetVisibleRange = pendingSymbolRangeReset
       }
     } finally {
       chartRebuildPromise = null
@@ -1425,6 +1457,40 @@ const marginFinancingNetBuySumWindowLegend = computed(() =>
   })),
 )
 
+const turnoverConcentrationMetricConfig: Record<TurnoverConcentrationMetricKey, {
+  label: string
+  color: string
+  field: 'top5_pct' | 'top1_pct'
+  threshold: number
+}> = {
+  top5: { label: '前5%', color: '#2563eb', field: 'top5_pct', threshold: 45 },
+  top1: { label: '前1%', color: '#d97706', field: 'top1_pct', threshold: 20 },
+}
+
+const turnoverConcentrationPointByDate = computed(
+  () => new Map(props.turnoverConcentrationPoints.map((item) => [item.trade_date, item])),
+)
+
+const turnoverConcentrationSeriesData = computed(() => {
+  const field = turnoverConcentrationMetricConfig[activeTurnoverConcentrationMetric.value].field
+  return sortedCandles.value.map((item) => ({
+    time: item.trade_date as Time,
+    rawDate: item.trade_date,
+    value: toNullableNumber(turnoverConcentrationPointByDate.value.get(item.trade_date)?.[field]),
+  }))
+})
+
+const turnoverConcentrationLegend = computed(() =>
+  (Object.entries(turnoverConcentrationMetricConfig) as Array<
+    [TurnoverConcentrationMetricKey, (typeof turnoverConcentrationMetricConfig)[TurnoverConcentrationMetricKey]]
+  >).map(([key, item]) => ({
+    key,
+    label: item.label,
+    color: item.color,
+    active: activeTurnoverConcentrationMetric.value === key,
+  })),
+)
+
 const selfSentimentMetricConfig: Record<SelfSentimentMetricKey, {
   label: string
   color: string
@@ -2067,6 +2133,12 @@ function selectMarginFinancingNetBuySumWindow(window: MarginFinancingNetBuySumWi
   updateAllSeries()
 }
 
+function selectTurnoverConcentrationMetric(metric: TurnoverConcentrationMetricKey) {
+  activeTurnoverConcentrationMetric.value = metric
+  rememberSubPanelControl({ turnoverConcentrationMetric: metric })
+  updateAllSeries()
+}
+
 function selectSelfSentimentMetric(metric: SelfSentimentMetricKey) {
   activeSelfSentimentMetric.value = metric
   rememberSubPanelControl({ selfSentimentMetric: metric })
@@ -2327,6 +2399,11 @@ const indicatorValueMaps = computed(() => {
         .filter((item) => item.value !== null)
         .map((item) => [item.rawDate, item.value as number]),
     ),
+    turnoverConcentration: new Map(
+      turnoverConcentrationSeriesData.value
+        .filter((item) => item.value !== null)
+        .map((item) => [item.rawDate, item.value as number]),
+    ),
     usVix: buildValueMap(quantDataset.value.usVix?.data ?? []),
     usFearGreed: buildValueMap(quantDataset.value.usFearGreed?.data ?? []),
     usHedge: buildValueMap(quantDataset.value.usHedgeProxy?.data ?? []),
@@ -2434,6 +2511,14 @@ const activeIndicatorSnapshot = computed(() => {
     },
     marginFinancingNetBuySum: {
       value: maps.marginFinancingNetBuySum.get(tradeDate) ?? null,
+    },
+    turnoverConcentration: {
+      value: maps.turnoverConcentration.get(tradeDate) ?? null,
+      top5: turnoverConcentrationPointByDate.value.get(tradeDate)?.top5_pct ?? null,
+      top1: turnoverConcentrationPointByDate.value.get(tradeDate)?.top1_pct ?? null,
+      top1Raw: turnoverConcentrationPointByDate.value.get(tradeDate)?.top1_raw_pct ?? null,
+      stockCount: turnoverConcentrationPointByDate.value.get(tradeDate)?.stock_count ?? null,
+      sourceDate: turnoverConcentrationPointByDate.value.get(tradeDate)?.source_date ?? null,
     },
     usVix: {
       open: usVixPointByDate.value.get(tradeDate)?.open_value ?? null,
@@ -2693,6 +2778,22 @@ const summaryCards = computed<SummaryCard[]>(() => {
                     ? '-'
                     : `${formatMetric(indicator.marginFinancingNetBuySum.value)}亿元`,
               },
+            ],
+          },
+        ]
+      : []),
+    ...(isSubPanelVisible('turnoverConcentration')
+      ? [
+          {
+            key: 'turnover-concentration',
+            title: 'A股成交集中度',
+            hint: turnoverConcentrationMetricConfig[activeTurnoverConcentrationMetric.value].label,
+            rows: [
+              { label: '成交额前5%（MA5）', value: formatPercent(indicator.turnoverConcentration.top5) },
+              { label: '成交额前1%（MA5）', value: formatPercent(indicator.turnoverConcentration.top1) },
+              { label: '前1%当日原值', value: formatPercent(indicator.turnoverConcentration.top1Raw) },
+              { label: '覆盖股票数', value: formatMetric(indicator.turnoverConcentration.stockCount) },
+              { label: '来源日期', value: indicator.turnoverConcentration.sourceDate || '-' },
             ],
           },
         ]
@@ -3480,6 +3581,32 @@ function updateAllSeries() {
     panelValueMaps.delete('marginFinancingNetBuySum')
   }
 
+  if (isSubPanelVisible('turnoverConcentration')) {
+    if (!turnoverConcentrationSeries || !turnoverConcentrationReferenceSeries) return
+    const metricConfig = turnoverConcentrationMetricConfig[activeTurnoverConcentrationMetric.value]
+    turnoverConcentrationSeries.applyOptions({ color: metricConfig.color })
+    turnoverConcentrationSeries.setData(
+      turnoverConcentrationSeriesData.value.map((item) =>
+        item.value === null
+          ? ({ time: item.time } as WhitespaceData<Time>)
+          : ({ time: item.time, value: item.value }),
+      ),
+    )
+    turnoverConcentrationReferenceSeries.setData(
+      mainCandles.value.map((item) => ({ time: item.time, value: metricConfig.threshold })),
+    )
+    panelValueMaps.set(
+      'turnoverConcentration',
+      new Map(
+        turnoverConcentrationSeriesData.value
+          .filter((item) => item.value !== null)
+          .map((item) => [item.rawDate, item.value as number]),
+      ),
+    )
+  } else {
+    panelValueMaps.delete('turnoverConcentration')
+  }
+
   if (isSubPanelVisible('selfSentiment')) {
     if (!selfSentimentSeries) return
     const metricConfig = selfSentimentMetricConfig[activeSelfSentimentMetric.value]
@@ -3652,6 +3779,9 @@ function renderCharts() {
     if (isSubPanelVisible('marginFinancingNetBuySum')) {
       charts.marginFinancingNetBuySum = createBaseChart(marginFinancingNetBuySumContainerRef.value!, true)
     }
+    if (isSubPanelVisible('turnoverConcentration')) {
+      charts.turnoverConcentration = createBaseChart(turnoverConcentrationContainerRef.value!, true)
+    }
     if (isSubPanelVisible('selfSentiment')) {
       charts.selfSentiment = createBaseChart(selfSentimentContainerRef.value!, true)
     }
@@ -3770,6 +3900,16 @@ function renderCharts() {
     marginFinancingNetBuySumReferenceSeries = charts.marginFinancingNetBuySum
       ? addReferenceLineSeries(charts.marginFinancingNetBuySum, '#dc2626')
       : null
+    turnoverConcentrationSeries = charts.turnoverConcentration
+      ? addLineSeries(
+          charts.turnoverConcentration,
+          turnoverConcentrationMetricConfig[activeTurnoverConcentrationMetric.value].color,
+          2,
+        )
+      : null
+    turnoverConcentrationReferenceSeries = charts.turnoverConcentration
+      ? addReferenceLineSeries(charts.turnoverConcentration, '#dc2626')
+      : null
     selfSentimentSeries = charts.selfSentiment
       ? addLineSeries(
           charts.selfSentiment,
@@ -3810,6 +3950,7 @@ function renderCharts() {
     if (fundPurchaseLimitSeries) primarySeriesMap.set('fundPurchaseLimit', fundPurchaseLimitSeries)
     if (marginTradingSeries) primarySeriesMap.set('marginTrading', marginTradingSeries)
     if (marginFinancingNetBuySumSeries) primarySeriesMap.set('marginFinancingNetBuySum', marginFinancingNetBuySumSeries)
+    if (turnoverConcentrationSeries) primarySeriesMap.set('turnoverConcentration', turnoverConcentrationSeries)
     if (selfSentimentSeries) primarySeriesMap.set('selfSentiment', selfSentimentSeries)
     if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
     if (usFearGreedSeries) primarySeriesMap.set('usFearGreed', usFearGreedSeries)
@@ -3856,6 +3997,9 @@ function renderCharts() {
     if (props.supportsMarginTradingPanel) {
       attachHighlightPrimitive(marginTradingSeries)
       attachHighlightPrimitive(marginFinancingNetBuySumSeries)
+    }
+    if (props.supportsTurnoverConcentrationPanel) {
+      attachHighlightPrimitive(turnoverConcentrationSeries)
     }
     if (props.supportsSelfSentimentPanel) {
       attachHighlightPrimitive(selfSentimentSeries)
@@ -3933,6 +4077,8 @@ function disposeCharts() {
   marginTradingSeries = null
   marginFinancingNetBuySumSeries = null
   marginFinancingNetBuySumReferenceSeries = null
+  turnoverConcentrationSeries = null
+  turnoverConcentrationReferenceSeries = null
   selfSentimentSeries = null
   selfSentimentReferenceSeries = null
   usVixSeries = null
@@ -3949,9 +4095,10 @@ watch(mainCandles, (next, previous) => {
   const previousVisibleRange = charts.main?.timeScale().getVisibleLogicalRange() ?? null
   const previousEarliest = String(previous[0]?.time ?? '')
   updateAllSeries()
-  if (shouldResetVisibleRange && mainCandles.value.length) {
+  if ((shouldResetVisibleRange || pendingSymbolRangeReset) && mainCandles.value.length) {
     applyDefaultVisibleRange()
     shouldResetVisibleRange = false
+    pendingSymbolRangeReset = false
     return
   }
 
@@ -4034,6 +4181,10 @@ watch(marginFinancingNetBuySumSeriesData, () => {
   if (props.supportsMarginTradingPanel) updateAllSeries()
 })
 
+watch(turnoverConcentrationSeriesData, () => {
+  if (props.supportsTurnoverConcentrationPanel) updateAllSeries()
+})
+
 watch(selfSentimentSeriesData, () => {
   if (props.supportsSelfSentimentPanel) updateAllSeries()
 })
@@ -4063,7 +4214,7 @@ watch(
 
 watch(
   () =>
-    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsFundPurchaseLimitPanel}:${props.supportsMarginTradingPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}:${availableSubPanelOptions.value.map((item) => item.key).join('|')}`,
+    `${props.supportsAuxiliaryPanels}:${props.supportsBasisPanel}:${props.showBasisMonthLine}:${props.supportsVixPanel}:${props.supportsCnOptionPutCallPanel}:${props.supportsFundPurchaseLimitPanel}:${props.supportsMarginTradingPanel}:${props.supportsTurnoverConcentrationPanel}:${props.supportsUsVixPanel}:${props.supportsUsFearGreedPanel}:${props.supportsUsHedgeProxyPanel}:${props.supportsUsPutCallPanel}:${props.supportsUsTreasuryYieldPanel}:${props.supportsUsCreditSpreadPanel}:${availableSubPanelOptions.value.map((item) => item.key).join('|')}`,
   async () => {
     await rebuildChartsPreservingRange()
   },
@@ -4071,13 +4222,16 @@ watch(
 
 watch(
   () => props.symbolCode,
-  () => {
+  (nextSymbolCode, previousSymbolCode) => {
+    if (nextSymbolCode === previousSymbolCode) return
     applySubPanelControlPreference()
     ensureCnOptionSourceSelections()
     hoveredTradeDate.value = null
     shouldResetVisibleRange = true
+    pendingSymbolRangeReset = true
     lastRequestedHistoryBoundary = null
   },
+  { flush: 'sync' },
 )
 
 watch(
@@ -4144,6 +4298,7 @@ onBeforeUnmount(() => {
   disposeCharts()
   hoveredTradeDate.value = null
   shouldResetVisibleRange = true
+  pendingSymbolRangeReset = false
   lastRequestedHistoryBoundary = null
 })
 </script>
@@ -4326,6 +4481,27 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="!marginFinancingNetBuySumPoints.length" class="muted">当前范围暂无融资净买入累计数据</p>
       <div ref="marginFinancingNetBuySumContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div v-if="isSubPanelVisible('turnoverConcentration')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>A股成交集中度（%）</h3>
+        <div class="quant-legend">
+          <button
+            v-for="item in turnoverConcentrationLegend"
+            :key="item.key"
+            type="button"
+            class="quant-legend-item quant-legend-button"
+            :class="{ 'is-muted': !item.active }"
+            @click="selectTurnoverConcentrationMetric(item.key)"
+          >
+            <i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}
+          </button>
+          <span class="quant-legend-item"><i style="background:#dc2626"></i>拥挤参考线</span>
+        </div>
+      </div>
+      <p v-if="!turnoverConcentrationPoints.length" class="muted">当前范围暂无A股成交集中度数据</p>
+      <div ref="turnoverConcentrationContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
 
     <div v-if="isSubPanelVisible('selfSentiment')" class="quant-panel">

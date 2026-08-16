@@ -22,6 +22,7 @@ DEFAULT_THEME = "system"
 DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_HOMEPAGE = "/"
 DEFAULT_NOTIFICATIONS_ENABLED = True
+SESSION_RECORD_TOUCH_INTERVAL_SECONDS = 300
 
 
 def _utcnow() -> datetime:
@@ -38,6 +39,9 @@ class AuthService:
 
     def _session_key(self, session_id: str) -> str:
         return f"fit:auth:session:{session_id}"
+
+    def _session_touch_key(self, session_id: str) -> str:
+        return f"fit:auth:session_touch:{self._hash_session_id(session_id)}"
 
     def _code_key(self, phone: str) -> str:
         return f"fit:auth:sms_code:{phone}"
@@ -305,6 +309,11 @@ class AuthService:
         )
         self.db.add(item)
         self.db.commit()
+        redis_client.set(
+            self._session_touch_key(session_id),
+            "1",
+            ex=SESSION_RECORD_TOUCH_INTERVAL_SECONDS,
+        )
 
     def _touch_session_record(self, session_id: str, user: User, request: Request | None = None) -> None:
         session_hash = self._hash_session_id(session_id)
@@ -327,6 +336,27 @@ class AuthService:
                 item.ip_address = ip_address
         self.db.add(item)
         self.db.commit()
+
+    def _touch_session_record_if_due(
+        self,
+        session_id: str,
+        user: User,
+        request: Request | None = None,
+    ) -> None:
+        touch_key = self._session_touch_key(session_id)
+        acquired = redis_client.set(
+            touch_key,
+            "1",
+            nx=True,
+            ex=SESSION_RECORD_TOUCH_INTERVAL_SECONDS,
+        )
+        if not acquired:
+            return
+        try:
+            self._touch_session_record(session_id, user, request)
+        except Exception:
+            redis_client.delete(touch_key)
+            raise
 
     def _revoke_session_record(self, session_id: str | None, user_id: int | None = None) -> None:
         if not session_id:
@@ -393,12 +423,13 @@ class AuthService:
 
     def refresh_session(self, session_id: str, response: Response, user: User, request: Request | None = None) -> None:
         self._store_session(session_id, user)
-        self._touch_session_record(session_id, user, request)
+        self._touch_session_record_if_due(session_id, user, request)
         self._set_session_cookie(response, session_id)
 
     def logout(self, session_id: str | None, response: Response) -> None:
         if session_id:
             redis_client.delete(self._session_key(session_id))
+            redis_client.delete(self._session_touch_key(session_id))
             self._revoke_session_record(session_id)
         self._delete_session_cookie(response)
 

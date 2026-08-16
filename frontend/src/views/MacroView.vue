@@ -6,12 +6,14 @@ import { fetchMacroDashboard } from '../api/macro'
 import AppSidebar from '../components/AppSidebar.vue'
 import MacroLineChart from '../components/MacroLineChart.vue'
 import type { MacroDashboard, MacroPoint } from '../types/macro'
+import type { QuantHighlightBand, QuantHighlightColor } from '../types/quant'
 
 type MetricTab = 'spread' | 'buffett' | 'deposit' | 'style'
 type RangeKey = '1y' | '3y' | 'all'
 type SpreadSeriesKey = 'hs300' | 'csi1000'
 type StylePairKey = 'chinext' | 'star50'
 type StyleSignal = 'growth' | 'dividend' | 'neutral' | 'unavailable'
+type StyleCyclePhase = 'up' | 'down' | 'sideways'
 type BollPosition = 'above' | 'below' | 'inside' | 'unavailable'
 
 interface BollDefinition {
@@ -60,6 +62,12 @@ interface StyleSnapshot {
   signalLabel: string
   tradeDate: string
   confirmation: string
+}
+
+interface StyleCycleDefinition {
+  startDate: string
+  endDate: string
+  phase: StyleCyclePhase
 }
 
 const dashboard = ref<MacroDashboard | null>(null)
@@ -148,6 +156,72 @@ const stylePairList: StylePairDefinition[] = [
 ]
 
 const stylePairs = Object.fromEntries(stylePairList.map((item) => [item.key, item])) as Record<StylePairKey, StylePairDefinition>
+
+const styleCycleDefinitions: StyleCycleDefinition[] = [
+  { startDate: '2024-09-18', endDate: '2024-10-08', phase: 'up' },
+  { startDate: '2024-10-08', endDate: '2024-10-17', phase: 'down' },
+  { startDate: '2024-10-18', endDate: '2024-11-08', phase: 'up' },
+  { startDate: '2024-11-08', endDate: '2024-11-25', phase: 'down' },
+  { startDate: '2024-11-25', endDate: '2024-12-10', phase: 'up' },
+  { startDate: '2024-12-10', endDate: '2025-01-13', phase: 'down' },
+  { startDate: '2025-01-13', endDate: '2025-03-19', phase: 'up' },
+  { startDate: '2025-03-19', endDate: '2025-04-07', phase: 'down' },
+  { startDate: '2025-04-07', endDate: '2025-05-14', phase: 'up' },
+  { startDate: '2025-05-14', endDate: '2025-06-20', phase: 'down' },
+  { startDate: '2025-06-21', endDate: '2025-08-25', phase: 'up' },
+  { startDate: '2025-08-25', endDate: '2025-12-16', phase: 'sideways' },
+  { startDate: '2025-12-16', endDate: '2026-01-12', phase: 'up' },
+  { startDate: '2026-01-12', endDate: '2026-03-02', phase: 'sideways' },
+  { startDate: '2026-03-03', endDate: '2026-03-23', phase: 'down' },
+  { startDate: '2026-03-24', endDate: '2026-05-13', phase: 'up' },
+  { startDate: '2026-05-14', endDate: '2026-07-17', phase: 'down' },
+]
+
+const styleCyclePresentation: Record<StyleCyclePhase, {
+  label: string
+  color: QuantHighlightColor
+  fillColor: string
+  swatchColor: string
+}> = {
+  up: {
+    label: '上涨',
+    color: 'red',
+    fillColor: 'rgba(220, 38, 38, 0.12)',
+    swatchColor: '#dc2626',
+  },
+  down: {
+    label: '下跌',
+    color: 'green',
+    fillColor: 'rgba(22, 163, 74, 0.12)',
+    swatchColor: '#16a34a',
+  },
+  sideways: {
+    label: '横盘',
+    color: 'amber',
+    fillColor: 'rgba(245, 158, 11, 0.13)',
+    swatchColor: '#d97706',
+  },
+}
+
+const styleCycleLegend = (['up', 'down', 'sideways'] as StyleCyclePhase[]).map((phase) => ({
+  phase,
+  ...styleCyclePresentation[phase],
+}))
+
+const styleCycleBands = computed<QuantHighlightBand[]>(() => (
+  (dashboard.value?.points ?? []).flatMap((point) => {
+    const cycle = styleCycleDefinitions.find((item) => (
+      point.trade_date >= item.startDate && point.trade_date <= item.endDate
+    ))
+    if (!cycle) return []
+    const presentation = styleCyclePresentation[cycle.phase]
+    return [{
+      tradeDate: point.trade_date,
+      color: presentation.color,
+      fillColor: presentation.fillColor,
+    }]
+  })
+))
 
 function numericValue(point: MacroPoint | null | undefined, key: keyof MacroPoint) {
   const value = point?.[key]
@@ -556,7 +630,15 @@ onMounted(loadDashboard)
               <p v-if="activeMetric === 'style'">比值上行代表成长相对走强，下行代表红利相对走强</p>
               <p v-else>BOLL(20,2)：20日中轨与上下2倍标准差</p>
             </div>
-            <span>{{ visiblePointCount }} 个有效交易日</span>
+            <div class="macro-chart-meta">
+              <div v-if="activeMetric === 'style'" class="macro-cycle-legend" aria-label="涨跌周期背景图例">
+                <span v-for="item in styleCycleLegend" :key="item.phase">
+                  <i :style="{ backgroundColor: item.swatchColor }"></i>
+                  {{ item.label }}
+                </span>
+              </div>
+              <span>{{ visiblePointCount }} 个有效交易日</span>
+            </div>
           </div>
           <MacroLineChart
             :points="dashboard.points"
@@ -564,6 +646,7 @@ onMounted(loadDashboard)
             :unit="chartConfig.unit"
             :precision="chartConfig.precision"
             :visible-start-date="activeRange === 'all' ? undefined : startDateForRange(activeRange)"
+            :background-bands="activeMetric === 'style' ? styleCycleBands : []"
           />
         </section>
 
@@ -671,7 +754,10 @@ onMounted(loadDashboard)
 .macro-chart-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin: 20px 4px 8px; }
 .macro-chart-title h3 { margin: 0; color: #172033; font-size: 17px; }
 .macro-chart-title p { margin: 4px 0 0; color: #64748b; font-size: 12px; }
-.macro-chart-title > span { flex: 0 0 auto; color: #64748b; font-size: 12px; }
+.macro-chart-meta { display: flex; align-items: center; justify-content: flex-end; gap: 14px; color: #64748b; font-size: 12px; }
+.macro-cycle-legend { display: flex; align-items: center; gap: 12px; }
+.macro-cycle-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.macro-cycle-legend i { width: 10px; height: 10px; border-radius: 2px; }
 .macro-detail-band, .macro-style-signal-band { display: grid; border: 1px solid #dce3eb; background: #fff; }
 .macro-detail-band { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .macro-style-signal-band { grid-template-columns: 1.2fr repeat(4, minmax(0, 1fr)); }
@@ -705,6 +791,7 @@ onMounted(loadDashboard)
 }
 @media (max-width: 760px) {
   .macro-header, .macro-toolbar, .macro-chart-title { align-items: stretch; flex-direction: column; }
+  .macro-chart-meta { align-items: flex-start; justify-content: flex-start; flex-wrap: wrap; }
   .macro-kpi-grid, .macro-style-pairs, .macro-detail-band, .macro-style-signal-band, .macro-methods { grid-template-columns: 1fr; }
   .macro-detail-band > div, .macro-style-signal-band > div { border-right: 0; border-bottom: 1px solid #dce3eb; }
   .macro-detail-band > div:last-child, .macro-style-signal-band > div:last-child { border-bottom: 0; }

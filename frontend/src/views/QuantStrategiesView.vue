@@ -29,6 +29,8 @@ import type {
   QuantSignalColor,
   QuantStrategyConfig,
   QuantStrategyPayload,
+  QuantRiskComponent,
+  QuantRiskStrategyPoint,
   QuantStrategyTargetChartResponse,
 } from '../types/quant'
 import type { UserSearchResult } from '../types/auth'
@@ -52,6 +54,8 @@ const targetChartLoading = ref(false)
 const targetChartError = ref('')
 const targetChartFocusDate = ref<string | null>(null)
 let targetChartController: AbortController | null = null
+const TARGET_CHART_CACHE_LIMIT = 12
+const targetChartCache = new Map<string, QuantStrategyTargetChartResponse>()
 
 const loading = ref(false)
 const curveLoading = ref(false)
@@ -117,6 +121,16 @@ function cloneJson<T>(value: T): T {
 function isMarketScanStrategy(strategy: QuantStrategyConfig | null | undefined) {
   return strategy?.strategy_engine === 'sequence' && strategy.sequence_mode === 'market_scan'
 }
+
+function isRiskStrategy(strategy: QuantStrategyConfig | null | undefined) {
+  return strategy?.strategy_engine === 'risk'
+}
+
+const riskStrategyMeta = {
+  yellow_vulnerability: { label: '黄色脆弱期', color: 'amber', componentKey: 'yellow' },
+  red_escalation: { label: '红色风险升级', color: 'red', componentKey: 'red' },
+  global_shock: { label: '全球冲击', color: 'purple', componentKey: 'global' },
+} as const
 
 function hasScanSellTrigger(strategy: QuantStrategyConfig | null | undefined) {
   return Boolean(strategy?.scan_trade_config?.sell_trigger?.enabled)
@@ -200,16 +214,19 @@ function strategyTypeLabel(strategyType: QuantStrategyConfig['strategy_type']) {
 }
 
 function strategyEngineLabel(strategy: QuantStrategyConfig) {
+  if (strategy.strategy_engine === 'risk') return '风险状态策略'
   if (strategy.strategy_engine !== 'sequence') return '单日策略'
   return strategy.sequence_mode === 'market_scan' ? '条件策略 / 扫描模式' : '条件策略 / 单标的'
 }
 
 function analysisPathForStrategy(strategy: QuantStrategyConfig) {
+  if (strategy.strategy_engine === 'risk') return '/quant/strategies'
   if (strategy.strategy_engine === 'sequence') return '/quant/sequence'
   return strategy.strategy_type === 'index' ? '/quant/index' : '/quant/stock'
 }
 
 function analysisButtonLabel(strategy: QuantStrategyConfig) {
+  if (strategy.strategy_engine === 'risk') return '风险状态'
   if (strategy.strategy_engine === 'sequence') return '加载到条件策略'
   return strategy.strategy_type === 'index' ? '加载到指数分析' : '加载到股票分析'
 }
@@ -330,8 +347,50 @@ function isCanceledRequest(cause: unknown) {
   return name === 'CanceledError' || name === 'AbortError' || code === 'ERR_CANCELED'
 }
 
+function targetChartCacheKey(strategy: QuantStrategyConfig, event: QuantScanEvent | null) {
+  if (!event) return `strategy:${strategy.id}`
+  return `scan:${strategy.id}:${sequenceScanResultId.value}:${event.target_code}`
+}
+
+function readTargetChartCache(key: string) {
+  const cached = targetChartCache.get(key)
+  if (!cached) return null
+  targetChartCache.delete(key)
+  targetChartCache.set(key, cached)
+  return cached
+}
+
+function writeTargetChartCache(key: string, value: QuantStrategyTargetChartResponse) {
+  targetChartCache.delete(key)
+  targetChartCache.set(key, value)
+  while (targetChartCache.size > TARGET_CHART_CACHE_LIMIT) {
+    const oldestKey = targetChartCache.keys().next().value
+    if (typeof oldestKey !== 'string') break
+    targetChartCache.delete(oldestKey)
+  }
+}
+
+function clearStrategyTargetChartCache(strategyId: number) {
+  const fixedKey = `strategy:${strategyId}`
+  const scanPrefix = `scan:${strategyId}:`
+  for (const key of targetChartCache.keys()) {
+    if (key === fixedKey || key.startsWith(scanPrefix)) targetChartCache.delete(key)
+  }
+}
+
 async function loadTargetChart(strategy: QuantStrategyConfig, event: QuantScanEvent | null = null) {
   targetChartController?.abort()
+  targetChartController = null
+  const cacheKey = targetChartCacheKey(strategy, event)
+  const cached = readTargetChartCache(cacheKey)
+  if (cached) {
+    targetChart.value = cached
+    targetChartLoading.value = false
+    targetChartError.value = ''
+    if (event) targetChartFocusDate.value = event.signal_date
+    return
+  }
+
   const controller = new AbortController()
   targetChartController = controller
   targetChartLoading.value = true
@@ -345,6 +404,7 @@ async function loadTargetChart(strategy: QuantStrategyConfig, event: QuantScanEv
       signal: controller.signal,
     })
     if (targetChartController !== controller || selectedStrategyId.value !== strategy.id) return
+    writeTargetChartCache(cacheKey, response)
     targetChart.value = response
   } catch (cause) {
     if (!isCanceledRequest(cause) && targetChartController === controller) {
@@ -385,7 +445,7 @@ async function loadStrategies(preferredId?: number | null) {
   loading.value = true
   error.value = ''
   try {
-    strategies.value = await fetchQuantStrategies()
+    strategies.value = (await fetchQuantStrategies()).filter((item) => item.strategy_engine !== 'risk')
     const nextId = preferredId ?? selectedStrategyId.value ?? strategies.value[0]?.id ?? null
     if (nextId && strategies.value.some((item) => item.id === nextId)) {
       selectStrategy(nextId)
@@ -502,6 +562,7 @@ async function persistStrategy(showSavedMessage = true) {
   if (showSavedMessage) saveMessage.value = ''
   try {
     const updated = await updateQuantStrategy(editingStrategy.value.id, toPayload(editingStrategy.value))
+    clearStrategyTargetChartCache(updated.id)
     await loadStrategies(updated.id)
     if (showSavedMessage) {
       saveMessage.value = `已更新策略：${updated.name}`
@@ -562,6 +623,7 @@ async function removeStrategy() {
   try {
     const deletingId = editingStrategy.value.id
     await deleteQuantStrategy(deletingId)
+    clearStrategyTargetChartCache(deletingId)
     const nextId = strategies.value.find((item) => item.id !== deletingId)?.id ?? null
     await loadStrategies(nextId)
     curveRequested.value = false
@@ -843,6 +905,74 @@ const targetChartHighlightSummary = computed(() => ({
   red: targetChart.value?.highlight_bands.filter((item) => item.color === 'red').length ?? 0,
   purple: targetChart.value?.highlight_bands.filter((item) => item.color === 'purple').length ?? 0,
 }))
+const activeRiskMeta = computed(() => {
+  const key = editingStrategy.value?.indicator_params?.risk_strategy?.key
+  return key ? riskStrategyMeta[key] ?? null : null
+})
+const latestRiskPoint = computed<QuantRiskStrategyPoint | null>(() => {
+  const points = targetChart.value?.risk_strategy_points ?? []
+  return points.length ? points[points.length - 1] : null
+})
+const activeRiskState = computed<boolean | null>(() => {
+  const key = editingStrategy.value?.indicator_params?.risk_strategy?.key
+  const point = latestRiskPoint.value
+  if (!key || !point) return null
+  if (key === 'yellow_vulnerability') return point.yellow_vulnerability
+  if (key === 'red_escalation') return point.red_escalation
+  return point.global_shock
+})
+const activeRiskScore = computed<number | null>(() => {
+  const key = editingStrategy.value?.indicator_params?.risk_strategy?.key
+  const point = latestRiskPoint.value
+  if (!key || !point) return null
+  if (key === 'yellow_vulnerability') return point.yellow_score
+  if (key === 'red_escalation') return point.red_score
+  return point.global_score
+})
+const activeRiskComponentPayload = computed<Record<string, unknown>>(() => {
+  const meta = activeRiskMeta.value
+  const value = meta ? latestRiskPoint.value?.components?.[meta.componentKey] : null
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+})
+
+function collectRiskComponents(value: unknown, output: QuantRiskComponent[] = []): QuantRiskComponent[] {
+  if (Array.isArray(value)) {
+    for (const item of value) collectRiskComponents(item, output)
+    return output
+  }
+  if (!value || typeof value !== 'object') return output
+  const record = value as Record<string, unknown>
+  if (typeof record.label === 'string') output.push(record as QuantRiskComponent)
+  for (const [key, child] of Object.entries(record)) {
+    if (key !== 'label') collectRiskComponents(child, output)
+  }
+  return output
+}
+
+const activeRiskComponents = computed(() => collectRiskComponents(activeRiskComponentPayload.value))
+const activeRiskModeLabel = computed(() => ({
+  broad_risk_off: '全面避险',
+  tech_deleveraging: '科技去杠杆',
+  'broad_risk_off+tech_deleveraging': '全面避险 + 科技去杠杆',
+}[latestRiskPoint.value?.global_mode ?? ''] ?? latestRiskPoint.value?.global_mode ?? '-'))
+
+function formatRiskValue(value: unknown, unit = '') {
+  const numberValue = Number(value)
+  if (!Number.isFinite(numberValue)) return '-'
+  if (unit === '元') return `${(numberValue / 100_000_000).toFixed(2)}亿元`
+  return `${Math.abs(numberValue) >= 1000 ? numberValue.toFixed(0) : numberValue.toFixed(2)}${unit}`
+}
+
+function formatRiskThreshold(component: QuantRiskComponent) {
+  const isLowDirection = component.direction === 'low'
+    || (component.direction === undefined && Number(component.absolute_threshold) < 0)
+  const direction = isLowDirection ? '≤' : '≥'
+  const absolute = formatRiskValue(component.absolute_threshold, component.unit ?? '')
+  const percentile = component.percentile_threshold === null || component.percentile_threshold === undefined
+    ? ''
+    : ` 且分位${direction}${Number(component.percentile_threshold).toFixed(0)}%`
+  return `${direction}${absolute}${percentile}`
+}
 const optionTrades = computed<QuantOptionTrade[]>(() => optionTradeResult.value?.trades ?? [])
 const sequenceScanTotalPages = computed(() => {
   const total = sequenceScanBacktest.value?.total_event_count ?? 0
@@ -914,25 +1044,32 @@ onUnmounted(() => {
             <span class="quant-field-label">策略备注</span>
             <textarea v-model="editingStrategy.notes" class="input progress-textarea progress-textarea-compact" />
           </label>
-          <label v-if="editingStrategy.strategy_engine !== 'sequence' && !editingStrategy.research_option_template" class="quant-field">
+          <label v-if="editingStrategy.strategy_engine === 'snapshot' && !editingStrategy.research_option_template" class="quant-field">
             <span class="quant-field-label">买入信号颜色</span>
             <select v-model="editingStrategy.signal_buy_color" class="input">
               <option v-for="option in signalColorOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
-          <label v-if="editingStrategy.strategy_engine !== 'sequence' && !editingStrategy.research_option_template" class="quant-field">
+          <label v-if="editingStrategy.strategy_engine === 'snapshot' && !editingStrategy.research_option_template" class="quant-field">
             <span class="quant-field-label">卖出信号颜色</span>
             <select v-model="editingStrategy.signal_sell_color" class="input">
               <option v-for="option in signalColorOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
-          <label v-if="editingStrategy.strategy_engine !== 'sequence' && !editingStrategy.research_option_template" class="quant-field">
+          <label v-if="editingStrategy.strategy_engine === 'snapshot' && !editingStrategy.research_option_template" class="quant-field">
             <span class="quant-field-label">紫色冲突处理</span>
             <select v-model="editingStrategy.purple_conflict_mode" class="input">
               <option v-for="option in conflictModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>
-          <template v-if="isMarketScanStrategy(editingStrategy)">
+          <template v-if="isRiskStrategy(editingStrategy)">
+            <div class="quant-scan-backtest-note quant-field-full quant-risk-strategy-note">
+              <strong>风险状态策略不产生买卖交易</strong>
+              <p class="muted">状态按每个交易日的完整条件即时判断；条件不满足时当日立即解除，不设置延迟退出。</p>
+              <p class="muted">命中日只用于风险管理提示，不生成仓位、交易和收益曲线。</p>
+            </div>
+          </template>
+          <template v-else-if="isMarketScanStrategy(editingStrategy)">
             <div class="quant-scan-backtest-note quant-field-full">
               <strong>扫描模式组合回测参数</strong>
               <p class="muted">以下参数只影响扫描模式策略的组合回测，不影响扫描命中事件本身。</p>
@@ -1022,10 +1159,10 @@ onUnmounted(() => {
         </div>
 
         <div class="progress-hero-actions">
-          <button class="btn" @click="loadStrategyToAnalysis">{{ analysisButtonLabel(editingStrategy) }}</button>
-          <button v-if="isRoot" class="btn" @click="openSendDialog">发送给用户</button>
+          <button v-if="!isRiskStrategy(editingStrategy)" class="btn" @click="loadStrategyToAnalysis">{{ analysisButtonLabel(editingStrategy) }}</button>
+          <button v-if="isRoot && !isRiskStrategy(editingStrategy)" class="btn" @click="openSendDialog">发送给用户</button>
           <button class="btn" @click="saveStrategy">保存策略</button>
-          <button class="btn primary" :disabled="curveLoading || optionTradeLoading" @click="confirmAndLoadCurve">
+          <button v-if="!isRiskStrategy(editingStrategy)" class="btn primary" :disabled="curveLoading || optionTradeLoading" @click="confirmAndLoadCurve">
             {{ editingStrategy.research_option_template ? '确定并加载期权回测' : '确定并加载收益曲线' }}
           </button>
           <button class="btn" @click="removeStrategy">删除策略</button>
@@ -1046,9 +1183,15 @@ onUnmounted(() => {
               <p v-else-if="isMarketScanStrategy(editingStrategy)" class="muted">
                 执行扫描后默认显示首个事件标的；点击事件行可以切换标的和定位信号日。
               </p>
+              <p v-else-if="isRiskStrategy(editingStrategy)" class="muted">显示中证1000行情及该风险状态的全部历史命中日期。</p>
               <p v-else class="muted">显示策略标的行情及保存规则产生的全部红蓝命中日期。</p>
             </div>
-            <div v-if="targetChart" class="quant-strategy-chart-legend" aria-label="命中日期图例">
+            <div v-if="targetChart && isRiskStrategy(editingStrategy)" class="quant-strategy-chart-legend" aria-label="风险日期图例">
+              <span class="quant-strategy-chart-legend-item" :class="`tone-${activeRiskMeta?.color ?? 'amber'}`">
+                {{ activeRiskMeta?.label ?? '风险命中' }} {{ targetChart.highlight_bands.length }}
+              </span>
+            </div>
+            <div v-else-if="targetChart" class="quant-strategy-chart-legend" aria-label="命中日期图例">
               <span class="quant-strategy-chart-legend-item tone-blue">蓝 {{ targetChartHighlightSummary.blue }}</span>
               <span class="quant-strategy-chart-legend-item tone-red">红 {{ targetChartHighlightSummary.red }}</span>
               <span class="quant-strategy-chart-legend-item tone-purple">紫 {{ targetChartHighlightSummary.purple }}</span>
@@ -1070,6 +1213,67 @@ onUnmounted(() => {
           <div v-else-if="!isMarketScanStrategy(editingStrategy)" class="quant-stock-empty quant-strategy-chart-empty">
             <h3>暂无标的行情</h3>
             <p class="muted">当前策略的标的 K 线或筛选快照暂时无法读取。</p>
+          </div>
+        </section>
+
+        <section v-if="isRiskStrategy(editingStrategy)" class="quant-risk-detail-card">
+          <div class="progress-section-head">
+            <div class="progress-section-copy">
+              <h3>当日风险状态</h3>
+              <p class="muted">数据日期 {{ latestRiskPoint?.trade_date ?? '-' }}，所有百分位均只使用此前最多1260个交易日。</p>
+            </div>
+            <span class="quant-risk-status" :class="activeRiskState === true ? `tone-${activeRiskMeta?.color ?? 'red'}` : activeRiskState === false ? 'tone-success' : 'tone-muted'">
+              {{ activeRiskState === true ? '命中' : activeRiskState === false ? '未命中 / 已解除' : '数据不完整' }}
+            </span>
+          </div>
+          <div class="summary quant-risk-summary">
+            <div>
+              <div class="label">状态</div>
+              <div class="value small">{{ activeRiskMeta?.label ?? '-' }}</div>
+            </div>
+            <div>
+              <div class="label">完成度得分</div>
+              <div class="value">{{ activeRiskScore === null ? '-' : `${activeRiskScore.toFixed(1)}%` }}</div>
+            </div>
+            <div v-if="editingStrategy.indicator_params.risk_strategy?.key === 'global_shock'">
+              <div class="label">命中模式</div>
+              <div class="value small">{{ activeRiskModeLabel }}</div>
+            </div>
+          </div>
+          <div class="quant-scan-event-table-wrap">
+            <table class="quant-scan-event-table quant-risk-component-table">
+              <thead>
+                <tr>
+                  <th>组件</th>
+                  <th>原值</th>
+                  <th>历史分位</th>
+                  <th>联合阈值</th>
+                  <th>数据日期 / 来源</th>
+                  <th>结果</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(component, index) in activeRiskComponents" :key="`${component.label}-${index}`">
+                  <td>{{ component.label || '-' }}</td>
+                  <td>{{ formatRiskValue(component.value, component.unit ?? '') }}</td>
+                  <td>{{ component.percentile === null || component.percentile === undefined ? '-' : `${Number(component.percentile).toFixed(1)}%` }}</td>
+                  <td>{{ formatRiskThreshold(component) }}</td>
+                  <td>
+                    <div class="quant-scan-cell-main">{{ component.data_date || '-' }}</div>
+                    <div class="quant-scan-cell-sub">{{ component.data_source || '-' }}</div>
+                  </td>
+                  <td>
+                    <span :class="component.matched === true ? 'tone-red' : component.matched === false ? 'tone-success' : 'tone-muted'">
+                      {{ component.matched === true ? '满足' : component.matched === false ? '未满足' : '缺失' }}
+                    </span>
+                    <div v-if="component.missing_reason" class="quant-scan-cell-sub">{{ component.missing_reason }}</div>
+                  </td>
+                </tr>
+                <tr v-if="!activeRiskComponents.length">
+                  <td colspan="6" class="muted">当前日期没有完整组件明细。</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </section>
 
@@ -1263,11 +1467,11 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <p v-if="!curveRequested && !curveLoading" class="muted">
+        <p v-if="!isRiskStrategy(editingStrategy) && !curveRequested && !curveLoading" class="muted">
           当前只加载了策略配置。调整好选项后，点击“确定并加载收益曲线”再开始回测。
         </p>
         <StrategyEquityCurveChart
-          v-else
+          v-else-if="!isRiskStrategy(editingStrategy)"
           :points="curvePoints"
           :loading="curveLoading"
           :display-mode="curveDisplayMode"

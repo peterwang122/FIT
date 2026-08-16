@@ -35,6 +35,8 @@ def test_star_50_uses_only_technical_index_indicators():
     assert "cn-option-flow-pc-turnover-sse-588080" in allowed_keys
     assert set(VIX_FILTER_KEYS).issubset(allowed_keys)
     assert "emotion" not in allowed_keys
+    assert "self-sentiment-core-score" not in allowed_keys
+    assert "self-sentiment-derivative-score" not in allowed_keys
     assert "basis-main" not in allowed_keys
 
 
@@ -87,6 +89,72 @@ def test_star_50_dashboard_includes_collected_qvix(monkeypatch):
     ]
 
 
+def test_star_50_dashboard_includes_margin_trading_history(monkeypatch):
+    class FakeStockService:
+        def list_index_daily_kline(self, **_kwargs):
+            return [
+                {
+                    "trade_date": date(2026, 8, 13),
+                    "open": 1000,
+                    "high": 1010,
+                    "low": 990,
+                    "close": 1005,
+                }
+            ]
+
+        def list_index_qvix_daily_data(self, qvix_code, **_kwargs):
+            assert qvix_code == "KCB_QVIX"
+            return []
+
+    service = _service()
+    service.stock_service = FakeStockService()
+    service._resolve_index_option = lambda *_args: {"code": "sh000688", "name": "科创50"}
+    service._load_precomputed_index_indicator_rows = lambda *_args: [
+        {
+            "trade_date": date(2026, 8, 13),
+            "margin_financing_balance": 123_000_000_000,
+            "margin_securities_lending_balance": 450_000_000,
+            "margin_total_balance": 123_450_000_000,
+            "margin_financing_net_buy_amount": 1_200_000_000,
+            "margin_leverage_ratio_pct": 4.25,
+            "margin_total_market_cap_leverage_ratio_pct": 2.75,
+            "margin_financing_net_buy_sum_30d": 8_800_000_000,
+        }
+    ]
+    monkeypatch.setattr(quant_service_module.redis_client, "get", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(quant_service_module.redis_client, "set", lambda *_args, **_kwargs: True)
+
+    payload = service.get_index_dashboard(
+        "sh000688",
+        start_date=date(2026, 8, 13),
+        market="cn",
+    )
+
+    assert payload["margin_trading_points"] == [
+        {
+            "trade_date": date(2026, 8, 13),
+            "financing_balance": 123_000_000_000.0,
+            "securities_lending_balance": 450_000_000.0,
+            "total_balance": 123_450_000_000.0,
+            "financing_net_buy_amount": 1_200_000_000.0,
+            "leverage_ratio_pct": 4.25,
+            "total_market_cap_leverage_ratio_pct": 2.75,
+        }
+    ]
+    assert payload["margin_financing_net_buy_sum_points"] == [
+        {
+            "trade_date": date(2026, 8, 13),
+            "sum_5d": None,
+            "sum_7d": None,
+            "sum_14d": None,
+            "sum_20d": None,
+            "sum_30d": 8_800_000_000.0,
+            "sum_60d": None,
+            "sum_120d": None,
+        }
+    ]
+
+
 def test_existing_cn_indexes_keep_auxiliary_indicators():
     service = _service()
 
@@ -103,6 +171,8 @@ def test_existing_cn_indexes_keep_auxiliary_indicators():
         "沪深300",
     )
     assert set(BASIS_FILTER_KEYS).issubset(allowed)
+    assert "self-sentiment-core-score" in allowed
+    assert "self-sentiment-derivative-score" in allowed
     assert set(allowed).issubset(CN_INDEX_STRATEGY_FILTER_KEYS)
 
 

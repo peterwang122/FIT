@@ -12,6 +12,8 @@ import QuantStockView from '../views/QuantStockView.vue'
 import QuantStrategiesView from '../views/QuantStrategiesView.vue'
 import QuantView from '../views/QuantView.vue'
 import ResearchView from '../views/ResearchView.vue'
+import RiskView from '../views/RiskView.vue'
+import Csi1000RiskView from '../views/Csi1000RiskView.vue'
 import Csi1000FuturesResearchView from '../views/Csi1000FuturesResearchView.vue'
 import VixOptionResearchView from '../views/VixOptionResearchView.vue'
 import StocksView from '../views/StocksView.vue'
@@ -62,6 +64,15 @@ export const router = createRouter({
         { path: '', redirect: '/research/vix-options' },
         { path: 'vix-options', component: VixOptionResearchView },
         { path: 'csi1000-futures', component: Csi1000FuturesResearchView },
+      ],
+    },
+    {
+      path: '/risk',
+      component: RiskView,
+      meta: { requiresAuth: true, requiresUser: true },
+      children: [
+        { path: '', redirect: '/risk/csi1000' },
+        { path: 'csi1000', component: Csi1000RiskView },
       ],
     },
     { path: '/progress', component: ProgressView, meta: { requiresAuth: true } },

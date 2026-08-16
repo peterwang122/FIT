@@ -120,6 +120,11 @@ RESET_PATTERNS = (
     r"\b(?:give|giving|gave|get|getting|got).{0,35}\b(?:allowance|quota|credits?|usage)\b.{0,20}\bback\b",
     r"\b(?:allowance|quota|credits?|usage).{0,20}\bback\b",
 )
+GLOBAL_RESET_PATTERNS = (
+    r"\b(?:reset|refill|replenish|restore).{0,24}\b(?:everyone|all (?:paid )?users?|all codex users?)\b",
+    r"\b(?:everyone|all (?:paid )?users?|all codex users?)\b.{0,24}\b(?:reset|refill|replenish|restore)\b",
+    r"\bpromised\b.{0,24}\ba reset\b.{0,120}\b(?:active users?|codex)\b",
+)
 NEGATION_PATTERNS = (
     r"\bno[ ,:-]+(?:reset|refill|restore|replenish)",
     r"\bnot (?:going to )?(?:reset|refill|restore|replenish)",
@@ -135,6 +140,7 @@ FUTURE_PATTERNS = (
     r"\bgoing to (?:reset|refill|restore|replenish)",
     r"\b(?:resetting|refilling|restoring|replenishing)\b.{0,30}\b(?:tomorrow|later|soon|tonight|this week)\b",
     r"\b(?:tomorrow|later today|tonight|soon|this week|next week|in \d+ (?:minutes?|hours?|days?))\b",
+    r"\blanding\b.{0,40}\b(?:minutes?|hours?|days?)\b",
     r"\bshould be (?:back|restored|refilled|reset)\b",
 )
 COMPLETED_PATTERNS = (
@@ -151,7 +157,9 @@ def classify_reset_finding(text: str) -> ResetFinding | None:
         return None
     if _matches_any(NEGATION_PATTERNS, normalized):
         return None
-    if not _matches_any(QUOTA_PATTERNS, normalized):
+    has_explicit_quota_context = _matches_any(QUOTA_PATTERNS, normalized)
+    has_global_reset_context = _matches_any(GLOBAL_RESET_PATTERNS, normalized)
+    if not has_explicit_quota_context and not has_global_reset_context:
         return None
     if not _matches_any(RESET_PATTERNS, normalized):
         return None
@@ -508,6 +516,12 @@ class CodexResetWatchdogService:
         state = self.state_store.load()
         now_iso = self.now().isoformat()
         seen_item_ids = state.get("seen_item_ids") or {}
+        archived_items = state.get("items") if isinstance(state.get("items"), dict) else {}
+        previous_reset_statuses = {
+            item_id: archived.get("reset_status")
+            for item_id, archived in archived_items.items()
+            if isinstance(archived, dict)
+        }
         self._archive_items(state, items, now_iso)
         if not state.get("initialized_at"):
             state["initialized_at"] = now_iso
@@ -525,9 +539,20 @@ class CodexResetWatchdogService:
             }
 
         new_items = [item for item in items if item.item_id not in seen_item_ids]
+        notification_candidates = list(new_items)
+        notification_candidate_ids = {item.item_id for item in notification_candidates}
+        for item in items:
+            if item.item_id in notification_candidate_ids:
+                continue
+            if previous_reset_statuses.get(item.item_id):
+                continue
+            if classify_reset_finding(item.text) is not None:
+                notification_candidates.append(item)
+                notification_candidate_ids.add(item.item_id)
+
         findings = 0
         notifications_created = 0
-        for item in new_items:
+        for item in notification_candidates:
             finding = classify_reset_finding(item.text)
             if finding is None:
                 continue

@@ -5,7 +5,7 @@ from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps.auth import get_current_user
+from app.api.deps.auth import get_current_user, require_non_guest_user
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
@@ -29,6 +29,8 @@ from app.schemas.stock import (
     QuantSequenceScanTargetHitsResponse,
     QuantEquityCurveResponse,
     QuantOptionTradeResultResponse,
+    QuantRiskDashboardResponse,
+    QuantRiskEvidenceResponse,
     QuantStrategyConfigResponse,
     QuantStrategyTargetChartResponse,
     QuantStrategySendPayload,
@@ -154,6 +156,46 @@ def get_index_dashboard(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ApiResponse(data=IndexDashboardResponse.model_validate(item))
+
+
+@router.get("/quant/risk-dashboard", response_model=ApiResponse[QuantRiskDashboardResponse])
+def get_quant_risk_dashboard(
+    mode: str = Query(default="default"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_non_guest_user),
+):
+    service = QuantService(db)
+    try:
+        item = service.get_risk_dashboard(
+            mode=mode,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ApiResponse(data=QuantRiskDashboardResponse.model_validate(item))
+
+
+@router.get(
+    "/quant/risk-dashboard/evidence",
+    response_model=ApiResponse[QuantRiskEvidenceResponse],
+)
+def get_quant_risk_dashboard_evidence(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_non_guest_user),
+):
+    service = QuantService(db)
+    try:
+        item = service.get_risk_dashboard_evidence(start_date, end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ApiResponse(data=QuantRiskEvidenceResponse.model_validate(item))
 
 
 @router.get("/quant/targets", response_model=ApiResponse[list[MarketOptionResponse]])
@@ -287,7 +329,9 @@ def get_quant_strategy_equity_curve(
     try:
         item = service.calculate_equity_curve(strategy_id, current_user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        detail = str(exc)
+        status_code = 404 if detail == "strategy not found" else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return ApiResponse(data=QuantEquityCurveResponse.model_validate(item))
 
 

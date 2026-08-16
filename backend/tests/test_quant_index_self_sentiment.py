@@ -22,7 +22,13 @@ def test_self_sentiment_filter_is_available_for_supported_cn_indices():
     allowed = service._allowed_snapshot_filter_keys("index", "cn", "sh000852", "中证1000")
 
     assert "self-sentiment-score" in CN_INDEX_STRATEGY_FILTER_KEYS
-    assert "self-sentiment-score" in allowed
+    assert "self-sentiment-core-score" in CN_INDEX_STRATEGY_FILTER_KEYS
+    assert "self-sentiment-derivative-score" in CN_INDEX_STRATEGY_FILTER_KEYS
+    assert {
+        "self-sentiment-score",
+        "self-sentiment-core-score",
+        "self-sentiment-derivative-score",
+    }.issubset(allowed)
 
 
 def test_index_snapshot_reads_precomputed_self_sentiment_score():
@@ -35,6 +41,8 @@ def test_index_snapshot_reads_precomputed_self_sentiment_score():
             "month_basis": 0,
             "up_ratio_pct": 50,
             "self_sentiment_score": 67.25,
+            "self_sentiment_core_score": 72.5,
+            "self_sentiment_derivative_score": 61.75,
         }
     ]
     service._load_cn_market_fear_greed_rows = lambda **_kwargs: []
@@ -47,6 +55,8 @@ def test_index_snapshot_reads_precomputed_self_sentiment_score():
     )
 
     assert snapshots[0]["values"]["self-sentiment-score"] == 67.25
+    assert snapshots[0]["values"]["self-sentiment-core-score"] == 72.5
+    assert snapshots[0]["values"]["self-sentiment-derivative-score"] == 61.75
 
 
 def test_missing_self_sentiment_does_not_match_filter():
@@ -63,3 +73,66 @@ def test_missing_self_sentiment_does_not_match_filter():
         condition,
         CN_INDEX_STRATEGY_FILTER_KEYS,
     )
+
+
+def test_core_and_derivative_self_sentiment_filters_match_independently():
+    service = _service()
+    snapshot = {
+        "values": {
+            "self-sentiment-core-score": 72.5,
+            "self-sentiment-derivative-score": 61.75,
+        }
+    }
+
+    assert service._matches_rule_condition(
+        snapshot,
+        {
+            "type": "numeric",
+            "field": "self-sentiment-core-score",
+            "operator": "gte",
+            "value": 70,
+        },
+        CN_INDEX_STRATEGY_FILTER_KEYS,
+    )
+    assert not service._matches_rule_condition(
+        snapshot,
+        {
+            "type": "numeric",
+            "field": "self-sentiment-derivative-score",
+            "operator": "gte",
+            "value": 70,
+        },
+        CN_INDEX_STRATEGY_FILTER_KEYS,
+    )
+
+
+def test_core_and_derivative_rules_survive_group_normalization():
+    service = _service()
+    groups = service._normalize_rule_groups(
+        [
+            {
+                "conditions": [
+                    {
+                        "type": "numeric",
+                        "field": "self-sentiment-core-score",
+                        "operator": "gte",
+                        "value": 70,
+                    },
+                    {
+                        "type": "numeric",
+                        "field": "self-sentiment-derivative-score",
+                        "operator": "lte",
+                        "value": 40,
+                    },
+                ]
+            }
+        ],
+        CN_INDEX_STRATEGY_FILTER_KEYS,
+    )
+
+    assert [
+        condition["field"] for condition in groups[0]["conditions"]
+    ] == [
+        "self-sentiment-core-score",
+        "self-sentiment-derivative-score",
+    ]

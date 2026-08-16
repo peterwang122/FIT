@@ -416,6 +416,7 @@ def ensure_runtime_tables() -> None:
             .filter(QuantStrategyConfig.owner_user_id.is_(None))
             .update({QuantStrategyConfig.owner_user_id: root_user.id}, synchronize_session=False)
         )
+        risk_strategies = _ensure_default_risk_strategies(db, root_user)
         _ensure_default_collection_task(
             db,
             root_user,
@@ -423,6 +424,56 @@ def ensure_runtime_tables() -> None:
             name="沪深官网股票日更",
             schedule_time="18:30",
             market_scope="cn_stock",
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="index_csi_dividend_daily",
+            name="中证红利指数日更",
+            schedule_time="17:10",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="forex_daily",
+            name="汇率日更",
+            schedule_time="09:10",
+            market_scope="us_index",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="usd_index_daily",
+            name="美元指数日更",
+            schedule_time="09:15",
+            market_scope="us_index",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="forex_intraday",
+            name="汇率18时盘中更新",
+            schedule_time="18:00",
+            market_scope="us_index",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="usd_index_intraday",
+            name="美元指数18时盘中更新",
+            schedule_time="18:00",
+            market_scope="us_index",
+            enforce_schedule_time=True,
+            enforce_name=True,
         )
         _ensure_default_collection_task(
             db,
@@ -529,6 +580,28 @@ def ensure_runtime_tables() -> None:
             enforce_schedule_time=True,
             enforce_name=True,
         )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="global_risk_daily",
+            name="全球冲击因子日更",
+            schedule_time="16:10",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
+            collector_key="a_share_turnover_concentration_daily",
+            name="A股成交集中度日更",
+            schedule_time="22:05",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+            legacy_collector_keys=("csi_tech_concentration_daily",),
+        )
+        _ensure_default_risk_notification_task(db, root_user, risk_strategies)
         for collector_key, name, schedule_time, legacy_names in (
             ("index_hk_daily", "港股指数日更", "18:00", ("港股指数采集",)),
             (
@@ -626,6 +699,117 @@ def _ensure_system_user(db, username: str, password: str, role: str) -> User:
     return item
 
 
+def _ensure_default_risk_strategies(db, owner: User) -> list[QuantStrategyConfig]:
+    definitions = (
+        (
+            "中证1000-黄色脆弱期",
+            "yellow_vulnerability",
+            "融资堆积、MO价格P/C偏高且IM中期期现差转弱时提示降低高弹性仓位、停止追涨。",
+        ),
+        (
+            "中证1000-红色风险升级",
+            "red_escalation",
+            "IM期现差恶化、中信净空增加且融资短期流出时按大级别调整管理风险。",
+        ),
+        (
+            "中证1000-全球冲击",
+            "global_shock",
+            "识别全球全面避险或海外科技去杠杆输入，仅表示风险状态。",
+        ),
+    )
+    result: list[QuantStrategyConfig] = []
+    for name, risk_key, notes in definitions:
+        item = (
+            db.query(QuantStrategyConfig)
+            .filter(
+                QuantStrategyConfig.owner_user_id == owner.id,
+                QuantStrategyConfig.name == name,
+            )
+            .first()
+        )
+        if item is None:
+            item = QuantStrategyConfig(owner_user_id=owner.id, name=name)
+        item.notes = notes
+        item.strategy_engine = "risk"
+        item.sequence_mode = "single_target"
+        item.strategy_type = "index"
+        item.target_market = "cn"
+        item.target_code = "sh000852"
+        item.target_name = "中证1000"
+        item.indicator_params = {"risk_strategy": {"key": risk_key}}
+        item.buy_sequence_groups = []
+        item.sell_sequence_groups = []
+        item.scan_trade_config = {}
+        item.research_option_template = None
+        item.blue_filter_groups = []
+        item.red_filter_groups = []
+        item.blue_filters = {}
+        item.red_filters = {}
+        item.blue_boll_filter = {}
+        item.red_boll_filter = {}
+        item.signal_buy_color = "blue"
+        item.signal_sell_color = "red"
+        item.purple_conflict_mode = "sell_first"
+        item.start_date = None
+        item.scan_start_date = None
+        item.scan_end_date = None
+        item.buy_position_pct = 0
+        item.sell_position_pct = 0
+        item.execution_price_mode = "next_open"
+        db.add(item)
+        result.append(item)
+    db.commit()
+    for item in result:
+        db.refresh(item)
+    return result
+
+
+def _ensure_default_risk_notification_task(
+    db,
+    owner: User,
+    strategies: list[QuantStrategyConfig],
+) -> ScheduledTask:
+    name = "中证1000风险状态每日通知"
+    item = (
+        db.query(ScheduledTask)
+        .filter(
+            ScheduledTask.owner_user_id == owner.id,
+            ScheduledTask.task_type == "notification",
+            ScheduledTask.name == name,
+        )
+        .first()
+    )
+    strategy_ids = [strategy.id for strategy in strategies]
+    config = {
+        "target_type": "index",
+        "target_code": "sh000852",
+        "target_name": "中证1000",
+        "strategy_ids": strategy_ids,
+        "target_email": str(owner.email or "").strip() or None,
+    }
+    if item is None:
+        item = ScheduledTask(
+            owner_user_id=owner.id,
+            task_type="notification",
+            market_scope="cn_stock",
+            name=name,
+            enabled=True,
+            schedule_time="22:40",
+            config_json=config,
+            last_run_status="",
+            last_run_summary="",
+            last_error_message="",
+        )
+    else:
+        item.market_scope = "cn_stock"
+        item.schedule_time = "22:40"
+        item.config_json = config
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 def _ensure_default_collection_task(
     db,
     owner: User,
@@ -637,6 +821,7 @@ def _ensure_default_collection_task(
     enforce_schedule_time: bool = False,
     enforce_name: bool = False,
     legacy_names: tuple[str, ...] = (),
+    legacy_collector_keys: tuple[str, ...] = (),
 ) -> ScheduledTask:
     existing_items = (
         db.query(ScheduledTask)
@@ -651,8 +836,11 @@ def _ensure_default_collection_task(
         item_config = dict(item.config_json or {})
         item_collector_key = str(item_config.get("collector_key") or "").strip().lower()
         matches_legacy_name = not item_collector_key and item.name in legacy_names
-        if item_collector_key == collector_key or matches_legacy_name:
-            if matches_legacy_name:
+        matches_legacy_collector = item_collector_key in {
+            str(key).strip().lower() for key in legacy_collector_keys
+        }
+        if item_collector_key == collector_key or matches_legacy_name or matches_legacy_collector:
+            if matches_legacy_name or matches_legacy_collector:
                 item_config["collector_key"] = collector_key
                 item.config_json = item_config
                 db.add(item)
@@ -688,5 +876,5 @@ def _ensure_default_collection_task(
 
 
 @app.get("/health", tags=["system"])
-def health() -> dict:
+async def health() -> dict:
     return {"status": "ok", "env": settings.app_env}

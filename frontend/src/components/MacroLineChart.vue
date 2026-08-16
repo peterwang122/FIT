@@ -3,6 +3,8 @@ import { LineSeries, LineStyle, createChart, type IChartApi, type ISeriesApi, ty
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import type { MacroPoint } from '../types/macro'
+import type { QuantHighlightBand } from '../types/quant'
+import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 
 interface SeriesDefinition {
   key: keyof MacroPoint
@@ -13,13 +15,16 @@ interface SeriesDefinition {
   lastValueVisible?: boolean
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   points: MacroPoint[]
   series: SeriesDefinition[]
   unit: string
   precision?: number
   visibleStartDate?: string
-}>()
+  backgroundBands?: QuantHighlightBand[]
+}>(), {
+  backgroundBands: () => [],
+})
 
 const containerRef = ref<HTMLElement | null>(null)
 const hoverDate = ref('')
@@ -27,6 +32,7 @@ const hoverValues = ref<Array<{ label: string; color: string; value: number | nu
 let chart: IChartApi | null = null
 let resizeObserver: ResizeObserver | null = null
 let lineSeries: ISeriesApi<'Line', Time>[] = []
+let backgroundPrimitive: DateHighlightPrimitive | null = null
 
 function applyVisibleRange() {
   if (!chart || !props.points.length) return
@@ -44,6 +50,10 @@ function applyVisibleRange() {
 function disposeChart() {
   resizeObserver?.disconnect()
   resizeObserver = null
+  if (backgroundPrimitive && lineSeries[0]) {
+    lineSeries[0].detachPrimitive(backgroundPrimitive)
+  }
+  backgroundPrimitive = null
   chart?.remove()
   chart = null
   lineSeries = []
@@ -103,6 +113,10 @@ async function renderChart() {
     )
     return series
   })
+  if (lineSeries[0] && props.backgroundBands.length) {
+    backgroundPrimitive = new DateHighlightPrimitive(props.backgroundBands)
+    lineSeries[0].attachPrimitive(backgroundPrimitive)
+  }
   applyVisibleRange()
   chart.subscribeCrosshairMove((param) => {
     if (!param.time) {
@@ -119,7 +133,11 @@ async function renderChart() {
   updateHover()
 }
 
-watch(() => [props.points, props.series, props.unit, props.precision], renderChart, { deep: true, immediate: true })
+watch(
+  () => [props.points, props.series, props.unit, props.precision, props.backgroundBands],
+  renderChart,
+  { deep: true, immediate: true },
+)
 watch(() => props.visibleStartDate, applyVisibleRange)
 onBeforeUnmount(disposeChart)
 </script>

@@ -128,6 +128,48 @@ def test_index_target_chart_uses_index_candles_instead_of_backtest_etf():
     assert service.stock_service.etf_calls == []
 
 
+def test_index_target_chart_only_requests_filter_fields_used_by_strategy():
+    strategy = _snapshot_strategy(
+        strategy_type="index",
+        target_code="sh000852",
+        target_name="中证1000",
+        blue_filter_groups=[
+            {
+                "conditions": [
+                    {
+                        "type": "numeric",
+                        "field": "margin-financing-net-buy-sum-30d",
+                        "operator": "gte",
+                        "value": 0,
+                    }
+                ]
+            }
+        ],
+        red_filter_groups=[
+            {
+                "conditions": [
+                    {"type": "numeric", "field": "wr", "operator": "gte", "value": -20}
+                ]
+            }
+        ],
+    )
+    service = _service(strategy, [_candle("2026-01-01", 6000)])
+    captured: dict[str, object] = {}
+
+    def build_snapshots(*args):
+        captured["required_filter_keys"] = args[-1]
+        return []
+
+    service._build_index_snapshots_for_market = build_snapshots
+
+    service.get_strategy_target_chart(1, 7)
+
+    assert captured["required_filter_keys"] == {
+        "margin-financing-net-buy-sum-30d",
+        "wr",
+    }
+
+
 def test_single_target_sequence_chart_marks_buy_and_sell_groups():
     strategy = _snapshot_strategy(
         strategy_engine="sequence",
