@@ -222,8 +222,8 @@ INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
 INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v32"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
-RISK_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:v1"
-RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:evidence:v1"
+RISK_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:v2"
+RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:evidence:v2"
 RISK_DASHBOARD_CACHE_TTL_SECONDS = 600
 STRATEGY_TARGET_CHART_CACHE_KEY_PREFIX = "fit:quant:strategy_target_chart:v1"
 STRATEGY_TARGET_CHART_CACHE_TTL_SECONDS = 300
@@ -2163,6 +2163,36 @@ class QuantService:
             return "high", "高风险"
         return "severe", "严重"
 
+    @staticmethod
+    def _global_mode_label(mode: str | None) -> str:
+        if not mode:
+            return ""
+        labels = {
+            "broad_risk_off": "全面避险",
+            "tech_deleveraging": "科技去杠杆",
+            "usd_rate_shock": "美元利率冲击",
+        }
+        parts = [
+            labels.get(part.strip(), part.strip())
+            for part in str(mode).split("+")
+            if part.strip()
+        ]
+        return "+".join(parts)
+
+    def clear_risk_dashboard_caches(self) -> int:
+        cleared = 0
+        scan = getattr(redis_client, "scan_iter", None)
+        if scan is None:
+            return 0
+        for prefix in (
+            RISK_DASHBOARD_CACHE_KEY_PREFIX,
+            RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX,
+        ):
+            for key in scan(f"{prefix}:*"):
+                redis_client.delete(key)
+                cleared += 1
+        return cleared
+
     def _build_risk_dashboard_point_payload(
         self,
         row: dict,
@@ -3349,8 +3379,10 @@ class QuantService:
                 "us-yield-3m": _to_float(item.get("yield_3m")),
                 "us-yield-2y": _to_float(item.get("yield_2y")),
                 "us-yield-10y": _to_float(item.get("yield_10y")),
+                "us-yield-real-10y": _to_float(item.get("yield_real_10y")),
                 "us-yield-spread-10y-2y": _to_float(item.get("spread_10y_2y")),
                 "us-yield-spread-10y-3m": _to_float(item.get("spread_10y_3m")),
+                "us-treasury-available-at": str(item.get("available_at") or "") or None,
             }
             for item in auxiliary_rows["us_treasury_yield_rows"]
             if item.get("trade_date") is not None
@@ -7074,11 +7106,7 @@ class QuantService:
                 ]
                 if definition["key"] == "global_shock":
                     mode = str(point.get("global_mode") or "").strip()
-                    mode_label = {
-                        "broad_risk_off": "全面避险",
-                        "tech_deleveraging": "科技去杠杆",
-                        "broad_risk_off+tech_deleveraging": "全面避险+科技去杠杆",
-                    }.get(mode, mode)
+                    mode_label = self._global_mode_label(mode)
                     if state is True and mode_label:
                         matched_labels = [f"命中模式：{mode_label}"]
                 if state is True:
@@ -7321,11 +7349,7 @@ class QuantService:
                 ]
                 if definition["key"] == "global_shock":
                     mode = str(point.get("global_mode") or "").strip()
-                    mode_label = {
-                        "broad_risk_off": "全面避险",
-                        "tech_deleveraging": "科技去杠杆",
-                        "broad_risk_off+tech_deleveraging": "全面避险+科技去杠杆",
-                    }.get(mode, mode)
+                    mode_label = self._global_mode_label(mode)
                     if state is True and mode_label:
                         matched_labels = [f"命中模式：{mode_label}"]
                 if state is True:

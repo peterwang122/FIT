@@ -202,8 +202,10 @@ class Settings(BaseSettings):
     index_us_treasury_yield_3m_column: str = "yield_3m"
     index_us_treasury_yield_2y_column: str = "yield_2y"
     index_us_treasury_yield_10y_column: str = "yield_10y"
+    index_us_treasury_yield_real_10y_column: str = "yield_real_10y"
     index_us_treasury_yield_spread_10y_2y_column: str = "spread_10y_2y"
     index_us_treasury_yield_spread_10y_3m_column: str = "spread_10y_3m"
+    index_us_treasury_yield_available_at_column: str = "available_at"
 
     index_us_credit_spread_table_name: str = "index_us_credit_spread_daily"
     index_us_credit_spread_date_column: str = "trade_date"

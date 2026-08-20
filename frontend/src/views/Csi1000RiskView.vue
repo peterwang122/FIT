@@ -362,10 +362,16 @@ function scoreFor(point: QuantRiskDashboardPoint | null, key: QuantRiskStrategyK
 }
 
 function globalModeLabel(mode: string | null) {
-  if (mode === 'broad_risk_off') return '全面避险'
-  if (mode === 'tech_deleveraging') return '科技去杠杆'
-  if (mode === 'broad_and_tech') return '全面避险 + 科技去杠杆'
-  return ''
+  const labels: Record<string, string> = {
+    broad_risk_off: '全面避险',
+    tech_deleveraging: '科技去杠杆',
+    usd_rate_shock: '美元利率冲击',
+  }
+  if (!mode) return ''
+  return mode
+    .split('+')
+    .map((part) => labels[part.trim()] ?? part.trim())
+    .join(' + ')
 }
 
 function buildAdvice(point: QuantRiskDashboardPoint | null) {
@@ -373,9 +379,13 @@ function buildAdvice(point: QuantRiskDashboardPoint | null) {
   const advice: string[] = []
   if (point.red_escalation) advice.push('按大级别调整管理风险，不按普通回踩处理')
   if (point.global_shock) {
-    advice.push(point.global_mode === 'tech_deleveraging'
-      ? '控制科技成长暴露'
-      : '优先控制总风险敞口')
+    if (point.global_mode === 'usd_rate_shock') {
+      advice.push('实际贴现率快速上升且全球科技承压，控制高估值成长暴露')
+    } else if (point.global_mode === 'tech_deleveraging') {
+      advice.push('控制科技成长暴露')
+    } else {
+      advice.push('优先控制总风险敞口')
+    }
   }
   if (point.yellow_vulnerability) advice.push('降低高弹性仓位、停止追涨')
   if (advice.length) return advice.join('；')
