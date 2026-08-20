@@ -76,6 +76,7 @@ export interface QuantRiskEvidenceCell {
   partial: boolean
   data_date: string | null
   data_source: string | null
+  available_at: string | null
   missing_reason: string | null
 }
 

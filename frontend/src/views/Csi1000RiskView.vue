@@ -379,12 +379,16 @@ function buildAdvice(point: QuantRiskDashboardPoint | null) {
   const advice: string[] = []
   if (point.red_escalation) advice.push('按大级别调整管理风险，不按普通回踩处理')
   if (point.global_shock) {
-    if (point.global_mode === 'usd_rate_shock') {
+    const modes = new Set(
+      (point.global_mode ?? '')
+        .split('+')
+        .map((mode) => mode.trim())
+        .filter(Boolean),
+    )
+    if (modes.has('broad_risk_off')) advice.push('优先控制总风险敞口')
+    if (modes.has('tech_deleveraging')) advice.push('控制科技成长暴露')
+    if (modes.has('usd_rate_shock')) {
       advice.push('实际贴现率快速上升且全球科技承压，控制高估值成长暴露')
-    } else if (point.global_mode === 'tech_deleveraging') {
-      advice.push('控制科技成长暴露')
-    } else {
-      advice.push('优先控制总风险敞口')
     }
   }
   if (point.yellow_vulnerability) advice.push('降低高弹性仓位、停止追涨')
@@ -429,7 +433,7 @@ function thresholdText(cell: QuantRiskEvidenceCell) {
 
 function evidenceTooltip(row: QuantRiskEvidenceRow, cell: QuantRiskEvidenceCell) {
   if (cell.matched === null) {
-    return `${row.label}\n${cell.missing_reason ?? '数据缺失'}\n数据日：${cell.data_date ?? '--'}\n来源：${cell.data_source ?? '--'}`
+    return `${row.label}\n${cell.missing_reason ?? '数据缺失'}\n数据日：${cell.data_date ?? '--'}\n可用时间：${cell.available_at ?? '--'}\n来源：${cell.data_source ?? '--'}`
   }
   return [
     row.label,
@@ -438,6 +442,7 @@ function evidenceTooltip(row: QuantRiskEvidenceRow, cell: QuantRiskEvidenceCell)
     `阈值：${thresholdText(cell) || '--'}`,
     `状态：${evidenceStateLabel(cell)}`,
     `数据日：${cell.data_date ?? '--'}`,
+    `可用时间：${cell.available_at ?? '--'}`,
     `来源：${cell.data_source ?? '--'}`,
   ].join('\n')
 }
@@ -630,6 +635,7 @@ onBeforeUnmount(() => {
               <small>
                 {{ formatEvidenceValue(item.cell) }} · 分位 {{ item.cell.percentile == null ? '--' : `${item.cell.percentile.toFixed(1)}%` }}
                 · 数据日 {{ formatShortDate(item.cell.data_date) }}
+                · 可用时间 {{ item.cell.available_at ?? '--' }}
               </small>
             </div>
             <div v-if="selectedDrawdown" class="factor-row drawdown-row">

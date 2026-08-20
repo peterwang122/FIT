@@ -2566,7 +2566,43 @@ class QuantService:
                             "section_key": section_key,
                             "section_label": section_label,
                             "label": label,
-                            "component": component,
+                                "component": component,
+                            }
+                        )
+
+        rate = global_group.get("usd_rate_shock") if isinstance(global_group.get("usd_rate_shock"), dict) else {}
+        rate_values = rate.get("components") if isinstance(rate.get("components"), list) else []
+        for component in rate_values:
+            if not isinstance(component, dict):
+                continue
+            label = str(component.get("label") or "").strip()
+            if label:
+                entries.append(
+                    {
+                        "key": f"global_shock:usd_rate_shock:{label}",
+                        "strategy_key": "global_shock",
+                        "strategy_label": "全球冲击",
+                        "section_key": "usd_rate_shock",
+                        "section_label": "美元利率冲击",
+                        "label": label,
+                        "component": component,
+                    }
+                )
+            nested = component.get("components") if isinstance(component.get("components"), list) else []
+            for child in nested:
+                if not isinstance(child, dict):
+                    continue
+                child_label = str(child.get("label") or "").strip()
+                if child_label:
+                    entries.append(
+                        {
+                            "key": f"global_shock:usd_rate_shock_market:{child_label}",
+                            "strategy_key": "global_shock",
+                            "strategy_label": "全球冲击",
+                            "section_key": "usd_rate_shock_market",
+                            "section_label": "美元利率冲击市场确认",
+                            "label": child_label,
+                            "component": child,
                         }
                     )
         return entries
@@ -2648,6 +2684,7 @@ class QuantService:
                         "partial": False if matched is None else self._risk_component_is_partial(component, direction),
                         "data_date": self._coerce_date(component.get("data_date")),
                         "data_source": str(component.get("data_source") or "").strip() or None,
+                        "available_at": str(component.get("available_at") or "") or None,
                         "missing_reason": missing_reason,
                     }
                 )

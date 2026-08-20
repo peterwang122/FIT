@@ -2337,7 +2337,7 @@ class TaskService:
         return f"已确认 {target_trade_date.isoformat()} 数据入库：{'，'.join(successes)}。"
 
     def _recompute_risk_after_us_treasury(self, label: str) -> str:
-        previous_date = self.market_calendar.previous_trading_day(
+        expected_previous_date = self.market_calendar.previous_trading_day(
             "cn_stock",
             self._now().date(),
         )
@@ -2348,41 +2348,61 @@ class TaskService:
             )
         except Exception as exc:
             raise RuntimeError(
-                f"{label}定向重算前一个A股交易日（{previous_date}）风险看板失败：{exc}"
+                f"{label}定向重算前一个A股交易日风险看板失败：{exc}"
             ) from exc
         repair_status = str(
             repair_result.get("upstream_status", repair_result.get("status", "ok"))
         ).upper()
         if repair_status != "SUCCESS":
             raise RuntimeError(
-                f"{label}定向重算前一个A股交易日（{previous_date}）风险看板失败："
+                f"{label}定向重算前一个A股交易日风险看板失败："
                 f"上游返回 {repair_status or 'UNKNOWN'}"
             )
+        upstream_payload = (
+            repair_result.get("upstream_response")
+            if isinstance(repair_result.get("upstream_response"), dict)
+            else {}
+        )
+        upstream_date = str(
+            upstream_payload.get("previous_cn_trade_date") or ""
+        ).strip()[:10]
+        if upstream_date and upstream_date != expected_previous_date.isoformat():
+            raise RuntimeError(
+                f"{label}定向重算日期不一致：FIT 推算 {expected_previous_date.isoformat()}，"
+                f"采集端返回 {upstream_date}"
+            )
+        resolved_date = upstream_date or expected_previous_date.isoformat()
+        common_row = self._latest_us_treasury_common_row(label)
         self.quant_service.clear_risk_dashboard_caches()
-        treasury_source_dates = self._latest_us_treasury_source_dates()
+        available_at = str(common_row.get("available_at") or "") or None
         return (
-            f"{label}执行完成，已定向重算前一个A股交易日 {previous_date} "
+            f"{label}执行完成，已定向重算前一个A股交易日 {resolved_date} "
             "风险看板并清理风险缓存；"
-            f"美债实际来源日期：3M={treasury_source_dates.get('yield_3m') or '-'}，"
-            f"2Y={treasury_source_dates.get('yield_2y') or '-'}，"
-            f"10Y={treasury_source_dates.get('yield_10y') or '-'}，"
-            f"实际10Y={treasury_source_dates.get('yield_real_10y') or '-'}。"
+            f"美债共同来源日期：{common_row['trade_date']}"
+            f"{f'（可用时间 {available_at}）' if available_at else ''}，"
+            "3M/2Y/10Y/实际10Y 均非空。"
         )
 
-    def _latest_us_treasury_source_dates(self) -> dict:
+    def _latest_us_treasury_common_row(self, label: str) -> dict:
         rows = self.stock_service.list_index_us_treasury_yield_data()
         if not rows:
-            return {}
+            raise RuntimeError(f"{label}美债无可用数据行")
         latest = rows[-1]
-        trade_date = str(latest.get("trade_date") or "")[:10] or None
-        return {
-            "yield_3m": trade_date if latest.get("yield_3m") is not None else None,
-            "yield_2y": trade_date if latest.get("yield_2y") is not None else None,
-            "yield_10y": trade_date if latest.get("yield_10y") is not None else None,
-            "yield_real_10y": (
-                trade_date if latest.get("yield_real_10y") is not None else None
-            ),
-        }
+        missing = [
+            name
+            for name, key in (
+                ("3M", "yield_3m"),
+                ("2Y", "yield_2y"),
+                ("10Y", "yield_10y"),
+                ("实际10Y", "yield_real_10y"),
+            )
+            if latest.get(key) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{label}美债最新共同可用日期缺失：{', '.join(missing)}"
+            )
+        return latest
 
     def _execute_collection_task(
         self,
