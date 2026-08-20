@@ -4,6 +4,7 @@ from celery import Celery
 from celery.schedules import crontab
 
 from app.core.config import settings
+from app.core.lan_test import ensure_lan_test_runtime_safe
 
 celery_app = Celery(
     "fit-worker",
@@ -38,3 +39,7 @@ if sys.platform.startswith("win"):
     )
 
 celery_app.autodiscover_tasks(["app"])
+
+# lan-test 契约在 worker / beat 进程导入时 fail-closed：
+# 任何安全开关不符合预期时，Celery 进程直接拒绝启动。
+ensure_lan_test_runtime_safe()

@@ -10,16 +10,6 @@ BACKEND_ROOT = REPO_ROOT / "backend"
 FRONTEND_ROOT = REPO_ROOT / "frontend"
 PYTHON = Path(sys.executable)
 
-LAN_TEST_CONTRACT = {
-    "APP_ENV": "lan-test",
-    "STARTUP_SCHEMA_MODE": "app-only",
-    "BOOTSTRAP_DEFAULT_TASKS": "false",
-    "SCHEDULED_TASKS_ENABLED": "false",
-    "OUTBOUND_NOTIFICATIONS_ENABLED": "false",
-    "COLLECTION_EXECUTION_MODE": "allowlist",
-    "CODEX_RESET_WATCHDOG_ENABLED": "false",
-}
-
 
 def run(args: list[str], cwd: Path = REPO_ROOT) -> int:
     return subprocess.run(args, cwd=cwd, check=False).returncode
@@ -44,20 +34,20 @@ def _is_lan_test() -> bool:
     return os.environ.get("APP_ENV", "").strip().lower() == "lan-test"
 
 
-def _lan_test_config_issues() -> list[str]:
-    issues: list[str] = []
-    for key, expected in LAN_TEST_CONTRACT.items():
-        actual = os.environ.get(key, "").strip().lower()
-        if actual != expected:
-            issues.append(f"{key} should be {expected!r}, got {actual!r}")
-    database_url = os.environ.get("DATABASE_URL", "")
-    if "stock_info_test" not in database_url:
-        issues.append("DATABASE_URL must point to stock_info_test")
-    if not os.environ.get("AUTH_SESSION_COOKIE_NAME", "").strip():
-        issues.append("AUTH_SESSION_COOKIE_NAME should be set (e.g. fit_test_session)")
-    if not os.environ.get("REDIS_URL", "").strip():
-        issues.append("REDIS_URL should be set")
-    return issues
+def _backend_lan_test_issues() -> list[str]:
+    if str(BACKEND_ROOT) not in sys.path:
+        sys.path.insert(0, str(BACKEND_ROOT))
+    from app.core.lan_test import lan_test_contract_issues
+
+    return lan_test_contract_issues()
+
+
+def _backend_redact_database_url(url: str) -> str:
+    if str(BACKEND_ROOT) not in sys.path:
+        sys.path.insert(0, str(BACKEND_ROOT))
+    from app.core.lan_test import redact_database_url
+
+    return redact_database_url(url)
 
 
 def _load_lan_test_env() -> None:
@@ -67,9 +57,12 @@ def _load_lan_test_env() -> None:
 
 def _doctor() -> int:
     _load_lan_test_env()
-    issues = _lan_test_config_issues()
+    if not _is_lan_test():
+        print("[FAIL] APP_ENV should be 'lan-test'")
+        return 1
+    issues = _backend_lan_test_issues()
     print(f"APP_ENV={os.environ.get('APP_ENV', '')}")
-    print(f"DATABASE_URL={os.environ.get('DATABASE_URL', '')}")
+    print(f"DATABASE_URL={_backend_redact_database_url(os.environ.get('DATABASE_URL', ''))}")
     print(f"REDIS_URL={os.environ.get('REDIS_URL', '')}")
     print(f"COLLECTION_EXECUTION_MODE={os.environ.get('COLLECTION_EXECUTION_MODE', '')}")
     print(f"COLLECTION_ALLOWED_KEYS={os.environ.get('COLLECTION_ALLOWED_KEYS', '')}")
@@ -91,6 +84,7 @@ def main() -> int:
             "worker",
             "beat",
             "lan-test-api",
+            "lan-test-worker",
             "doctor",
             "frontend",
             "frontend-build",
@@ -112,13 +106,32 @@ def main() -> int:
         return run([str(PYTHON), "-m", "celery", "-A", "app.workers.celery_app", "beat", "--loglevel=info"], BACKEND_ROOT)
     if args.command == "lan-test-api":
         _load_lan_test_env()
-        issues = _lan_test_config_issues()
+        issues = _backend_lan_test_issues()
         if issues:
             for issue in issues:
                 print(f"[FAIL] {issue}", file=sys.stderr)
             return 1
         return run(
             [str(PYTHON), "-m", "uvicorn", "app.main:app", "--reload", "--port", "8000"],
+            BACKEND_ROOT,
+        )
+    if args.command == "lan-test-worker":
+        _load_lan_test_env()
+        issues = _backend_lan_test_issues()
+        if issues:
+            for issue in issues:
+                print(f"[FAIL] {issue}", file=sys.stderr)
+            return 1
+        return run(
+            [
+                str(PYTHON),
+                "-m",
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "worker",
+                "--loglevel=info",
+            ],
             BACKEND_ROOT,
         )
     if args.command == "doctor":

@@ -5,6 +5,7 @@ from sqlalchemy import inspect, text
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.core.lan_test import ensure_lan_test_runtime_safe
 from app.core.security import hash_password
 from app.db.session import SessionLocal, engine
 from app.models.collection_task_request import CollectionTaskRequest
@@ -45,8 +46,7 @@ def _ensure_columns(table_name: str, statements: list[str]) -> None:
 
 @app.on_event("startup")
 def ensure_runtime_tables() -> None:
-    if settings.app_env == "lan-test" and "stock_info_test" not in settings.database_url:
-        raise RuntimeError("lan-test requires DATABASE_URL pointing to stock_info_test")
+    ensure_lan_test_runtime_safe()
     app_only = settings.startup_schema_mode.strip().lower() == "app-only"
 
     User.__table__.create(bind=engine, checkfirst=True)

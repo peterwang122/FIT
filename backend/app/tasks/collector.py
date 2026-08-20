@@ -5,6 +5,7 @@ from uuid import uuid4
 import httpx
 from celery import Task
 
+from app.core.collection_allowlist import ensure_collection_allowed
 from app.core.config import settings
 from app.core.redis_client import redis_client
 from app.workers.celery_app import celery_app
@@ -48,6 +49,7 @@ def run_stock_data_collection_request(
     end_date: str | None = None,
     request_id: str | None = None,
 ):
+    ensure_collection_allowed("stock_data_collect")
     lock_key = _collector_lock_key(ts_code=ts_code, start_date=start_date, end_date=end_date)
     owner_token = request_id or f"manual:{uuid4()}"
     lock_acquired = redis_client.set(lock_key, owner_token, nx=True, ex=settings.collector_dedupe_lock_ttl_seconds)
@@ -89,6 +91,7 @@ def run_stock_hfq_collection_request(
     end_date: str | None = None,
     request_id: str | None = None,
 ):
+    ensure_collection_allowed("stock_hfq_single")
     lock_key = _stock_temp_lock_key(stock_code=stock_code, start_date=start_date, end_date=end_date)
     owner_token = request_id or f"manual:{uuid4()}"
     lock_acquired = redis_client.set(lock_key, owner_token, nx=True, ex=settings.collector_dedupe_lock_ttl_seconds)
@@ -151,6 +154,7 @@ def run_forex_collection_request(
     symbol_code: str,
     request_id: str | None = None,
 ):
+    ensure_collection_allowed("forex_collect")
     normalized_code = str(symbol_code or "").strip().upper()
     if not normalized_code:
         raise ValueError("symbol_code is required")
@@ -213,6 +217,7 @@ def run_daily_collection_request(
         raise ValueError("collector_key is required")
     if not normalized_endpoint.startswith("/"):
         raise ValueError("endpoint must start with '/'")
+    ensure_collection_allowed(normalized_key)
 
     lock_key = dedupe_lock_key or _daily_temp_lock_key(normalized_key)
     owner_token = request_id or f"manual:{uuid4()}"

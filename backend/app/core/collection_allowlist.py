@@ -5,9 +5,16 @@
 """
 
 from app.core.config import settings
+from app.core.lan_test import ensure_lan_test_runtime_safe
 
 
 def collection_allowed(collector_key: str) -> bool:
+    if str(settings.app_env or "").strip().lower() == "lan-test":
+        ensure_lan_test_runtime_safe()
+        key = str(collector_key or "").strip().lower()
+        if not key:
+            return False
+        return key in settings.collection_allowed_key_set
     if settings.collection_execution_mode.strip().lower() != "allowlist":
         return True
     key = str(collector_key or "").strip().lower()

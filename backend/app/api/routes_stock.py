@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps.auth import get_current_user, require_non_guest_user
+from app.core.collection_allowlist import ensure_collection_allowed
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
@@ -526,7 +527,10 @@ def get_forex_kline(
 def collect_forex_symbol(symbol_code: str, db: Session = Depends(get_db)):
     service = StockService(db)
     try:
+        ensure_collection_allowed("forex_collect")
         result = run_forex_collection_request(symbol_code=symbol_code)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (httpx.HTTPError, RuntimeError) as exc:
@@ -569,6 +573,11 @@ def get_kline(
 
 @router.post("/collect", response_model=ApiResponse[dict])
 def submit_collect_task(payload: CollectTaskPayload, idempotency_key: str | None = Header(default=None)):
+    try:
+        ensure_collection_allowed("stock_data_collect")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     idempotency_service = TaskIdempotencyService()
     existing_task_id = _get_reusable_collect_task_id(idempotency_service, idempotency_key)
     if existing_task_id:
@@ -588,6 +597,11 @@ def submit_collect_task(payload: CollectTaskPayload, idempotency_key: str | None
 
 @router.post("/hfq-collect", response_model=ApiResponse[dict])
 def submit_hfq_collect_task(payload: HfqCollectTaskPayload, idempotency_key: str | None = Header(default=None)):
+    try:
+        ensure_collection_allowed("stock_hfq_single")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     idempotency_service = TaskIdempotencyService()
     existing_task_id = _get_reusable_collect_task_id(idempotency_service, idempotency_key)
     if existing_task_id:

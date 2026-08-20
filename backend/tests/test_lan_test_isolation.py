@@ -5,12 +5,17 @@ import pytest
 
 import app.main as app_main
 import app.tasks.scheduler as scheduler_module
+from app.api import routes_stock
 from app.core.collection_allowlist import collection_allowed
 from app.core.config import settings
+from app.core import lan_test
 from app.models.scheduled_task import ScheduledTask
 from app.models.scheduled_task_run import ScheduledTaskRun
+from app.schemas.stock import CollectTaskPayload, HfqCollectTaskPayload
 from app.services import auth_service
 from app.services.task_service import TaskRunSkipped, TaskService
+from app.tasks import collector as collector_module
+from fastapi import HTTPException
 
 
 def _make_collection_task(collector_key, *, task_id=1, market_scope="cn_stock"):
@@ -135,6 +140,17 @@ def _set_allowlist(monkeypatch, allowed_keys):
     monkeypatch.setattr(settings, "collection_allowed_keys", allowed_keys)
 
 
+def _set_full_lan_test_contract(monkeypatch, database_url):
+    monkeypatch.setattr(settings, "app_env", "lan-test")
+    monkeypatch.setattr(settings, "startup_schema_mode", "app-only")
+    monkeypatch.setattr(settings, "bootstrap_default_tasks", False)
+    monkeypatch.setattr(settings, "scheduled_tasks_enabled", False)
+    monkeypatch.setattr(settings, "outbound_notifications_enabled", False)
+    monkeypatch.setattr(settings, "collection_execution_mode", "allowlist")
+    monkeypatch.setattr(settings, "codex_reset_watchdog_enabled", False)
+    monkeypatch.setattr(settings, "database_url", database_url)
+
+
 def test_settings_defaults_preserve_existing_behavior():
     assert settings.startup_schema_mode == "full"
     assert settings.bootstrap_default_tasks is True
@@ -160,6 +176,14 @@ def test_collection_allowed_defaults_to_true_in_enabled_mode(monkeypatch):
     monkeypatch.setattr(settings, "collection_execution_mode", "enabled")
     assert collection_allowed("stock_daily") is True
     assert collection_allowed("") is True
+
+
+def test_collection_allowed_fail_closed_in_lan_test(monkeypatch):
+    _set_allowlist(monkeypatch, "stock_daily")
+    monkeypatch.setattr(settings, "app_env", "lan-test")
+    monkeypatch.setattr(settings, "collection_execution_mode", "enabled")
+    with pytest.raises(RuntimeError, match="lan-test contract violation"):
+        collection_allowed("stock_daily")
 
 
 def test_collection_allowed_respects_allowlist(monkeypatch):
@@ -190,10 +214,100 @@ def test_startup_guard_rejects_non_test_database_in_lan_test(monkeypatch):
     monkeypatch.setattr(
         settings,
         "database_url",
-        "mysql+pymysql://fit:fitpass@127.0.0.1:3306/stock_info",
+        "mysql+pymysql://fit:fitpass@127.0.0.1:3306/stock_info?note=stock_info_test",
     )
     with pytest.raises(RuntimeError, match="stock_info_test"):
         app_main.ensure_runtime_tables()
+
+
+def test_lan_test_contract_issues_catches_every_switch(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "lan-test")
+    monkeypatch.setattr(settings, "startup_schema_mode", "full")
+    monkeypatch.setattr(settings, "bootstrap_default_tasks", True)
+    monkeypatch.setattr(settings, "scheduled_tasks_enabled", True)
+    monkeypatch.setattr(settings, "outbound_notifications_enabled", True)
+    monkeypatch.setattr(settings, "collection_execution_mode", "enabled")
+    monkeypatch.setattr(settings, "codex_reset_watchdog_enabled", True)
+    monkeypatch.setattr(
+        settings,
+        "database_url",
+        "mysql+pymysql://fit:fitpass@127.0.0.1:3306/stock_info",
+    )
+    issues = lan_test.lan_test_contract_issues()
+    text = "; ".join(issues)
+    assert "startup_schema_mode" in text
+    assert "bootstrap_default_tasks" in text
+    assert "scheduled_tasks_enabled" in text
+    assert "outbound_notifications_enabled" in text
+    assert "collection_execution_mode" in text
+    assert "codex_reset_watchdog_enabled" in text
+    assert "database must be exactly stock_info_test" in text
+
+
+def test_lan_test_database_name_requires_exact_parse(monkeypatch):
+    _set_full_lan_test_contract(
+        monkeypatch,
+        "mysql+pymysql://fit:fitpass@127.0.0.1:3306/stock_info?note=stock_info_test",
+    )
+    assert lan_test.lan_test_contract_issues() != []
+
+    _set_full_lan_test_contract(
+        monkeypatch,
+        "mysql+pymysql://fit_test:pass@127.0.0.1:3307/stock_info_test",
+    )
+    assert lan_test.lan_test_contract_issues() == []
+
+
+def test_redact_database_url_hides_password():
+    redacted = lan_test.redact_database_url(
+        "mysql+pymysql://user:secret@127.0.0.1:3306/stock_info"
+    )
+    assert "secret" not in redacted
+    assert redacted == "mysql+pymysql://user:***@127.0.0.1:3306/stock_info"
+
+
+def test_collector_helpers_gate_before_redis(monkeypatch):
+    _set_allowlist(monkeypatch, "")
+
+    class _NoRedis:
+        def set(self, *_args, **_kwargs):
+            raise AssertionError("redis must not be touched")
+
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("redis must not be touched")
+
+        def delete(self, *_args, **_kwargs):
+            raise AssertionError("redis must not be touched")
+
+    monkeypatch.setattr(collector_module, "redis_client", _NoRedis())
+
+    with pytest.raises(PermissionError, match="stock_data_collect"):
+        collector_module.run_stock_data_collection_request(ts_code="600000")
+    with pytest.raises(PermissionError, match="stock_hfq_single"):
+        collector_module.run_stock_hfq_collection_request(stock_code="600000")
+    with pytest.raises(PermissionError, match="forex_collect"):
+        collector_module.run_forex_collection_request(symbol_code="USDCNH")
+    with pytest.raises(PermissionError, match="quant_index_daily"):
+        collector_module.run_daily_collection_request(
+            collector_key="quant_index_daily",
+            endpoint="/collect-quant-index-daily",
+        )
+
+
+def test_stock_collect_routes_denied_before_celery_enqueue(monkeypatch):
+    _set_allowlist(monkeypatch, "")
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes_stock.submit_collect_task(CollectTaskPayload(ts_code="600000"))
+    assert exc_info.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes_stock.submit_hfq_collect_task(HfqCollectTaskPayload(ts_code="600000"))
+    assert exc_info.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes_stock.collect_forex_symbol("USDCNH", db=None)
+    assert exc_info.value.status_code == 403
 
 
 def test_default_collection_task_noop_when_bootstrap_disabled(monkeypatch):
