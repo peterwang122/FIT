@@ -2,7 +2,7 @@
 name: Sol 实施方案
 about: 双模型工作流的唯一施工合同（Sol 创建，DeepSeek 实施）
 title: "docs|feat|fix: <一句话目标>"
-labels: ["sol-plan"]
+labels: ["codex"]
 assignees: ''
 ---
 
