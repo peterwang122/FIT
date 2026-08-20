@@ -36,11 +36,12 @@ FIT 是一个基于 `Vue 3 + FastAPI + Celery + Redis + MySQL` 的股票量化�
 - `docs/`：补充文档
 - `docker-compose.yml`：本机 MySQL、Redis、Flower 基础设施
 
-### 局域网测试版本
+### 双模型协作工作流
 
-在另一台 Windows 电脑开发测试版本前，必须先阅读
-[《局域网测试版本开发与 PR 协作规范》](docs/LAN_TEST_DEVELOPMENT_GUIDE.md)。该规范定义了
-正式数据只读映射、测试写入隔离、采集白名单、双仓库 Draft PR 和并行冲突处理要求。
+本仓库采用“Sol 出方案和审核、DeepSeek 按 Issue 实现并提交 Draft PR”的异机
+编码工作流。开发前必须阅读 [《异机编码与 PR 开发规范》](docs/REMOTE_CODING_AND_PR_WORKFLOW.md)
+与根目录 `AGENTS.md`；Windows 开发机只做代码编辑、分支、Mock/单元测试和
+静态检查，不启动服务、不连接生产资源、不执行真实采集。
 
 ## 3. 运行前准备
 
