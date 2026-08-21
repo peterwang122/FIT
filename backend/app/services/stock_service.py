@@ -1994,8 +1994,10 @@ class StockService:
             f"`{settings.index_us_treasury_yield_3m_column}` AS yield_3m, "
             f"`{settings.index_us_treasury_yield_2y_column}` AS yield_2y, "
             f"`{settings.index_us_treasury_yield_10y_column}` AS yield_10y, "
+            f"`{settings.index_us_treasury_yield_real_10y_column}` AS yield_real_10y, "
             f"`{settings.index_us_treasury_yield_spread_10y_2y_column}` AS spread_10y_2y, "
-            f"`{settings.index_us_treasury_yield_spread_10y_3m_column}` AS spread_10y_3m "
+            f"`{settings.index_us_treasury_yield_spread_10y_3m_column}` AS spread_10y_3m, "
+            f"`{settings.index_us_treasury_yield_available_at_column}` AS available_at "
             f"FROM `{table_name}` "
             f"WHERE 1 = 1"
         )
@@ -2014,8 +2016,10 @@ class StockService:
                 "yield_3m": _to_float(row.get("yield_3m")),
                 "yield_2y": _to_float(row.get("yield_2y")),
                 "yield_10y": _to_float(row.get("yield_10y")),
+                "yield_real_10y": _to_float(row.get("yield_real_10y")),
                 "spread_10y_2y": _to_float(row.get("spread_10y_2y")),
                 "spread_10y_3m": _to_float(row.get("spread_10y_3m")),
+                "available_at": str(row.get("available_at") or "") or None,
             }
             for row in self.db.execute(text(sql), params).mappings().all()
             if row.get("trade_date") is not None
@@ -2034,7 +2038,8 @@ class StockService:
         sql = (
             f"SELECT "
             f"`{settings.index_us_credit_spread_date_column}` AS trade_date, "
-            f"`{settings.index_us_credit_spread_hy_oas_column}` AS high_yield_oas "
+            f"`{settings.index_us_credit_spread_hy_oas_column}` AS high_yield_oas, "
+            f"`{settings.index_us_credit_spread_available_at_column}` AS available_at "
             f"FROM `{table_name}` "
             f"WHERE 1 = 1"
         )
@@ -2051,6 +2056,7 @@ class StockService:
             {
                 "trade_date": row.get("trade_date"),
                 "high_yield_oas": _to_float(row.get("high_yield_oas")),
+                "available_at": str(row.get("available_at") or "") or None,
             }
             for row in self.db.execute(text(sql), params).mappings().all()
             if row.get("trade_date") is not None

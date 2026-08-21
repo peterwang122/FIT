@@ -370,13 +370,16 @@ class IndexDashboardUsTreasuryYieldPointResponse(BaseModel):
     yield_3m: float | None = None
     yield_2y: float | None = None
     yield_10y: float | None = None
+    yield_real_10y: float | None = None
     spread_10y_2y: float | None = None
     spread_10y_3m: float | None = None
+    available_at: str | None = None
 
 
 class IndexDashboardUsCreditSpreadPointResponse(BaseModel):
     trade_date: date
     high_yield_oas: float | None = None
+    available_at: str | None = None
 
 
 class IndexDashboardRiskStrategyPointResponse(BaseModel):
@@ -454,6 +457,7 @@ class QuantRiskDashboardResponse(BaseModel):
 class QuantRiskEvidenceCellResponse(BaseModel):
     trade_date: date
     value: float | None = None
+    level_value: float | None = None
     unit: str | None = None
     percentile: float | None = None
     absolute_threshold: float | None = None
@@ -463,6 +467,7 @@ class QuantRiskEvidenceCellResponse(BaseModel):
     partial: bool = False
     data_date: date | None = None
     data_source: str | None = None
+    available_at: str | None = None
     missing_reason: str | None = None
 
 

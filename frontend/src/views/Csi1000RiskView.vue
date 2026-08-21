@@ -15,6 +15,7 @@ import type {
 
 type RangeMode = '1y' | 'since2024' | '3y' | 'full' | 'custom'
 type TrackVisibility = Record<QuantRiskStrategyKey, boolean>
+type GlobalRiskModeKey = 'broad_risk_off' | 'tech_deleveraging' | 'usd_rate_shock'
 
 const RANGE_STORAGE_KEY = 'fit:risk:csi1000:range:v1'
 const TRACK_STORAGE_KEY = 'fit:risk:csi1000:tracks:v1'
@@ -35,6 +36,35 @@ const TRACK_OPTIONS: Array<{ key: QuantRiskStrategyKey; label: string; color: st
   { key: 'yellow_vulnerability', label: '黄色', color: '#d89a18' },
   { key: 'red_escalation', label: '红色', color: '#dc4f4f' },
   { key: 'global_shock', label: '全球冲击', color: '#7657c8' },
+]
+const GLOBAL_MODE_DEFINITIONS: Array<{
+  key: GlobalRiskModeKey
+  label: string
+  sectionKeys: string[]
+  advice: string
+  rowLimit: number
+}> = [
+  {
+    key: 'broad_risk_off',
+    label: '全面避险',
+    sectionKeys: ['global_equities', 'oil_and_copper', 'vix', 'hy_oas'],
+    advice: '优先控制总风险敞口',
+    rowLimit: 4,
+  },
+  {
+    key: 'tech_deleveraging',
+    label: '科技去杠杆',
+    sectionKeys: ['tech_markets'],
+    advice: '控制科技成长暴露',
+    rowLimit: 3,
+  },
+  {
+    key: 'usd_rate_shock',
+    label: '美元利率冲击',
+    sectionKeys: ['usd_rate_shock', 'usd_rate_shock_market'],
+    advice: '实际贴现率快速上升且全球科技承压，控制高估值成长暴露',
+    rowLimit: 5,
+  },
 ]
 
 const dashboard = ref<QuantRiskDashboardResponse | null>(null)
@@ -80,11 +110,29 @@ const selectedEvidenceRows = computed(() => {
     .map((row) => ({ row, cell: row.cells.find((item) => item.trade_date === selectedDate.value) ?? null }))
     .filter((item): item is { row: QuantRiskEvidenceRow; cell: QuantRiskEvidenceCell } => item.cell != null)
 })
-const inspectorEvidenceRows = computed(() =>
-  [...selectedEvidenceRows.value]
-    .sort((left, right) => evidencePriority(left.cell) - evidencePriority(right.cell))
-    .slice(0, 5),
-)
+const inspectorModeSections = computed(() => {
+  const activeModes = new Set(
+    (selectedPoint.value?.global_mode ?? '')
+      .split('+')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )
+  return GLOBAL_MODE_DEFINITIONS.map((definition) => {
+    const allRows = selectedEvidenceRows.value.filter(
+      (item) => item.row.strategy_key === 'global_shock'
+        && definition.sectionKeys.includes(item.row.section_key),
+    )
+    const rows = [...allRows]
+      .sort((left, right) => evidencePriority(left.cell) - evidencePriority(right.cell))
+      .slice(0, definition.rowLimit)
+    const status = activeModes.has(definition.key)
+      ? '命中'
+      : !allRows.length || allRows.some((item) => item.cell.matched === null)
+        ? '数据不完整'
+        : '未命中'
+    return { ...definition, status, rows }
+  })
+})
 const evidenceSections = computed(() => {
   const sections: Array<{
     key: string
@@ -362,10 +410,16 @@ function scoreFor(point: QuantRiskDashboardPoint | null, key: QuantRiskStrategyK
 }
 
 function globalModeLabel(mode: string | null) {
-  if (mode === 'broad_risk_off') return '全面避险'
-  if (mode === 'tech_deleveraging') return '科技去杠杆'
-  if (mode === 'broad_and_tech') return '全面避险 + 科技去杠杆'
-  return ''
+  const labels: Record<string, string> = {
+    broad_risk_off: '全面避险',
+    tech_deleveraging: '科技去杠杆',
+    usd_rate_shock: '美元利率冲击',
+  }
+  if (!mode) return ''
+  return mode
+    .split('+')
+    .map((part) => labels[part.trim()] ?? part.trim())
+    .join(' + ')
 }
 
 function buildAdvice(point: QuantRiskDashboardPoint | null) {
@@ -373,9 +427,17 @@ function buildAdvice(point: QuantRiskDashboardPoint | null) {
   const advice: string[] = []
   if (point.red_escalation) advice.push('按大级别调整管理风险，不按普通回踩处理')
   if (point.global_shock) {
-    advice.push(point.global_mode === 'tech_deleveraging'
-      ? '控制科技成长暴露'
-      : '优先控制总风险敞口')
+    const modes = new Set(
+      (point.global_mode ?? '')
+        .split('+')
+        .map((mode) => mode.trim())
+        .filter(Boolean),
+    )
+    if (modes.has('broad_risk_off')) advice.push('优先控制总风险敞口')
+    if (modes.has('tech_deleveraging')) advice.push('控制科技成长暴露')
+    if (modes.has('usd_rate_shock')) {
+      advice.push('实际贴现率快速上升且全球科技承压，控制高估值成长暴露')
+    }
   }
   if (point.yellow_vulnerability) advice.push('降低高弹性仓位、停止追涨')
   if (advice.length) return advice.join('；')
@@ -407,6 +469,10 @@ function formatEvidenceValue(cell: QuantRiskEvidenceCell) {
   return `${cell.value.toFixed(2)}${cell.unit ?? ''}`
 }
 
+function formatEvidenceLevel(cell: QuantRiskEvidenceCell) {
+  return cell.level_value == null ? '' : `当前收益率 ${cell.level_value.toFixed(2)}%`
+}
+
 function thresholdText(cell: QuantRiskEvidenceCell) {
   const operator = cell.direction === 'low' ? '≤' : '≥'
   const parts: string[] = []
@@ -419,15 +485,17 @@ function thresholdText(cell: QuantRiskEvidenceCell) {
 
 function evidenceTooltip(row: QuantRiskEvidenceRow, cell: QuantRiskEvidenceCell) {
   if (cell.matched === null) {
-    return `${row.label}\n${cell.missing_reason ?? '数据缺失'}\n数据日：${cell.data_date ?? '--'}\n来源：${cell.data_source ?? '--'}`
+    return `${row.label}\n${cell.missing_reason ?? '数据缺失'}\n数据日：${cell.data_date ?? '--'}\n可用时间：${cell.available_at ?? '--'}\n来源：${cell.data_source ?? '--'}`
   }
   return [
     row.label,
     `原值：${formatEvidenceValue(cell)}`,
+    ...(cell.level_value == null ? [] : [`当前收益率：${cell.level_value.toFixed(2)}%`]),
     `百分位：${cell.percentile == null ? '--' : `${cell.percentile.toFixed(2)}%`}`,
     `阈值：${thresholdText(cell) || '--'}`,
     `状态：${evidenceStateLabel(cell)}`,
     `数据日：${cell.data_date ?? '--'}`,
+    `可用时间：${cell.available_at ?? '--'}`,
     `来源：${cell.data_source ?? '--'}`,
   ].join('\n')
 }
@@ -610,18 +678,33 @@ onBeforeUnmount(() => {
             <div class="score-bar"><span :style="{ width: `${selectedPoint?.composite_score ?? 0}%` }"></span></div>
 
             <div v-if="evidenceLoading && !evidence" class="inspector-loading">加载证据...</div>
-            <div v-for="item in inspectorEvidenceRows" :key="item.row.key" class="factor-row">
-              <div>
-                <span>{{ item.row.label }}</span>
-                <b :class="[item.row.strategy_key, { muted: item.cell.matched === false && !item.cell.partial }]">
-                  {{ evidenceStateLabel(item.cell) }}
+            <section
+              v-for="mode in inspectorModeSections"
+              :key="mode.key"
+              class="mode-review"
+              :class="mode.key"
+            >
+              <div class="mode-review-head">
+                <strong>{{ mode.label }}</strong>
+                <b :class="{ active: mode.status === '命中', incomplete: mode.status === '数据不完整' }">
+                  {{ mode.status }}
                 </b>
               </div>
-              <small>
-                {{ formatEvidenceValue(item.cell) }} · 分位 {{ item.cell.percentile == null ? '--' : `${item.cell.percentile.toFixed(1)}%` }}
-                · 数据日 {{ formatShortDate(item.cell.data_date) }}
-              </small>
-            </div>
+              <div v-if="mode.rows.length" class="mode-factors">
+                <div v-for="item in mode.rows" :key="item.row.key" class="mode-factor">
+                  <span>{{ item.row.label }}</span>
+                  <b>{{ evidenceStateLabel(item.cell) }}</b>
+                  <small>
+                    {{ formatEvidenceLevel(item.cell) }}{{ formatEvidenceLevel(item.cell) ? ' · ' : '' }}
+                    指标值 {{ formatEvidenceValue(item.cell) }}
+                    · 分位 {{ item.cell.percentile == null ? '--' : `${item.cell.percentile.toFixed(1)}%` }}
+                  </small>
+                  <small>数据日 {{ formatShortDate(item.cell.data_date) }} · 可用 {{ item.cell.available_at ?? '--' }}</small>
+                </div>
+              </div>
+              <small v-else class="mode-empty">该日期没有完整证据</small>
+              <p>{{ mode.advice }}</p>
+            </section>
             <div v-if="selectedDrawdown" class="factor-row drawdown-row">
               <div><span>后续20日最大跌幅</span><b class="red_escalation">{{ selectedDrawdown.status === 'complete' ? `${selectedDrawdown.value_pct?.toFixed(2)}%` : '待验证' }}</b></div>
               <small v-if="selectedDrawdown.status === 'complete'">最低点 {{ selectedDrawdown.trough_date }} · 第{{ selectedDrawdown.days_to_trough }}个交易日</small>
@@ -866,6 +949,22 @@ onBeforeUnmount(() => {
 .score-bar { height: 6px; overflow: hidden; border-radius: 999px; background: #edf1f5; }
 .score-bar span { display: block; height: 100%; background: #c94444; transition: width .2s ease; }
 .inspector-loading { padding: 12px 0; color: #64748b; font-size: 11px; }
+.mode-review { margin-top: 10px; padding-top: 9px; border-top: 2px solid #d8dee8; }
+.mode-review.broad_risk_off { border-top-color: #65758b; }
+.mode-review.tech_deleveraging { border-top-color: #5877a8; }
+.mode-review.usd_rate_shock { border-top-color: #7657c8; }
+.mode-review-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mode-review-head strong { color: #334155; font-size: 11px; }
+.mode-review-head b { color: #7d8999; font-size: 9px; }
+.mode-review-head b.active { color: #b42333; }
+.mode-review-head b.incomplete { color: #a06b10; }
+.mode-factors { margin-top: 3px; }
+.mode-factor { padding: 6px 0; border-bottom: 1px solid #edf1f5; }
+.mode-factor > span { display: inline-block; max-width: calc(100% - 42px); overflow: hidden; color: #475569; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.mode-factor > b { float: right; color: #64748b; font-size: 8px; }
+.mode-factor > small { display: block; clear: both; margin-top: 2px; color: #7b8797; font-size: 8px; line-height: 1.4; }
+.mode-review > p { margin: 6px 0 0; color: #66758a; font-size: 8px; line-height: 1.45; }
+.mode-empty { display: block; margin-top: 6px; color: #94a3b8; font-size: 8px; }
 .factor-row { padding: 9px 0; border-bottom: 1px solid #edf1f5; }
 .factor-row > div { display: flex; justify-content: space-between; gap: 8px; color: #334155; font-size: 11px; font-weight: 700; }
 .factor-row b { white-space: nowrap; }

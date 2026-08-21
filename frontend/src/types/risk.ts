@@ -67,6 +67,7 @@ export interface QuantRiskDashboardResponse {
 export interface QuantRiskEvidenceCell {
   trade_date: string
   value: number | null
+  level_value: number | null
   unit: string | null
   percentile: number | null
   absolute_threshold: number | null
@@ -76,6 +77,7 @@ export interface QuantRiskEvidenceCell {
   partial: boolean
   data_date: string | null
   data_source: string | null
+  available_at: string | null
   missing_reason: string | null
 }
 

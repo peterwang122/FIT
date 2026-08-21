@@ -2336,6 +2336,114 @@ class TaskService:
 
         return f"已确认 {target_trade_date.isoformat()} 数据入库：{'，'.join(successes)}。"
 
+    def _repair_previous_cn_risk_dashboard(self, label: str) -> str:
+        expected_previous_date = self.market_calendar.previous_trading_day(
+            "cn_stock",
+            self._now().date(),
+        )
+        try:
+            repair_result = run_daily_collection_request(
+                collector_key="quant_index_repair_market_previous",
+                endpoint="/collect-quant-index-repair-market-previous",
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"{label}定向重算前一个A股交易日风险看板失败：{exc}"
+            ) from exc
+        repair_status = str(
+            repair_result.get("upstream_status", repair_result.get("status", "ok"))
+        ).upper()
+        if repair_status != "SUCCESS":
+            raise RuntimeError(
+                f"{label}定向重算前一个A股交易日风险看板失败："
+                f"上游返回 {repair_status or 'UNKNOWN'}"
+            )
+        upstream_response = (
+            repair_result.get("upstream_response")
+            if isinstance(repair_result.get("upstream_response"), dict)
+            else {}
+        )
+        upstream_payload = (
+            upstream_response.get("result")
+            if isinstance(upstream_response.get("result"), dict)
+            else upstream_response
+        )
+        upstream_date = str(
+            upstream_payload.get("previous_cn_trade_date") or ""
+        ).strip()[:10]
+        if not upstream_date:
+            raise RuntimeError(
+                f"{label}定向重算失败：采集端未返回 previous_cn_trade_date，"
+                "不能静默使用本地推算日期"
+            )
+        if upstream_date != expected_previous_date.isoformat():
+            raise RuntimeError(
+                f"{label}定向重算日期不一致：FIT 推算 {expected_previous_date.isoformat()}，"
+                f"采集端返回 {upstream_date}"
+            )
+        resolved_date = upstream_date
+        return resolved_date
+
+    def _recompute_risk_after_us_treasury(self, label: str) -> str:
+        resolved_date = self._repair_previous_cn_risk_dashboard(label)
+        common_row = self._latest_us_treasury_common_row(label)
+        self.quant_service.clear_risk_dashboard_caches()
+        available_at = str(common_row.get("available_at") or "") or None
+        return (
+            f"{label}执行完成，已定向重算前一个A股交易日 {resolved_date} 风险看板并清理风险缓存；"
+            f"美债共同来源日期：{common_row['trade_date']}"
+            f"{f'（可用时间 {available_at}）' if available_at else ''}，"
+            "3M/2Y/10Y/实际10Y 均非空。"
+        )
+
+    def _recompute_risk_after_us_credit_spread(self, label: str) -> str:
+        resolved_date = self._repair_previous_cn_risk_dashboard(label)
+        rows = self.stock_service.list_index_us_credit_spread_data()
+        complete_rows = [
+            row
+            for row in rows
+            if row.get("high_yield_oas") is not None and row.get("available_at")
+        ]
+        if not complete_rows:
+            raise RuntimeError(f"{label}没有利差和可用时间均完整的数据行")
+        latest = max(
+            complete_rows,
+            key=lambda row: str(row.get("trade_date") or ""),
+        )
+        self.quant_service.clear_risk_dashboard_caches()
+        return (
+            f"{label}执行完成，已定向重算前一个A股交易日 {resolved_date} 风险看板并清理风险缓存；"
+            f"HY OAS 来源日期：{latest['trade_date']}"
+            f"（可用时间 {latest['available_at']}），利差 {latest['high_yield_oas']:.4g}%。"
+        )
+
+    def _latest_us_treasury_common_row(self, label: str) -> dict:
+        rows = self.stock_service.list_index_us_treasury_yield_data()
+        if not rows:
+            raise RuntimeError(f"{label}美债无可用数据行")
+        required_fields = (
+            ("3M", "yield_3m"),
+            ("2Y", "yield_2y"),
+            ("10Y", "yield_10y"),
+            ("实际10Y", "yield_real_10y"),
+        )
+        complete_rows = [
+            row
+            for row in rows
+            if all(row.get(key) is not None for _name, key in required_fields)
+        ]
+        if complete_rows:
+            return max(
+                complete_rows,
+                key=lambda row: str(row.get("trade_date") or ""),
+            )
+        latest = max(rows, key=lambda row: str(row.get("trade_date") or ""))
+        missing = [name for name, key in required_fields if latest.get(key) is None]
+        raise RuntimeError(
+            f"{label}美债没有四项共同非空的来源日期；"
+            f"物理最新行 {latest.get('trade_date') or '--'} 缺失：{', '.join(missing)}"
+        )
+
     def _execute_collection_task(
         self,
         task: ScheduledTask,
@@ -2722,6 +2830,10 @@ class TaskService:
             summary = f"{label}执行完成，状态：{upstream_status}。"
         if validation_summary:
             summary += validation_summary
+        if collector_key == "index_us_treasury_yield_daily":
+            summary = self._recompute_risk_after_us_treasury(label) + summary
+        if collector_key == "index_us_credit_spread_daily":
+            summary = self._recompute_risk_after_us_credit_spread(label) + summary
         return summary
 
     def execute_run(self, run_id: int) -> dict:
