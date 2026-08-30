@@ -524,6 +524,16 @@ def ensure_runtime_tables() -> None:
         _ensure_default_collection_task(
             db,
             root_user,
+            collector_key="cn_bank_liquidity_daily",
+            name="银行流动性日更",
+            schedule_time="22:10",
+            market_scope="cn_stock",
+            enforce_schedule_time=True,
+            enforce_name=True,
+        )
+        _ensure_default_collection_task(
+            db,
+            root_user,
             collector_key="cn_macro_daily",
             name="A股宏观指标日更",
             schedule_time="21:30",
@@ -630,6 +640,8 @@ def ensure_runtime_tables() -> None:
             ("index_us_fear_greed_daily", "美股恐贪指数日更", "06:20", ("美股恐贪指数采集",)),
             ("index_us_put_call_ratio_daily", "美股 Put/Call Ratio 日更", "09:50", ()),
             ("us_index_futures_daily", "美股股指期货日更", "10:00", ("美股期货数据采集",)),
+            ("index_us_option_premium_daily", "美股期权成交额 P/C 日更", "10:05", ()),
+            ("index_us_option_price_pc_daily", "美股ETF期权价格 P/C 日更", "10:10", ()),
             ("index_us_hedge_proxy_daily", "OFR 美股持仓代理月更", "09:30", ("美股持仓采集",)),
             (
                 "us_index_futures_official_daily",

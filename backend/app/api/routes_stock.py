@@ -160,6 +160,7 @@ def get_index_dashboard(
 
 @router.get("/quant/risk-dashboard", response_model=ApiResponse[QuantRiskDashboardResponse])
 def get_quant_risk_dashboard(
+    index_code: str = Query(default="sh000852", min_length=6, max_length=16),
     mode: str = Query(default="default"),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
@@ -169,6 +170,7 @@ def get_quant_risk_dashboard(
     service = QuantService(db)
     try:
         item = service.get_risk_dashboard(
+            index_code=index_code,
             mode=mode,
             start_date=start_date,
             end_date=end_date,
@@ -185,6 +187,7 @@ def get_quant_risk_dashboard(
     response_model=ApiResponse[QuantRiskEvidenceResponse],
 )
 def get_quant_risk_dashboard_evidence(
+    index_code: str = Query(default="sh000852", min_length=6, max_length=16),
     start_date: date = Query(...),
     end_date: date = Query(...),
     db: Session = Depends(get_db),
@@ -192,7 +195,11 @@ def get_quant_risk_dashboard_evidence(
 ):
     service = QuantService(db)
     try:
-        item = service.get_risk_dashboard_evidence(start_date, end_date)
+        item = service.get_risk_dashboard_evidence(
+            start_date,
+            end_date,
+            index_code=index_code,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ApiResponse(data=QuantRiskEvidenceResponse.model_validate(item))

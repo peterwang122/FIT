@@ -744,6 +744,56 @@ def test_forex_collectors_accept_only_the_immediately_previous_us_trade_date(
     assert expected_label in result["summary"]
 
 
+def test_us_option_price_pc_accepts_only_complete_previous_us_trade_date(monkeypatch):
+    task = _make_collection_task(
+        "index_us_option_price_pc_daily",
+        market_scope="us_index",
+    )
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 5, 2, 10, 10)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[
+            {"target_count": 0, "latest_date": date(2026, 4, 30)},
+            {"target_count": 0, "latest_date": date(2026, 4, 30)},
+            {"target_count": 8, "latest_date": date(2026, 4, 30)},
+            {"target_count": 8, "latest_date": date(2026, 4, 30)},
+        ],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 5, 1))
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "index_us_option_price_pc_daily",
+                "result": {
+                    "trade_date": "2026-04-30",
+                    "row_count": 16,
+                    "products": {"SPY": {}, "QQQ": {}},
+                },
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    probes = task_service_module.COLLECTION_DATA_PROBES[
+        "index_us_option_price_pc_daily"
+    ]
+    assert [probe.minimum_rows for probe in probes] == [8, 8]
+    assert {probe.params["underlying_code"] for probe in probes} == {"SPY", "QQQ"}
+    assert result["status"] == "success"
+    assert "实际更新并确认的是前一美股交易日 2026-04-30" in result["summary"]
+    assert "SPY ETF期权价格P/C原始合约8行" in result["summary"]
+    assert "QQQ ETF期权价格P/C原始合约8行" in result["summary"]
+
+
 def test_forex_probe_requires_all_seven_configured_pairs():
     probe = task_service_module.COLLECTION_DATA_PROBES["forex_daily"][0]
 
@@ -1423,3 +1473,129 @@ def test_cffex_validation_fails_when_if_is_missing():
     message = str(exc_info.value)
     assert "中金所会员持仓-IF目标日2026-05-08仅0行" in message
     assert "中金所会员持仓-IH" not in message.split("；上游返回：", 1)[0]
+
+
+def test_bank_liquidity_polls_inside_one_run_before_2225(monkeypatch):
+    task = _make_collection_task("cn_bank_liquidity_daily")
+    task.schedule_time = "22:10"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 8, 28, 22, 10)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 8, 28))
+    service._now = lambda: datetime(2026, 8, 28, 22, 20)
+    captured = {}
+
+    def fake_collection_request(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "cn_bank_liquidity_daily",
+                "result": {
+                    "status": "SOURCE_NOT_READY",
+                    "target_date": "2026-08-28",
+                    "missing": ["R007日终加权利率"],
+                    "closing_repo_source_date": "2026-08-27",
+                    "latest_complete_date": "2026-08-27",
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        fake_collection_request,
+    )
+
+    with pytest.raises(TaskRunPollingPending) as exc_info:
+        service.execute_run(run.id)
+
+    assert exc_info.value.countdown_seconds == 180
+    assert captured["endpoint"] == "/collect-cn-bank-liquidity-daily"
+    assert captured["payload"] == {"target_date": "2026-08-28"}
+    assert run.status == "running"
+    assert "同一条运行记录" in run.summary
+
+
+def test_bank_liquidity_fails_explicitly_after_2225(monkeypatch):
+    task = _make_collection_task("cn_bank_liquidity_daily")
+    task.schedule_time = "22:10"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 8, 28, 22, 10)
+    db = _FakeSession(tasks=[task], runs=[run])
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 8, 28))
+    service._now = lambda: datetime(2026, 8, 28, 22, 26)
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "cn_bank_liquidity_daily",
+                "result": {
+                    "status": "SOURCE_NOT_READY",
+                    "target_date": "2026-08-28",
+                    "missing": ["DR007日终加权利率"],
+                    "closing_repo_source_date": "2026-08-27",
+                    "latest_complete_date": "2026-08-27",
+                },
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "failed"
+    assert "截至22:25" in result["error_message"]
+    assert "最近完整日期 2026-08-27" in result["error_message"]
+
+
+def test_bank_liquidity_success_summary_lists_score_and_source_dates(monkeypatch):
+    task = _make_collection_task("cn_bank_liquidity_daily")
+    task.schedule_time = "22:10"
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 8, 28, 22, 10)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[{"target_count": 1, "latest_date": date(2026, 8, 28)}],
+    )
+    service = TaskService(db)
+    service.market_calendar = _FixedMarketCalendar(date(2026, 8, 28))
+
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "cn_bank_liquidity_daily",
+                "result": {
+                    "status": "SUCCESS",
+                    "target_date": "2026-08-28",
+                    "score": 42.125,
+                    "state": "平衡",
+                    "trend": "转松",
+                    "source_dates": {
+                        "frr": "2026-08-28",
+                        "closing_repo": "2026-08-28",
+                        "chinabond": "2026-08-28",
+                        "pbc": "2026-08-28",
+                    },
+                },
+            },
+        },
+    )
+
+    result = service.execute_run(run.id)
+
+    assert result["status"] == "success"
+    assert "紧张度 42.12" in result["summary"]
+    assert "日终回购来源日 2026-08-28" in result["summary"]
+    assert "央行公告来源日 2026-08-28" in result["summary"]

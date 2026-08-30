@@ -9,6 +9,7 @@ from app.services.quant_service import (
     EXCHANGE_OPTION_FILTER_KEYS,
     OPTION_VIX_FILTER_KEYS,
     QuantService,
+    US_PUT_CALL_FILTER_KEYS,
 )
 
 
@@ -175,6 +176,106 @@ def test_cn_option_flow_put_call_filter_keys_share_supported_indexes():
 
     assert set(CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS).issubset(hs300_keys)
     assert not set(CN_OPTION_FLOW_PUT_CALL_FILTER_KEYS).intersection(csi500_keys)
+
+
+def test_us_option_premium_filter_and_rows_are_merged_by_trade_date():
+    service = _service()
+    service.stock_service = SimpleNamespace(
+        list_index_us_put_call_ratio_data=lambda **_kwargs: [
+            {
+                "trade_date": date(2026, 8, 28),
+                "total_put_call_ratio": 0.84,
+                "index_put_call_ratio": 0.99,
+                "equity_put_call_ratio": 0.62,
+                "etf_put_call_ratio": 0.91,
+            }
+        ],
+        list_index_us_option_premium_data=lambda **_kwargs: [
+            {
+                "trade_date": date(2026, 8, 28),
+                "premium_put_call_ratio": 0.634478,
+                "total_premium_million_usd": 16639.8,
+                "call_premium_million_usd": 10180.5,
+                "put_premium_million_usd": 6459.3,
+                "premium_rounding_unit_million_usd": 0.1,
+                "premium_value_basis": "source_display_rounded_0.1m_usd",
+            }
+        ],
+        list_index_us_vix_daily_data=lambda **_kwargs: [],
+        list_index_us_fear_greed_daily_data=lambda **_kwargs: [],
+        list_index_us_hedge_proxy_data=lambda *_args, **_kwargs: [],
+        list_index_us_option_price_pc_source_data=lambda *_args, **_kwargs: [
+            {
+                "trade_date": date(2026, 8, 28),
+                "underlying_code": "SPY",
+                "underlying_name": "SPY ETF期权",
+                "value_basis": "last_trade_with_positive_daily_volume",
+                "data_source": "nasdaq_public_option_chain",
+            }
+        ],
+        list_index_us_treasury_yield_data=lambda **_kwargs: [],
+        list_index_us_credit_spread_data=lambda **_kwargs: [],
+    )
+    service._load_precomputed_index_indicator_rows = lambda *_args, **_kwargs: [
+        {
+            "trade_date": date(2026, 8, 28),
+            "option_pc_current_month": 1.15,
+            "option_pc_current_month_contract_month": "2609",
+            "option_pc_next_month": 1.22,
+            "option_pc_next_month_contract_month": "2610",
+            "option_pc_quarter_1": 1.31,
+            "option_pc_quarter_1_contract_month": "2612",
+            "option_pc_quarter_2": 1.44,
+            "option_pc_quarter_2_contract_month": "2703",
+        }
+    ]
+
+    rows = service._load_us_auxiliary_rows(".INX", "标普500", date(2026, 8, 28), date(2026, 8, 28))[
+        "us_put_call_rows"
+    ]
+    allowed_keys = service._allowed_snapshot_filter_keys("index", "us", ".INX", "标普500")
+
+    assert "us-put-call-premium" in US_PUT_CALL_FILTER_KEYS
+    assert "us-put-call-premium" in allowed_keys
+    assert {
+        "us-put-call-price-current",
+        "us-put-call-price-next",
+        "us-put-call-price-quarter-1",
+        "us-put-call-price-quarter-2",
+    }.issubset(US_PUT_CALL_FILTER_KEYS)
+    assert {
+        "us-put-call-price-current",
+        "us-put-call-price-next",
+        "us-put-call-price-quarter-1",
+        "us-put-call-price-quarter-2",
+    }.issubset(allowed_keys)
+    assert rows == [
+        {
+            "trade_date": date(2026, 8, 28),
+            "total_put_call_ratio": 0.84,
+            "index_put_call_ratio": 0.99,
+            "equity_put_call_ratio": 0.62,
+            "etf_put_call_ratio": 0.91,
+            "premium_put_call_ratio": 0.634478,
+            "total_premium_million_usd": 16639.8,
+            "call_premium_million_usd": 10180.5,
+            "put_premium_million_usd": 6459.3,
+            "premium_rounding_unit_million_usd": 0.1,
+            "premium_value_basis": "source_display_rounded_0.1m_usd",
+            "option_product_code": "SPY",
+            "option_product_name": "SPY ETF期权",
+            "current_month_price_put_call_ratio": 1.15,
+            "current_month_contract_month": "2609",
+            "next_month_price_put_call_ratio": 1.22,
+            "next_month_contract_month": "2610",
+            "quarter_1_price_put_call_ratio": 1.31,
+            "quarter_1_contract_month": "2612",
+            "quarter_2_price_put_call_ratio": 1.44,
+            "quarter_2_contract_month": "2703",
+            "price_value_basis": "last_trade_with_positive_daily_volume",
+            "price_data_source": "nasdaq_public_option_chain",
+        }
+    ]
 
 
 def test_cn_option_put_call_payload_includes_special_marker():

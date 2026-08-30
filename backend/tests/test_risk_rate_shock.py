@@ -66,9 +66,9 @@ def _make_service(monkeypatch):
     return service, cleared
 
 
-def test_risk_cache_prefixes_bumped_to_v2():
-    assert "risk_dashboard:v2" in RISK_DASHBOARD_CACHE_KEY_PREFIX
-    assert "risk_dashboard:evidence:v2" in RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX
+def test_risk_cache_prefixes_bumped_to_v11():
+    assert "risk_dashboard:v11" in RISK_DASHBOARD_CACHE_KEY_PREFIX
+    assert "risk_dashboard:evidence:v11" in RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX
     assert settings.index_us_credit_spread_available_at_column == "available_at"
 
 

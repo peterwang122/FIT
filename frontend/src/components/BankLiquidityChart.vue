@@ -1,0 +1,216 @@
+<script setup lang="ts">
+import {
+  HistogramSeries,
+  LineSeries,
+  createChart,
+  type IChartApi,
+  type ISeriesApi,
+  type Time,
+} from 'lightweight-charts'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+
+import type { BankLiquidityDailyPoint } from '../types/macro'
+
+export interface BankLiquiditySeriesDefinition {
+  key: keyof BankLiquidityDailyPoint
+  label: string
+  color: string
+  type?: 'line' | 'histogram'
+  unit: string
+  precision?: number
+  priceScaleId?: 'left' | 'right'
+  sourceDateKey?: keyof BankLiquidityDailyPoint
+  availableAtKey?: keyof BankLiquidityDailyPoint
+  sourceUrlKey?: keyof BankLiquidityDailyPoint
+  sourceLabel?: string
+}
+
+const props = defineProps<{
+  points: BankLiquidityDailyPoint[]
+  series: BankLiquiditySeriesDefinition[]
+  visibleStartDate?: string
+}>()
+
+const containerRef = ref<HTMLElement | null>(null)
+const hoverDate = ref('')
+const hoverPoint = ref<BankLiquidityDailyPoint | null>(null)
+let chart: IChartApi | null = null
+let resizeObserver: ResizeObserver | null = null
+let lineSeries: ISeriesApi<'Line', Time>[] = []
+let histogramSeries: ISeriesApi<'Histogram', Time>[] = []
+
+function numericValue(point: BankLiquidityDailyPoint | null, key: keyof BankLiquidityDailyPoint) {
+  const value = point?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function stringValue(point: BankLiquidityDailyPoint | null, key?: keyof BankLiquidityDailyPoint) {
+  if (!key) return null
+  const value = point?.[key]
+  return typeof value === 'string' && value ? value : null
+}
+
+function formatValue(point: BankLiquidityDailyPoint | null, definition: BankLiquiditySeriesDefinition) {
+  const value = numericValue(point, definition.key)
+  return value == null ? '-' : `${value.toFixed(definition.precision ?? 2)}${definition.unit}`
+}
+
+function applyVisibleRange() {
+  if (!chart || !props.points.length) return
+  const lastDate = props.points[props.points.length - 1]?.trade_date
+  if (props.visibleStartDate && lastDate) {
+    chart.timeScale().setVisibleRange({
+      from: props.visibleStartDate as Time,
+      to: lastDate as Time,
+    })
+  } else {
+    chart.timeScale().fitContent()
+  }
+}
+
+function updateHover(point?: BankLiquidityDailyPoint) {
+  const current = point ?? props.points[props.points.length - 1] ?? null
+  hoverPoint.value = current
+  hoverDate.value = current?.trade_date ?? ''
+}
+
+function disposeChart() {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  chart?.remove()
+  chart = null
+  lineSeries = []
+  histogramSeries = []
+}
+
+async function renderChart() {
+  await nextTick()
+  if (!containerRef.value) return
+  disposeChart()
+  chart = createChart(containerRef.value, {
+    width: containerRef.value.clientWidth,
+    height: 380,
+    layout: { background: { color: '#ffffff' }, textColor: '#475569' },
+    grid: {
+      vertLines: { color: '#eef2f6' },
+      horzLines: { color: '#e5eaf0' },
+    },
+    leftPriceScale: { visible: props.series.some((item) => item.priceScaleId === 'left'), borderColor: '#dce3eb' },
+    rightPriceScale: { borderColor: '#dce3eb' },
+    timeScale: { borderColor: '#dce3eb', timeVisible: false },
+    crosshair: {
+      vertLine: { color: '#94a3b8', labelBackgroundColor: '#334155' },
+      horzLine: { color: '#94a3b8', labelBackgroundColor: '#334155' },
+    },
+  })
+
+  for (const definition of props.series) {
+    const priceFormat = {
+      type: 'custom' as const,
+      minMove: 10 ** -(definition.precision ?? 2),
+      formatter: (value: number) => `${value.toFixed(definition.precision ?? 2)}${definition.unit}`,
+    }
+    if (definition.type === 'histogram') {
+      const api = chart.addSeries(HistogramSeries, {
+        color: definition.color,
+        base: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceScaleId: definition.priceScaleId ?? 'right',
+        priceFormat,
+      })
+      api.setData(
+        props.points.flatMap((point) => {
+          const value = numericValue(point, definition.key)
+          if (value == null) return []
+          return [{
+            time: point.trade_date as Time,
+            value,
+            color: value < 0 ? '#dc2626' : definition.color,
+          }]
+        }),
+      )
+      histogramSeries.push(api)
+    } else {
+      const api = chart.addSeries(LineSeries, {
+        color: definition.color,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        priceScaleId: definition.priceScaleId ?? 'right',
+        priceFormat,
+      })
+      api.setData(
+        props.points.flatMap((point) => {
+          const value = numericValue(point, definition.key)
+          return value == null ? [] : [{ time: point.trade_date as Time, value }]
+        }),
+      )
+      lineSeries.push(api)
+    }
+  }
+
+  const pointByDate = new Map(props.points.map((point) => [point.trade_date, point]))
+  chart.subscribeCrosshairMove((param) => {
+    if (!param.time) {
+      updateHover()
+      return
+    }
+    updateHover(pointByDate.get(String(param.time)))
+  })
+  resizeObserver = new ResizeObserver(() => {
+    if (containerRef.value && chart) chart.applyOptions({ width: containerRef.value.clientWidth })
+  })
+  resizeObserver.observe(containerRef.value)
+  applyVisibleRange()
+  updateHover()
+}
+
+watch(
+  () => [props.points, props.series],
+  renderChart,
+  { deep: true, immediate: true },
+)
+watch(() => props.visibleStartDate, applyVisibleRange)
+onBeforeUnmount(disposeChart)
+</script>
+
+<template>
+  <div class="liquidity-chart-shell">
+    <div class="liquidity-chart-legend">
+      <span class="liquidity-chart-date">{{ hoverDate || '暂无数据' }}</span>
+      <span v-for="item in series" :key="String(item.key)" class="liquidity-chart-legend-item">
+        <i :style="{ backgroundColor: item.color }"></i>
+        {{ item.label }}
+        <strong>{{ formatValue(hoverPoint, item) }}</strong>
+      </span>
+    </div>
+    <div class="liquidity-source-line">
+      <span
+        v-for="item in series.filter((definition) => definition.sourceDateKey)"
+        :key="`${String(item.key)}-source`"
+      >
+        {{ item.sourceLabel || item.label }}：数据日 {{ stringValue(hoverPoint, item.sourceDateKey) || '-' }} · 发布 {{ stringValue(hoverPoint, item.availableAtKey) || '-' }}
+        <a
+          v-if="stringValue(hoverPoint, item.sourceUrlKey)"
+          :href="stringValue(hoverPoint, item.sourceUrlKey) || undefined"
+          target="_blank"
+          rel="noreferrer"
+        >官方来源</a>
+      </span>
+    </div>
+    <div ref="containerRef" class="liquidity-chart"></div>
+  </div>
+</template>
+
+<style scoped>
+.liquidity-chart-shell { position: relative; min-width: 0; }
+.liquidity-chart-legend { min-height: 38px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 0 4px 7px; color: #64748b; font-size: 12px; }
+.liquidity-chart-date { color: #334155; font-weight: 800; }
+.liquidity-chart-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.liquidity-chart-legend-item i { width: 9px; height: 9px; border-radius: 2px; }
+.liquidity-chart-legend-item strong { color: #172033; font-variant-numeric: tabular-nums; }
+.liquidity-source-line { min-height: 22px; display: flex; gap: 14px; flex-wrap: wrap; padding: 0 4px 8px; color: #94a3b8; font-size: 11px; }
+.liquidity-source-line a { margin-left: 4px; color: #2563eb; text-decoration: none; }
+.liquidity-chart { width: 100%; height: 380px; }
+</style>

@@ -29,6 +29,16 @@ class _FakeDb:
         return _FakeResult(self.rows)
 
 
+class _SequenceFakeDb:
+    def __init__(self, result_sets):
+        self.result_sets = list(result_sets)
+        self.statements = []
+
+    def execute(self, statement, params):
+        self.statements.append((str(statement), params))
+        return _FakeResult(self.result_sets.pop(0))
+
+
 def test_append_style_indicators_builds_twenty_day_buffer_and_bollinger_bands():
     points = [
         {
@@ -97,3 +107,50 @@ def test_get_dashboard_joins_three_indices_and_exposes_style_methodology():
     assert dashboard["latest"]["chinext_csi_dividend_ratio_boll_upper"] is not None
     assert "hs300_equity_bond_spread_pp_boll_upper" in dashboard["latest"]
     assert "BOLL(20,2)" in dashboard["methodology"]["growth_dividend_ratio"]
+
+
+def test_get_bank_liquidity_serializes_official_dates_and_coverage():
+    daily_rows = [
+        {
+            "trade_date": date(2026, 8, 28),
+            "liquidity_tightness_score": 62.5,
+            "liquidity_state": "偏紧",
+            "dr001_weighted_pct": 1.3378,
+            "dr007_weighted_pct": 1.3859,
+            "r001_weighted_pct": 1.3625,
+            "r007_weighted_pct": 1.4077,
+            "frr_available_at": None,
+            "closing_repo_available_at": None,
+            "chinabond_available_at": None,
+            "pbc_available_at": None,
+            "components_json": '{"method":"prior_midrank_percentile_v1"}',
+            "sources_json": None,
+        }
+    ]
+    monthly_rows = [
+        {
+            "period_end": date(2026, 7, 31),
+            "category": "公开市场业务",
+            "tool_type": "reverse_repo",
+            "tool_name": "7天期逆回购",
+            "injection_cny": 4739500000000,
+            "withdrawal_cny": 4989000000000,
+            "net_injection_cny": -249500000000,
+            "coverage_status": "official_complete",
+            "published_at": None,
+            "source_url": "https://www.pbc.gov.cn/example",
+        }
+    ]
+    db = _SequenceFakeDb([daily_rows, monthly_rows])
+
+    dashboard = MacroService(db).get_bank_liquidity(
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 28),
+    )
+
+    assert dashboard["latest"]["trade_date"] == "2026-08-28"
+    assert dashboard["latest"]["components_json"]["method"] == "prior_midrank_percentile_v1"
+    assert dashboard["coverage"]["score_start"] == "2026-08-28"
+    assert dashboard["coverage"]["latest_complete_date"] == "2026-08-28"
+    assert dashboard["monthly_tool_points"][0]["period_end"] == "2026-07-31"
+    assert "cn_bank_liquidity_daily" in db.statements[0][0]

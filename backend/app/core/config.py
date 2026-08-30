@@ -197,6 +197,18 @@ class Settings(BaseSettings):
     index_us_put_call_equity_column: str = "equity_put_call_ratio"
     index_us_put_call_etf_column: str = "etf_put_call_ratio"
 
+    index_us_option_premium_table_name: str = "index_us_option_premium_daily"
+    index_us_option_premium_date_column: str = "trade_date"
+    index_us_option_premium_total_column: str = "total_premium_million_usd"
+    index_us_option_premium_call_column: str = "call_premium_million_usd"
+    index_us_option_premium_put_column: str = "put_premium_million_usd"
+    index_us_option_premium_ratio_column: str = "premium_put_call_ratio"
+    index_us_option_premium_rounding_column: str = "rounding_unit_million_usd"
+    index_us_option_premium_basis_column: str = "value_basis"
+
+    index_us_option_price_pc_table_name: str = "index_us_etf_option_daily_data"
+    index_us_option_price_pc_date_column: str = "trade_date"
+
     index_us_treasury_yield_table_name: str = "index_us_treasury_yield_daily"
     index_us_treasury_yield_date_column: str = "trade_date"
     index_us_treasury_yield_3m_column: str = "yield_3m"

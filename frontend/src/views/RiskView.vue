@@ -21,6 +21,9 @@ import AppSidebar from '../components/AppSidebar.vue'
           <RouterLink to="/risk/csi1000" class="quant-subnav-link" active-class="active">
             中证1000
           </RouterLink>
+          <RouterLink to="/risk/hs300" class="quant-subnav-link" active-class="active">
+            沪深300
+          </RouterLink>
         </nav>
       </section>
 

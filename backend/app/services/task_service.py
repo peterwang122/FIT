@@ -178,6 +178,16 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "requires_target": False,
         "endpoint": "/collect-cn-risk-free-rate-daily",
     },
+    "cn_bank_liquidity_daily": {
+        "label": "银行流动性日更",
+        "market_scope": "cn_stock",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-cn-bank-liquidity-daily",
+        "poll_end_time": "22:25",
+        "poll_interval_minutes": 3,
+        "poll_inside_run": True,
+    },
     "cn_macro_daily": {
         "label": "A股宏观指标日更",
         "market_scope": "cn_stock",
@@ -352,6 +362,22 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "endpoint": "/collect-index-us-put-call-ratio-daily",
         "accept_previous_trading_day": True,
     },
+    "index_us_option_premium_daily": {
+        "label": "美股期权成交额 P/C 日更",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-us-option-premium-daily",
+        "accept_previous_trading_day": True,
+    },
+    "index_us_option_price_pc_daily": {
+        "label": "美股ETF期权价格 P/C 日更",
+        "market_scope": "us_index",
+        "target_type": None,
+        "requires_target": False,
+        "endpoint": "/collect-index-us-option-price-pc-daily",
+        "accept_previous_trading_day": True,
+    },
     "index_us_treasury_yield_daily": {
         "label": "美债收益率日更",
         "market_scope": "us_index",
@@ -389,6 +415,7 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "exchange_option_stats_daily": "沪深交易所期权官方统计补齐",
     "option_minute_daily": "期权分钟行情采集",
     "cn_risk_free_rate_daily": "人民币无风险利率日更",
+    "cn_bank_liquidity_daily": "银行流动性日更",
     "cn_macro_daily": "A股宏观指标日更",
     "margin_trading_daily": "A股融资融券日更",
     "quant_index_daily": "量化指数看板日更",
@@ -410,6 +437,8 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "index_us_fear_greed_daily": "美股恐贪指数日更",
     "index_us_hedge_proxy_daily": "OFR 美股持仓代理月更",
     "index_us_put_call_ratio_daily": "美股 Put/Call Ratio 日更",
+    "index_us_option_premium_daily": "美股期权成交额 P/C 日更",
+    "index_us_option_price_pc_daily": "美股ETF期权价格 P/C 日更",
     "index_us_treasury_yield_daily": "美债收益率日更",
     "index_us_credit_spread_daily": "美股高收益债利差日更",
 }
@@ -750,6 +779,20 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
             minimum_rows=8,
         ),
     ],
+    "cn_bank_liquidity_daily": [
+        CollectionDataProbe(
+            "cn_bank_liquidity_daily",
+            "trade_date",
+            "银行流动性紧张度与日终回购确认",
+            where_sql=(
+                "AND liquidity_tightness_score IS NOT NULL "
+                "AND dr001_weighted_pct IS NOT NULL "
+                "AND dr007_weighted_pct IS NOT NULL "
+                "AND r001_weighted_pct IS NOT NULL "
+                "AND r007_weighted_pct IS NOT NULL"
+            ),
+        ),
+    ],
     "cn_macro_daily": [
         CollectionDataProbe(
             "cn_macro_indicator_daily",
@@ -905,6 +948,31 @@ COLLECTION_DATA_PROBES: dict[str, list[CollectionDataProbe]] = {
             settings.index_us_put_call_table_name,
             settings.index_us_put_call_date_column,
             "美股Put/Call Ratio",
+        ),
+    ],
+    "index_us_option_premium_daily": [
+        CollectionDataProbe(
+            settings.index_us_option_premium_table_name,
+            settings.index_us_option_premium_date_column,
+            "美股期权成交额P/C（Optionomics网页展示值）",
+        ),
+    ],
+    "index_us_option_price_pc_daily": [
+        CollectionDataProbe(
+            settings.index_us_option_price_pc_table_name,
+            settings.index_us_option_price_pc_date_column,
+            "SPY ETF期权价格P/C原始合约",
+            where_sql=" AND underlying_code = :underlying_code",
+            params={"underlying_code": "SPY"},
+            minimum_rows=8,
+        ),
+        CollectionDataProbe(
+            settings.index_us_option_price_pc_table_name,
+            settings.index_us_option_price_pc_date_column,
+            "QQQ ETF期权价格P/C原始合约",
+            where_sql=" AND underlying_code = :underlying_code",
+            params={"underlying_code": "QQQ"},
+            minimum_rows=8,
         ),
     ],
     "index_us_treasury_yield_daily": [
@@ -2483,6 +2551,7 @@ class TaskService:
             "exchange_option_stats_daily",
             "option_minute_daily",
             "cn_risk_free_rate_daily",
+            "cn_bank_liquidity_daily",
             "cn_macro_daily",
             "margin_trading_daily",
             "fund_purchase_limit_daily",
@@ -2502,6 +2571,7 @@ class TaskService:
                 "exchange_option_stats_daily",
                 "option_minute_daily",
                 "cn_risk_free_rate_daily",
+                "cn_bank_liquidity_daily",
                 "cn_macro_daily",
                 "margin_trading_daily",
                 "fund_purchase_limit_daily",
@@ -2658,6 +2728,31 @@ class TaskService:
                     )
             raise TaskRunSkipped(
                 f"{label}截至22:25仍缺目标交易日 {target_date} 的 {missing}。"
+            )
+        if collector_key == "cn_bank_liquidity_daily" and result_status == "SOURCE_NOT_READY":
+            target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
+            missing = "、".join(result_value.get("missing") or []) or "银行流动性核心数据"
+            latest_complete = str(result_value.get("latest_complete_date") or "-")
+            closing_source = str(result_value.get("closing_repo_source_date") or "-")
+            polling_window = (
+                self._polling_window_for_task(task, include_internal=True)
+                if trigger_type == "schedule"
+                else None
+            )
+            if polling_window is not None:
+                _start_time, end_time, interval_minutes = polling_window
+                checked_at = self._now()
+                end_at = datetime.combine(checked_at.date(), end_time)
+                if checked_at < end_at:
+                    raise TaskRunPollingPending(
+                        f"{label}目标交易日 {target_date} 尚缺 {missing}；"
+                        f"中国货币网日终回购当前来源日 {closing_source}，"
+                        "将在同一条运行记录内继续检查。",
+                        countdown_seconds=interval_minutes * 60,
+                    )
+            raise TaskRunRetryableFailure(
+                f"{label}截至22:25仍缺目标交易日 {target_date} 的 {missing}；"
+                f"日终回购当前来源日 {closing_source}，最近完整日期 {latest_complete}。"
             )
         if collector_key == "hk_index_futures_daily" and result_status == "SOURCE_NOT_READY":
             target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
@@ -2821,6 +2916,23 @@ class TaskService:
                         f"{label}执行完成：目标交易日 {target_date}，"
                         f"官网最新 {result_value.get('latest_trade_date') or '-'}，"
                         f"最近窗口写入 {result_value.get('daily_upserted') or 0} 行。"
+                    )
+                elif collector_key == "cn_bank_liquidity_daily":
+                    source_dates = (
+                        result_value.get("source_dates")
+                        if isinstance(result_value.get("source_dates"), dict)
+                        else {}
+                    )
+                    score = result_value.get("score")
+                    score_text = f"{float(score):.2f}" if score is not None else "-"
+                    summary = (
+                        f"{label}执行完成：目标交易日 {target_date}，"
+                        f"紧张度 {score_text}，状态 {result_value.get('state') or '-'}，"
+                        f"趋势 {result_value.get('trend') or '-'}；"
+                        f"定盘利率来源日 {source_dates.get('frr') or '-'}，"
+                        f"日终回购来源日 {source_dates.get('closing_repo') or '-'}，"
+                        f"中债来源日 {source_dates.get('chinabond') or '-'}，"
+                        f"央行公告来源日 {source_dates.get('pbc') or '-'}。"
                     )
                 else:
                     summary = f"{label}执行完成，结果：{result_value}。"

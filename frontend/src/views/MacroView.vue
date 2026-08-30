@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { LineStyle } from 'lightweight-charts'
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 
 import { fetchMacroDashboard } from '../api/macro'
 import AppSidebar from '../components/AppSidebar.vue'
@@ -521,6 +522,11 @@ onMounted(loadDashboard)
   <div class="dashboard-shell">
     <AppSidebar active="macro" />
     <main class="dashboard-main macro-main">
+      <nav class="macro-subnav" aria-label="宏观页面导航">
+        <RouterLink to="/macro" class="active">综合指标</RouterLink>
+        <RouterLink to="/macro/bank-liquidity">银行流动性</RouterLink>
+      </nav>
+
       <header class="macro-header">
         <div>
           <h2>A股宏观指标</h2>
@@ -711,6 +717,9 @@ onMounted(loadDashboard)
 
 <style scoped>
 .macro-main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.macro-subnav { display: inline-flex; align-self: flex-start; gap: 3px; padding: 3px; border: 1px solid #dce3eb; border-radius: 6px; background: #f8fafc; }
+.macro-subnav a { padding: 7px 12px; border-radius: 4px; color: #64748b; font-size: 13px; font-weight: 700; text-decoration: none; }
+.macro-subnav a.active { background: #fff; color: #172033; box-shadow: 0 1px 3px rgba(15, 23, 42, .12); }
 .macro-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 4px 2px; }
 .macro-header h2 { margin: 0 0 4px; font-size: 28px; color: #172033; letter-spacing: 0; }
 .macro-header p { margin: 0; color: #64748b; }

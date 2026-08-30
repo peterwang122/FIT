@@ -220,16 +220,30 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v32"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v33"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
-RISK_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:v2"
-RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:evidence:v2"
+RISK_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:v11"
+RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:evidence:v11"
 RISK_DASHBOARD_CACHE_TTL_SECONDS = 600
 STRATEGY_TARGET_CHART_CACHE_KEY_PREFIX = "fit:quant:strategy_target_chart:v1"
 STRATEGY_TARGET_CHART_CACHE_TTL_SECONDS = 300
 CSI1000_RISK_INDEX_CODE = "sh000852"
 CSI1000_RISK_INDEX_NAME = "中证1000"
 CSI1000_RISK_DEFAULT_START_DATE = date(2024, 9, 1)
+HS300_RISK_INDEX_CODE = "sh000300"
+HS300_RISK_INDEX_NAME = "沪深300"
+RISK_INDEX_PROFILES = {
+    CSI1000_RISK_INDEX_CODE: {
+        "name": CSI1000_RISK_INDEX_NAME,
+        "default_start_date": CSI1000_RISK_DEFAULT_START_DATE,
+        "scoring_mode": "grouped",
+    },
+    HS300_RISK_INDEX_CODE: {
+        "name": HS300_RISK_INDEX_NAME,
+        "default_start_date": CSI1000_RISK_DEFAULT_START_DATE,
+        "scoring_mode": "flat",
+    },
+}
 RISK_STRATEGY_ORDER = ("yellow_vulnerability", "red_escalation", "global_shock")
 RISK_STRATEGY_LABELS = {
     "yellow_vulnerability": "黄色脆弱期",
@@ -558,7 +572,18 @@ US_PUT_CALL_FILTER_KEYS = [
     "us-put-call-index",
     "us-put-call-equity",
     "us-put-call-etf",
+    "us-put-call-premium",
+    "us-put-call-price-current",
+    "us-put-call-price-next",
+    "us-put-call-price-quarter-1",
+    "us-put-call-price-quarter-2",
 ]
+US_OPTION_PRICE_PC_FIELDS = (
+    ("us-put-call-price-current", "option_pc_current_month", "option_pc_current_month_contract_month"),
+    ("us-put-call-price-next", "option_pc_next_month", "option_pc_next_month_contract_month"),
+    ("us-put-call-price-quarter-1", "option_pc_quarter_1", "option_pc_quarter_1_contract_month"),
+    ("us-put-call-price-quarter-2", "option_pc_quarter_2", "option_pc_quarter_2_contract_month"),
+)
 US_TREASURY_FILTER_KEYS = [
     "us-yield-3m",
     "us-yield-2y",
@@ -583,6 +608,14 @@ US_HEDGE_PROXY_SCOPE_BY_INDEX_CODE = {
 US_HEDGE_PROXY_SCOPE_BY_INDEX_NAME = {
     "标普500指数": "ES",
     "纳斯达克100指数": "NQ",
+}
+US_OPTION_PRICE_PRODUCT_BY_INDEX_CODE = {
+    ".INX": ("SPY", "SPY ETF期权"),
+    ".NDX": ("QQQ", "QQQ ETF期权"),
+}
+US_OPTION_PRICE_PRODUCT_BY_INDEX_NAME = {
+    "标普500指数": ("SPY", "SPY ETF期权"),
+    "纳斯达克100指数": ("QQQ", "QQQ ETF期权"),
 }
 HK_INDEX_FUTURES_ROOT_BY_INDEX_CODE = {
     "HSI": "HSI",
@@ -1624,6 +1657,19 @@ class QuantService:
         normalized_name = str(target_name or "").strip()
         return US_HEDGE_PROXY_SCOPE_BY_INDEX_NAME.get(normalized_name)
 
+    def _resolve_us_option_price_product(
+        self,
+        target_code: object = "",
+        target_name: object = "",
+        target_market: str = "cn",
+    ) -> tuple[str, str] | None:
+        if self._normalize_target_market(target_market) != "us":
+            return None
+        normalized_code = str(target_code or "").strip().upper()
+        if normalized_code in US_OPTION_PRICE_PRODUCT_BY_INDEX_CODE:
+            return US_OPTION_PRICE_PRODUCT_BY_INDEX_CODE[normalized_code]
+        return US_OPTION_PRICE_PRODUCT_BY_INDEX_NAME.get(str(target_name or "").strip())
+
     def _index_supports_adjusted_basis(
         self,
         target_code: object = "",
@@ -2094,6 +2140,17 @@ class QuantService:
             "risk_global_shock",
             "risk_global_shock_score",
             "risk_global_shock_mode",
+            "risk_global_raw_leading",
+            "risk_global_raw_leading_mode",
+            "risk_global_leading",
+            "risk_global_leading_score",
+            "risk_global_leading_mode",
+            "risk_global_score",
+            "risk_as_of_at",
+            "risk_decision_trade_date",
+            "risk_overall_score",
+            "risk_base_state",
+            "risk_display_state",
             "risk_strategy_components_json",
         ):
             if column_name in existing_columns:
@@ -2116,8 +2173,50 @@ class QuantService:
         components = self._parse_exchange_option_pc_json(
             row.get("risk_strategy_components_json")
         )
+        global_group = components.get("global") if isinstance(components.get("global"), dict) else {}
+        leading_group = (
+            global_group.get("leading")
+            if isinstance(global_group.get("leading"), dict)
+            else {}
+        )
+        confirmation_group = (
+            global_group.get("confirmation")
+            if isinstance(global_group.get("confirmation"), dict)
+            else {}
+        )
+        active_modules = global_group.get("active_modules")
+        if not isinstance(active_modules, list):
+            active_modules = []
+        leading_routes = (
+            leading_group.get("routes")
+            if isinstance(leading_group.get("routes"), dict)
+            else {}
+        )
+        raw_leading_modes = [
+            str(key).strip()
+            for key, value in leading_routes.items()
+            if str(key).strip() and isinstance(value, dict) and value.get("active") is True
+        ]
+        raw_leading_mode = str(
+            row.get("risk_global_raw_leading_mode")
+            or leading_group.get("raw_mode")
+            or "+".join(raw_leading_modes)
+            or ""
+        ).strip() or None
+        raw_leading_score = (
+            _to_float(row.get("risk_global_leading_score"))
+            if row.get("risk_global_leading_score") is not None
+            else _to_float(leading_group.get("score"))
+        )
+        scoring_mode = str(components.get("scoring_mode") or "grouped").strip().lower()
+        if scoring_mode not in {"grouped", "flat"}:
+            scoring_mode = "grouped"
         return {
             "trade_date": row.get("trade_date"),
+            "scoring_mode": scoring_mode,
+            "model_version": str(
+                components.get("model_version") or components.get("version") or ""
+            ).strip(),
             "yellow_vulnerability": self._to_optional_bool(
                 row.get("risk_yellow_vulnerability")
             ),
@@ -2125,8 +2224,56 @@ class QuantService:
             "red_escalation": self._to_optional_bool(row.get("risk_red_escalation")),
             "red_score": _to_float(row.get("risk_red_escalation_score")),
             "global_shock": self._to_optional_bool(row.get("risk_global_shock")),
-            "global_score": _to_float(row.get("risk_global_shock_score")),
+            "global_raw_leading": self._to_optional_bool(
+                row.get("risk_global_raw_leading")
+            )
+            if row.get("risk_global_raw_leading") is not None
+            else self._to_optional_bool(leading_group.get("raw_active")),
+            "global_raw_leading_score": raw_leading_score,
+            "global_raw_leading_mode": raw_leading_mode,
+            "global_leading": self._to_optional_bool(row.get("risk_global_leading"))
+            if row.get("risk_global_leading") is not None
+            else self._to_optional_bool(leading_group.get("active")),
+            # Compatibility alias: historically this field already stored the raw route score.
+            "global_leading_score": raw_leading_score,
+            "global_leading_mode": str(
+                row.get("risk_global_leading_mode") or leading_group.get("mode") or ""
+            ).strip() or None,
+            "global_leading_trigger_date": self._coerce_date(leading_group.get("trigger_date")),
+            "global_leading_valid_through": self._coerce_date(leading_group.get("valid_through")),
+            "global_leading_gate_score": _to_float(
+                leading_group.get("domestic_gate_score")
+            ),
+            "global_leading_trigger_threshold": _to_float(
+                leading_group.get("trigger_threshold")
+            ),
+            "global_leading_release_threshold": _to_float(
+                leading_group.get("release_threshold")
+            ),
+            "global_confirmation_score": _to_float(row.get("risk_global_shock_score"))
+            if row.get("risk_global_shock_score") is not None
+            else _to_float(confirmation_group.get("score")),
+            "global_score": _to_float(row.get("risk_global_score"))
+            if row.get("risk_global_score") is not None
+            else _to_float(global_group.get("score"))
+            if global_group.get("score") is not None
+            else _to_float(row.get("risk_global_shock_score")),
             "global_mode": str(row.get("risk_global_shock_mode") or "").strip() or None,
+            "overall_score": _to_float(row.get("risk_overall_score"))
+            if row.get("risk_overall_score") is not None
+            else _to_float(components.get("overall_score")),
+            "domestic_vulnerability_score": _to_float(row.get("risk_yellow_vulnerability_score")),
+            "domestic_deterioration_score": _to_float(row.get("risk_red_escalation_score")),
+            "base_state": str(row.get("risk_base_state") or components.get("base_state") or "").strip() or None,
+            "display_state": str(
+                row.get("risk_display_state") or components.get("display_state") or ""
+            ).strip() or None,
+            "global_active_modules": [str(item) for item in active_modules if str(item).strip()],
+            "as_of_at": str(components.get("as_of_at") or row.get("risk_as_of_at") or "").strip()
+            or None,
+            "decision_trade_date": self._coerce_date(
+                row.get("risk_decision_trade_date") or components.get("decision_trade_date")
+            ),
             "components": components,
         }
 
@@ -2155,13 +2302,23 @@ class QuantService:
     def _risk_level_payload(score: float | None) -> tuple[str | None, str | None]:
         if score is None:
             return None, None
-        if score < 25:
+        if score < 40:
             return "stable", "平稳"
-        if score < 50:
-            return "vulnerable", "脆弱"
-        if score < 75:
-            return "high", "高风险"
-        return "severe", "严重"
+        if score <= 50:
+            return "yellow", "黄色"
+        return "red", "红色"
+
+    @staticmethod
+    def _risk_display_state_label(state: str | None) -> str:
+        return {
+            "stable": "平稳",
+            "global": "全球冲击",
+            "yellow": "黄色",
+            "yellow_global": "黄色+全球",
+            "red": "红色",
+            "red_global": "红色+全球",
+            "incomplete": "数据不完整",
+        }.get(str(state or ""), "数据不完整")
 
     @staticmethod
     def _global_mode_label(mode: str | None) -> str:
@@ -2171,6 +2328,11 @@ class QuantService:
             "broad_risk_off": "全面避险",
             "tech_deleveraging": "科技去杠杆",
             "usd_rate_shock": "美元利率冲击",
+            "equities": "全球股市同步",
+            "vix": "VIX快速上冲",
+            "hy_oas": "信用利差扩大",
+            "usd_rates": "美元与利率冲击",
+            "oil_copper": "原油与铜共跌",
         }
         parts = [
             labels.get(part.strip(), part.strip())
@@ -2198,35 +2360,120 @@ class QuantService:
         row: dict,
         *,
         include_components: bool = False,
+        default_scoring_mode: str | None = None,
     ) -> dict:
         payload = self._build_risk_strategy_point_payload(row)
+        normalized_default_mode = str(default_scoring_mode or "").strip().lower()
+        if (
+            not payload.get("model_version")
+            and normalized_default_mode in {"grouped", "flat"}
+        ):
+            # A newly inserted index row may exist before the nightly risk
+            # calculation. Keep its page layout tied to the index model rather
+            # than treating an empty component JSON as the grouped default.
+            payload["scoring_mode"] = normalized_default_mode
+        components = payload.get("components") if isinstance(payload.get("components"), dict) else {}
+        scoring_mode = str(payload.get("scoring_mode") or "grouped")
         scores = (
             _to_float(payload.get("yellow_score")),
             _to_float(payload.get("red_score")),
             _to_float(payload.get("global_score")),
         )
-        composite_score = None
-        if all(value is not None for value in scores):
-            composite_score = round(
-                float(scores[0]) * 0.25
-                + float(scores[1]) * 0.45
+        overall_score = _to_float(row.get("risk_overall_score"))
+        if overall_score is None:
+            overall_score = _to_float(components.get("overall_score"))
+        if (
+            scoring_mode == "grouped"
+            and overall_score is None
+            and all(value is not None for value in scores)
+        ):
+            overall_score = round(
+                float(scores[0]) * 0.35
+                + float(scores[1]) * 0.35
                 + float(scores[2]) * 0.30,
                 4,
             )
-        risk_level, risk_level_label = self._risk_level_payload(composite_score)
+        base_state, _label = self._risk_level_payload(overall_score)
+        explicit_display_state = str(payload.get("display_state") or "").strip()
+        trusts_explicit_state = (
+            scoring_mode == "flat" or str(components.get("version") or "") == "v8"
+        )
+        if trusts_explicit_state and explicit_display_state in {
+            "stable", "global", "yellow", "yellow_global", "red", "red_global", "incomplete"
+        }:
+            display_state = explicit_display_state
+        else:
+            global_overlay = payload.get("global_shock") is True or (
+                scoring_mode == "grouped" and payload.get("global_leading") is True
+            )
+            if base_state is None:
+                display_state = "incomplete"
+            elif global_overlay:
+                display_state = {
+                    "stable": "global",
+                    "yellow": "yellow_global",
+                    "red": "red_global",
+                }.get(base_state, base_state)
+            else:
+                display_state = base_state
+        contributions = components.get("contributions") if isinstance(components.get("contributions"), dict) else {}
+        vulnerability_contribution = _to_float(contributions.get("domestic_vulnerability"))
+        deterioration_contribution = _to_float(contributions.get("domestic_deterioration"))
+        global_contribution = _to_float(contributions.get("global_shock"))
+        if scoring_mode == "grouped" and vulnerability_contribution is None and scores[0] is not None:
+            vulnerability_contribution = float(scores[0]) * 0.35
+        if scoring_mode == "grouped" and deterioration_contribution is None and scores[1] is not None:
+            deterioration_contribution = float(scores[1]) * 0.35
+        if global_contribution is None and scores[2] is not None:
+            global_contribution = float(scores[2]) * 0.30
+        global_group = components.get("global") if isinstance(components.get("global"), dict) else {}
+        active_modules = global_group.get("active_modules")
+        if not isinstance(active_modules, list):
+            active_modules = []
+        risk_level = base_state
+        risk_level_label = self._risk_display_state_label(display_state)
         point = {
             "trade_date": payload.get("trade_date"),
+            "scoring_mode": scoring_mode,
+            "model_version": payload.get("model_version"),
             "yellow_vulnerability": payload.get("yellow_vulnerability"),
             "yellow_score": scores[0],
             "red_escalation": payload.get("red_escalation"),
             "red_score": scores[1],
             "global_shock": payload.get("global_shock"),
+            "global_raw_leading": payload.get("global_raw_leading"),
+            "global_raw_leading_score": payload.get("global_raw_leading_score"),
+            "global_raw_leading_mode": payload.get("global_raw_leading_mode"),
+            "global_leading": payload.get("global_leading"),
+            "global_leading_score": payload.get("global_leading_score"),
+            "global_leading_mode": payload.get("global_leading_mode"),
+            "global_leading_trigger_date": payload.get("global_leading_trigger_date"),
+            "global_leading_valid_through": payload.get("global_leading_valid_through"),
+            "global_leading_gate_score": payload.get("global_leading_gate_score"),
+            "global_leading_trigger_threshold": payload.get(
+                "global_leading_trigger_threshold"
+            ),
+            "global_leading_release_threshold": payload.get(
+                "global_leading_release_threshold"
+            ),
+            "global_confirmation_score": payload.get("global_confirmation_score"),
             "global_score": scores[2],
             "global_mode": payload.get("global_mode"),
-            "composite_score": composite_score,
+            "overall_score": overall_score,
+            "domestic_vulnerability_score": scores[0],
+            "domestic_deterioration_score": scores[1],
+            "domestic_vulnerability_contribution": vulnerability_contribution,
+            "domestic_deterioration_contribution": deterioration_contribution,
+            "global_contribution": global_contribution,
+            "base_state": base_state,
+            "display_state": display_state,
+            "global_active_modules": [str(item) for item in active_modules if str(item).strip()],
+            "as_of_at": payload.get("as_of_at"),
+            "decision_trade_date": payload.get("decision_trade_date"),
+            "composite_score": overall_score,
             "risk_level": risk_level,
             "risk_level_label": risk_level_label,
-            "data_complete": composite_score is not None,
+            "data_complete": overall_score is not None and display_state != "incomplete",
         }
         if include_components:
             point["components"] = payload.get("components") or {}
@@ -2238,6 +2485,27 @@ class QuantService:
             return None
         value = point.get(strategy_key)
         return value if isinstance(value, bool) else None
+
+    def _risk_point_display_state(self, point: dict | None) -> str:
+        if not point:
+            return "incomplete"
+        explicit = str(point.get("display_state") or "").strip()
+        if explicit:
+            return explicit
+        yellow = self._risk_point_state(point, "yellow_vulnerability")
+        red = self._risk_point_state(point, "red_escalation")
+        global_shock = self._risk_point_state(point, "global_shock")
+        global_leading = self._risk_point_state(point, "global_leading")
+        global_overlay = global_shock is True or global_leading is True
+        if yellow is None or red is None or (
+            global_shock is None and global_leading is None
+        ):
+            return "incomplete"
+        if red:
+            return "red_global" if global_overlay else "red"
+        if yellow:
+            return "yellow_global" if global_overlay else "yellow"
+        return "global" if global_overlay else "stable"
 
     @staticmethod
     def _collect_matched_component_labels(value: object) -> list[str]:
@@ -2321,6 +2589,48 @@ class QuantService:
             if active_points:
                 release = event_release_date if event_end_reason == "released" else None
                 flush(release)
+        return spans
+
+    def _build_risk_state_spans(self, event_points: list[dict]) -> list[dict]:
+        spans: list[dict] = []
+        active_points: list[dict] = []
+        current_state: str | None = None
+
+        def flush() -> None:
+            nonlocal current_state
+            if not active_points or current_state is None:
+                return
+            evidence_counts: dict[str, int] = defaultdict(int)
+            for point in active_points:
+                components = point.get("components") if isinstance(point.get("components"), dict) else {}
+                for label in self._collect_matched_component_labels(components):
+                    evidence_counts[label] += 1
+            spans.append(
+                {
+                    "display_state": current_state,
+                    "state_label": self._risk_display_state_label(current_state),
+                    "start_date": active_points[0]["trade_date"],
+                    "end_date": active_points[-1]["trade_date"],
+                    "active_days": len(active_points),
+                    "key_evidence": [
+                        label
+                        for label, _count in sorted(
+                            evidence_counts.items(),
+                            key=lambda item: (-item[1], item[0]),
+                        )[:4]
+                    ],
+                }
+            )
+            active_points.clear()
+            current_state = None
+
+        for point in event_points:
+            state = self._risk_point_display_state(point)
+            if current_state is not None and state != current_state:
+                flush()
+            current_state = state
+            active_points.append(point)
+        flush()
         return spans
 
     def _build_risk_event_drawdowns(
@@ -2417,6 +2727,7 @@ class QuantService:
                         event_release_date=release_date,
                         event_end_reason=end_reason,
                     ),
+                    "state_spans": self._build_risk_state_spans(current_points),
                     "drawdowns": self._build_risk_event_drawdowns(first_trigger, candles),
                 }
             )
@@ -2424,11 +2735,11 @@ class QuantService:
 
         for trade_date in trading_dates:
             point = points_by_date.get(trade_date)
-            states = [self._risk_point_state(point, key) for key in RISK_STRATEGY_ORDER]
-            if any(state is True for state in states):
+            display_state = self._risk_point_display_state(point)
+            if display_state in {"global", "yellow", "yellow_global", "red", "red_global"}:
                 current_points.append(point or {"trade_date": trade_date})
                 continue
-            if all(state is False for state in states):
+            if display_state == "stable":
                 close_event(trade_date, "released")
                 continue
             close_event(None, "data_gap")
@@ -2467,6 +2778,155 @@ class QuantService:
     @staticmethod
     def _flatten_risk_components(components: dict) -> list[dict]:
         entries: list[dict] = []
+        if str(components.get("scoring_mode") or "").strip().lower() == "flat":
+            factors = components.get("factors")
+            for factor in factors if isinstance(factors, list) else []:
+                if not isinstance(factor, dict):
+                    continue
+                label = str(factor.get("label") or "").strip()
+                factor_key = str(factor.get("key") or label).strip()
+                if not label or not factor_key:
+                    continue
+                entries.append(
+                    {
+                        "key": f"flat_score:{factor_key}",
+                        "strategy_key": "flat_score",
+                        "strategy_label": "扁平风险总分",
+                        "section_key": "flat_factors",
+                        "section_label": "七项计分因子",
+                        "label": label,
+                        "component": factor,
+                    }
+                )
+            return entries
+        if "domestic_vulnerability" in components or str(components.get("version") or "") == "v4":
+            groups = [
+                (
+                    "domestic_vulnerability",
+                    "国内脆弱积累",
+                    "domestic_vulnerability",
+                    "国内脆弱积累",
+                ),
+                (
+                    "domestic_deterioration",
+                    "国内风险恶化",
+                    "domestic_deterioration",
+                    "国内风险恶化",
+                ),
+            ]
+            for strategy_key, strategy_label, component_key, section_label in groups:
+                group = components.get(component_key)
+                values = group.get("components") if isinstance(group, dict) else []
+                for component in values if isinstance(values, list) else []:
+                    if not isinstance(component, dict):
+                        continue
+                    label = str(component.get("label") or "").strip()
+                    if not label:
+                        continue
+                    entries.append(
+                        {
+                            "key": f"{strategy_key}:{component_key}:{label}",
+                            "strategy_key": strategy_key,
+                            "strategy_label": strategy_label,
+                            "section_key": component_key,
+                            "section_label": section_label,
+                            "label": label,
+                            "component": component,
+                        }
+                    )
+
+            global_group = components.get("global") if isinstance(components.get("global"), dict) else {}
+            modules = global_group.get("modules") if isinstance(global_group.get("modules"), dict) else {}
+            module_labels = {
+                "equities": "全球股市同步",
+                "vix": "VIX快速上冲",
+                "hy_oas": "信用利差扩大",
+                "usd_rates": "美元与利率冲击",
+                "oil_copper": "原油与铜共跌",
+            }
+            for module_key, section_label in module_labels.items():
+                module = modules.get(module_key) if isinstance(modules.get(module_key), dict) else {}
+                values = module.get("components") if isinstance(module.get("components"), list) else []
+                for component in values:
+                    if not isinstance(component, dict):
+                        continue
+                    label = str(component.get("label") or "").strip()
+                    if not label:
+                        continue
+                    entries.append(
+                        {
+                            "key": f"global_shock:{module_key}:{label}",
+                            "strategy_key": "global_shock",
+                            "strategy_label": "全球冲击",
+                            "section_key": module_key,
+                            "section_label": section_label,
+                            "label": label,
+                            "component": component,
+                        }
+                    )
+
+            leading = (
+                global_group.get("leading")
+                if isinstance(global_group.get("leading"), dict)
+                else {}
+            )
+            routes = leading.get("routes") if isinstance(leading.get("routes"), dict) else {}
+            leading_labels = {
+                "volatility_repricing": "波动率重定价",
+                "asia_em_transmission": "亚洲/新兴市场传导",
+            }
+
+            def append_leading_leaf(
+                component: dict,
+                *,
+                route_key: str,
+                section_label: str,
+                path: str,
+            ) -> None:
+                nested = component.get("components")
+                if isinstance(nested, list) and nested:
+                    for child_index, child in enumerate(nested):
+                        if isinstance(child, dict):
+                            append_leading_leaf(
+                                child,
+                                route_key=route_key,
+                                section_label=section_label,
+                                path=f"{path}:{child_index}",
+                            )
+                    return
+                label = str(component.get("label") or "").strip()
+                if not label:
+                    return
+                entries.append(
+                    {
+                        "key": f"global_shock:leading:{route_key}:{path}:{label}",
+                        "strategy_key": "global_shock",
+                        "strategy_label": "全球冲击",
+                        "section_key": f"leading_{route_key}",
+                        "section_label": section_label,
+                        "label": label,
+                        "component": component,
+                    }
+                )
+
+            for route_key, section_label in leading_labels.items():
+                route = routes.get(route_key) if isinstance(routes.get(route_key), dict) else {}
+                route_components = route.get("components")
+                market_components = route.get("market_components")
+                combined_components = [
+                    *(route_components if isinstance(route_components, list) else []),
+                    *(market_components if isinstance(market_components, list) else []),
+                ]
+                for component_index, component in enumerate(combined_components):
+                    if isinstance(component, dict):
+                        append_leading_leaf(
+                            component,
+                            route_key=route_key,
+                            section_label=section_label,
+                            path=str(component_index),
+                        )
+            return entries
+
         strategy_sections = [
             ("yellow_vulnerability", "黄色脆弱期", "yellow", "yellow", "黄色条件"),
             ("red_escalation", "红色风险升级", "red", "red", "红色条件"),
@@ -2620,11 +3080,32 @@ class QuantService:
             return bool(raw_state)
         return None
 
-    def get_risk_dashboard_evidence(self, start_date: date, end_date: date) -> dict:
+    @staticmethod
+    def _risk_index_profile(index_code: str | None) -> tuple[str, dict]:
+        normalized = str(index_code or CSI1000_RISK_INDEX_CODE).strip().lower()
+        aliases = {
+            "000852": CSI1000_RISK_INDEX_CODE,
+            "000300": HS300_RISK_INDEX_CODE,
+        }
+        normalized = aliases.get(normalized, normalized)
+        profile = RISK_INDEX_PROFILES.get(normalized)
+        if profile is None:
+            raise ValueError(f"unsupported risk dashboard index: {index_code}")
+        return normalized, profile
+
+    def get_risk_dashboard_evidence(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        index_code: str = CSI1000_RISK_INDEX_CODE,
+    ) -> dict:
         if start_date > end_date:
             raise ValueError("start_date must not be later than end_date")
+        normalized_index_code, profile = self._risk_index_profile(index_code)
         cache_key = (
             f"{RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX}:"
+            f"{normalized_index_code}:"
             f"{start_date.isoformat()}:{end_date.isoformat()}"
         )
         cached = redis_client.get(cache_key)
@@ -2637,12 +3118,12 @@ class QuantService:
                 pass
 
         rows = self._load_risk_dashboard_rows(
-            CSI1000_RISK_INDEX_CODE,
+            normalized_index_code,
             start_date=start_date,
             end_date=end_date,
         )
         candles = self.stock_service.list_index_daily_kline(
-            CSI1000_RISK_INDEX_CODE,
+            normalized_index_code,
             market="cn",
             start_date=start_date,
             end_date=end_date,
@@ -2655,7 +3136,11 @@ class QuantService:
         row_entries: dict[date, dict[str, dict]] = {}
         definitions: dict[str, dict] = {}
         for row in rows:
-            point = self._build_risk_dashboard_point_payload(row, include_components=True)
+            point = self._build_risk_dashboard_point_payload(
+                row,
+                include_components=True,
+                default_scoring_mode=profile["scoring_mode"],
+            )
             trade_date = self._coerce_date(point.get("trade_date"))
             if trade_date is None:
                 continue
@@ -2694,6 +3179,9 @@ class QuantService:
                         "percentile": _to_float(component.get("percentile")),
                         "absolute_threshold": _to_float(component.get("absolute_threshold")),
                         "percentile_threshold": _to_float(component.get("percentile_threshold")),
+                        "score": _to_float(component.get("score")),
+                        "weight": _to_float(component.get("weight")),
+                        "contribution": _to_float(component.get("contribution")),
                         "direction": direction,
                         "matched": matched,
                         "partial": False if matched is None else self._risk_component_is_partial(component, direction),
@@ -2706,6 +3194,9 @@ class QuantService:
             evidence_rows.append({**definition, "cells": cells})
 
         result = {
+            "target_code": normalized_index_code,
+            "target_name": profile["name"],
+            "scoring_mode": profile["scoring_mode"],
             "start_date": start_date,
             "end_date": end_date,
             "dates": dates,
@@ -2721,6 +3212,7 @@ class QuantService:
     def get_risk_dashboard(
         self,
         *,
+        index_code: str = CSI1000_RISK_INDEX_CODE,
         mode: str = "default",
         start_date: date | None = None,
         end_date: date | None = None,
@@ -2730,8 +3222,9 @@ class QuantService:
             raise ValueError("unsupported risk dashboard mode")
         if start_date and end_date and start_date > end_date:
             raise ValueError("start_date must not be later than end_date")
+        normalized_index_code, profile = self._risk_index_profile(index_code)
         cache_key = (
-            f"{RISK_DASHBOARD_CACHE_KEY_PREFIX}:{normalized_mode}:"
+            f"{RISK_DASHBOARD_CACHE_KEY_PREFIX}:{normalized_index_code}:{normalized_mode}:"
             f"{start_date.isoformat() if start_date else 'none'}:"
             f"{end_date.isoformat() if end_date else 'none'}"
         )
@@ -2744,12 +3237,16 @@ class QuantService:
             except json.JSONDecodeError:
                 pass
 
-        rows = self._load_risk_dashboard_rows(CSI1000_RISK_INDEX_CODE)
-        candles = self.stock_service.list_index_daily_kline(CSI1000_RISK_INDEX_CODE, market="cn")
+        rows = self._load_risk_dashboard_rows(normalized_index_code)
+        candles = self.stock_service.list_index_daily_kline(normalized_index_code, market="cn")
         if not rows or not candles:
-            raise RuntimeError("中证1000风险监控数据暂不可用")
+            raise RuntimeError(f"{profile['name']}风险监控数据暂不可用")
         full_points = [
-            self._build_risk_dashboard_point_payload(row, include_components=True)
+            self._build_risk_dashboard_point_payload(
+                row,
+                include_components=True,
+                default_scoring_mode=profile["scoring_mode"],
+            )
             for row in rows
         ]
         available_dates = [
@@ -2758,16 +3255,16 @@ class QuantService:
             if (trade_date := self._coerce_date(point.get("trade_date"))) is not None
         ]
         if not available_dates:
-            raise RuntimeError("中证1000风险监控数据暂不可用")
+            raise RuntimeError(f"{profile['name']}风险监控数据暂不可用")
         latest_date = max(available_dates)
         earliest_date = min(available_dates)
         resolved_end = min(end_date or latest_date, latest_date)
         if normalized_mode == "full":
             resolved_start = start_date or earliest_date
         elif normalized_mode == "custom":
-            resolved_start = start_date or CSI1000_RISK_DEFAULT_START_DATE
+            resolved_start = start_date or profile["default_start_date"]
         else:
-            resolved_start = start_date or CSI1000_RISK_DEFAULT_START_DATE
+            resolved_start = start_date or profile["default_start_date"]
         resolved_start = max(resolved_start, earliest_date)
         if resolved_start > resolved_end:
             raise ValueError("risk dashboard range has no available data")
@@ -2790,9 +3287,19 @@ class QuantService:
             for event in all_events
             if event["start_date"] <= resolved_end and event["end_date"] >= resolved_start
         ]
+        model_version = next(
+            (
+                str(point.get("model_version") or "")
+                for point in reversed(full_points)
+                if str(point.get("model_version") or "")
+            ),
+            "",
+        )
         result = {
-            "target_code": CSI1000_RISK_INDEX_CODE,
-            "target_name": CSI1000_RISK_INDEX_NAME,
+            "target_code": normalized_index_code,
+            "target_name": profile["name"],
+            "scoring_mode": profile["scoring_mode"],
+            "model_version": model_version,
             "range_mode": normalized_mode,
             "start_date": resolved_start,
             "end_date": resolved_end,
@@ -3267,6 +3774,95 @@ class QuantService:
         end_date: date | None = None,
     ) -> dict[str, list[dict]]:
         hedge_scope = self._resolve_us_hedge_proxy_scope(target_code, target_name, "us")
+        put_call_rows_by_date: dict[str, dict] = {}
+        for row in self.stock_service.list_index_us_put_call_ratio_data(
+            start_date=start_date,
+            end_date=end_date,
+        ):
+            trade_date = _date_text(row.get("trade_date"))
+            if trade_date:
+                put_call_rows_by_date[trade_date] = dict(row)
+        option_premium_loader = getattr(self.stock_service, "list_index_us_option_premium_data", None)
+        option_premium_rows = (
+            option_premium_loader(start_date=start_date, end_date=end_date)
+            if callable(option_premium_loader)
+            else []
+        )
+        for row in option_premium_rows:
+            trade_date = _date_text(row.get("trade_date"))
+            if trade_date:
+                put_call_rows_by_date.setdefault(trade_date, {"trade_date": row.get("trade_date")}).update(row)
+        option_product = self._resolve_us_option_price_product(
+            target_code,
+            target_name,
+            "us",
+        )
+        if option_product:
+            product_code, product_name = option_product
+            source_loader = getattr(
+                self.stock_service,
+                "list_index_us_option_price_pc_source_data",
+                None,
+            )
+            source_rows = (
+                source_loader(
+                    product_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                if callable(source_loader)
+                else []
+            )
+            source_by_date = {
+                _date_text(row.get("trade_date")): row
+                for row in source_rows
+                if row.get("trade_date") is not None
+            }
+            price_rows = self._load_precomputed_index_indicator_rows(target_name)
+            for row in price_rows:
+                trade_date_value = row.get("trade_date")
+                if trade_date_value is None:
+                    continue
+                if start_date is not None and trade_date_value < start_date:
+                    continue
+                if end_date is not None and trade_date_value > end_date:
+                    continue
+                trade_date = _date_text(trade_date_value)
+                target = put_call_rows_by_date.setdefault(
+                    trade_date,
+                    {"trade_date": trade_date_value},
+                )
+                target.update({
+                    "option_product_code": product_code,
+                    "option_product_name": product_name,
+                    "current_month_price_put_call_ratio": _to_float(
+                        row.get("option_pc_current_month")
+                    ),
+                    "current_month_contract_month": str(
+                        row.get("option_pc_current_month_contract_month") or ""
+                    ).strip() or None,
+                    "next_month_price_put_call_ratio": _to_float(
+                        row.get("option_pc_next_month")
+                    ),
+                    "next_month_contract_month": str(
+                        row.get("option_pc_next_month_contract_month") or ""
+                    ).strip() or None,
+                    "quarter_1_price_put_call_ratio": _to_float(
+                        row.get("option_pc_quarter_1")
+                    ),
+                    "quarter_1_contract_month": str(
+                        row.get("option_pc_quarter_1_contract_month") or ""
+                    ).strip() or None,
+                    "quarter_2_price_put_call_ratio": _to_float(
+                        row.get("option_pc_quarter_2")
+                    ),
+                    "quarter_2_contract_month": str(
+                        row.get("option_pc_quarter_2_contract_month") or ""
+                    ).strip() or None,
+                })
+                source_row = source_by_date.get(trade_date, {})
+                target["price_value_basis"] = source_row.get("value_basis")
+                target["price_data_source"] = source_row.get("data_source")
         return {
             "us_vix_rows": self.stock_service.list_index_us_vix_daily_data(start_date=start_date, end_date=end_date),
             "us_fear_greed_rows": self.stock_service.list_index_us_fear_greed_daily_data(
@@ -3280,10 +3876,7 @@ class QuantService:
             )
             if hedge_scope
             else [],
-            "us_put_call_rows": self.stock_service.list_index_us_put_call_ratio_data(
-                start_date=start_date,
-                end_date=end_date,
-            ),
+            "us_put_call_rows": [put_call_rows_by_date[key] for key in sorted(put_call_rows_by_date)],
             "us_treasury_yield_rows": self.stock_service.list_index_us_treasury_yield_data(
                 start_date=start_date,
                 end_date=end_date,
@@ -3422,6 +4015,19 @@ class QuantService:
                 "us-put-call-index": _to_float(item.get("index_put_call_ratio")),
                 "us-put-call-equity": _to_float(item.get("equity_put_call_ratio")),
                 "us-put-call-etf": _to_float(item.get("etf_put_call_ratio")),
+                "us-put-call-premium": _to_float(item.get("premium_put_call_ratio")),
+                "us-put-call-price-current": _to_float(
+                    item.get("current_month_price_put_call_ratio")
+                ),
+                "us-put-call-price-next": _to_float(
+                    item.get("next_month_price_put_call_ratio")
+                ),
+                "us-put-call-price-quarter-1": _to_float(
+                    item.get("quarter_1_price_put_call_ratio")
+                ),
+                "us-put-call-price-quarter-2": _to_float(
+                    item.get("quarter_2_price_put_call_ratio")
+                ),
             }
             for item in auxiliary_rows["us_put_call_rows"]
             if item.get("trade_date") is not None
@@ -3484,6 +4090,11 @@ class QuantService:
                     "us-put-call-index": put_call_by_date.get(trade_date, {}).get("us-put-call-index"),
                     "us-put-call-equity": put_call_by_date.get(trade_date, {}).get("us-put-call-equity"),
                     "us-put-call-etf": put_call_by_date.get(trade_date, {}).get("us-put-call-etf"),
+                    "us-put-call-premium": put_call_by_date.get(trade_date, {}).get("us-put-call-premium"),
+                    "us-put-call-price-current": put_call_by_date.get(trade_date, {}).get("us-put-call-price-current"),
+                    "us-put-call-price-next": put_call_by_date.get(trade_date, {}).get("us-put-call-price-next"),
+                    "us-put-call-price-quarter-1": put_call_by_date.get(trade_date, {}).get("us-put-call-price-quarter-1"),
+                    "us-put-call-price-quarter-2": put_call_by_date.get(trade_date, {}).get("us-put-call-price-quarter-2"),
                     "us-yield-3m": treasury_by_date.get(trade_date, {}).get("us-yield-3m"),
                     "us-yield-2y": treasury_by_date.get(trade_date, {}).get("us-yield-2y"),
                     "us-yield-10y": treasury_by_date.get(trade_date, {}).get("us-yield-10y"),
@@ -3620,6 +4231,17 @@ class QuantService:
             "risk_global_shock",
             "risk_global_shock_score",
             "risk_global_shock_mode",
+            "risk_global_raw_leading",
+            "risk_global_raw_leading_mode",
+            "risk_global_leading",
+            "risk_global_leading_score",
+            "risk_global_leading_mode",
+            "risk_global_score",
+            "risk_as_of_at",
+            "risk_decision_trade_date",
+            "risk_overall_score",
+            "risk_base_state",
+            "risk_display_state",
             "risk_strategy_components_json",
         )
         select_parts = [
@@ -3848,6 +4470,42 @@ class QuantService:
                         "index_put_call_ratio": _to_float(row.get("index_put_call_ratio")),
                         "equity_put_call_ratio": _to_float(row.get("equity_put_call_ratio")),
                         "etf_put_call_ratio": _to_float(row.get("etf_put_call_ratio")),
+                        "premium_put_call_ratio": _to_float(row.get("premium_put_call_ratio")),
+                        "total_premium_million_usd": _to_float(row.get("total_premium_million_usd")),
+                        "call_premium_million_usd": _to_float(row.get("call_premium_million_usd")),
+                        "put_premium_million_usd": _to_float(row.get("put_premium_million_usd")),
+                        "premium_rounding_unit_million_usd": _to_float(
+                            row.get("premium_rounding_unit_million_usd")
+                        ),
+                        "premium_value_basis": str(row.get("premium_value_basis") or "").strip() or None,
+                        "option_product_code": str(row.get("option_product_code") or "").strip() or None,
+                        "option_product_name": str(row.get("option_product_name") or "").strip() or None,
+                        "current_month_price_put_call_ratio": _to_float(
+                            row.get("current_month_price_put_call_ratio")
+                        ),
+                        "current_month_contract_month": str(
+                            row.get("current_month_contract_month") or ""
+                        ).strip() or None,
+                        "next_month_price_put_call_ratio": _to_float(
+                            row.get("next_month_price_put_call_ratio")
+                        ),
+                        "next_month_contract_month": str(
+                            row.get("next_month_contract_month") or ""
+                        ).strip() or None,
+                        "quarter_1_price_put_call_ratio": _to_float(
+                            row.get("quarter_1_price_put_call_ratio")
+                        ),
+                        "quarter_1_contract_month": str(
+                            row.get("quarter_1_contract_month") or ""
+                        ).strip() or None,
+                        "quarter_2_price_put_call_ratio": _to_float(
+                            row.get("quarter_2_price_put_call_ratio")
+                        ),
+                        "quarter_2_contract_month": str(
+                            row.get("quarter_2_contract_month") or ""
+                        ).strip() or None,
+                        "price_value_basis": str(row.get("price_value_basis") or "").strip() or None,
+                        "price_data_source": str(row.get("price_data_source") or "").strip() or None,
                     }
                     for row in auxiliary_rows["us_put_call_rows"]
                 ],

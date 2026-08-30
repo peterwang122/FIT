@@ -112,6 +112,24 @@ export interface IndexUsPutCallPoint {
   index_put_call_ratio: number | null
   equity_put_call_ratio: number | null
   etf_put_call_ratio: number | null
+  premium_put_call_ratio: number | null
+  total_premium_million_usd: number | null
+  call_premium_million_usd: number | null
+  put_premium_million_usd: number | null
+  premium_rounding_unit_million_usd: number | null
+  premium_value_basis: string | null
+  option_product_code: string | null
+  option_product_name: string | null
+  current_month_price_put_call_ratio: number | null
+  current_month_contract_month: string | null
+  next_month_price_put_call_ratio: number | null
+  next_month_contract_month: string | null
+  quarter_1_price_put_call_ratio: number | null
+  quarter_1_contract_month: string | null
+  quarter_2_price_put_call_ratio: number | null
+  quarter_2_contract_month: string | null
+  price_value_basis: string | null
+  price_data_source: string | null
 }
 
 export interface IndexCnOptionPutCallPoint {

@@ -200,6 +200,24 @@ class IndexDashboardUsPutCallPointResponse(BaseModel):
     index_put_call_ratio: float | None = None
     equity_put_call_ratio: float | None = None
     etf_put_call_ratio: float | None = None
+    premium_put_call_ratio: float | None = None
+    total_premium_million_usd: float | None = None
+    call_premium_million_usd: float | None = None
+    put_premium_million_usd: float | None = None
+    premium_rounding_unit_million_usd: float | None = None
+    premium_value_basis: str | None = None
+    option_product_code: str | None = None
+    option_product_name: str | None = None
+    current_month_price_put_call_ratio: float | None = None
+    current_month_contract_month: str | None = None
+    next_month_price_put_call_ratio: float | None = None
+    next_month_contract_month: str | None = None
+    quarter_1_price_put_call_ratio: float | None = None
+    quarter_1_contract_month: str | None = None
+    quarter_2_price_put_call_ratio: float | None = None
+    quarter_2_contract_month: str | None = None
+    price_value_basis: str | None = None
+    price_data_source: str | None = None
 
 
 class IndexDashboardCnOptionPutCallPointResponse(BaseModel):
@@ -389,20 +407,65 @@ class IndexDashboardRiskStrategyPointResponse(BaseModel):
     red_escalation: bool | None = None
     red_score: float | None = None
     global_shock: bool | None = None
+    global_raw_leading: bool | None = None
+    global_raw_leading_score: float | None = None
+    global_raw_leading_mode: str | None = None
+    global_leading: bool | None = None
+    global_leading_score: float | None = None
+    global_leading_mode: str | None = None
+    global_leading_trigger_date: date | None = None
+    global_leading_valid_through: date | None = None
+    global_leading_gate_score: float | None = None
+    global_leading_trigger_threshold: float | None = None
+    global_leading_release_threshold: float | None = None
+    global_confirmation_score: float | None = None
     global_score: float | None = None
     global_mode: str | None = None
+    overall_score: float | None = None
+    domestic_vulnerability_score: float | None = None
+    domestic_deterioration_score: float | None = None
+    base_state: str | None = None
+    display_state: str | None = None
+    global_active_modules: list[str] = Field(default_factory=list)
+    as_of_at: str | None = None
+    decision_trade_date: date | None = None
     components: dict = Field(default_factory=dict)
 
 
 class QuantRiskDashboardPointResponse(BaseModel):
     trade_date: date
+    scoring_mode: str = "grouped"
+    model_version: str = ""
     yellow_vulnerability: bool | None = None
     yellow_score: float | None = None
     red_escalation: bool | None = None
     red_score: float | None = None
     global_shock: bool | None = None
+    global_raw_leading: bool | None = None
+    global_raw_leading_score: float | None = None
+    global_raw_leading_mode: str | None = None
+    global_leading: bool | None = None
+    global_leading_score: float | None = None
+    global_leading_mode: str | None = None
+    global_leading_trigger_date: date | None = None
+    global_leading_valid_through: date | None = None
+    global_leading_gate_score: float | None = None
+    global_leading_trigger_threshold: float | None = None
+    global_leading_release_threshold: float | None = None
+    global_confirmation_score: float | None = None
     global_score: float | None = None
     global_mode: str | None = None
+    overall_score: float | None = None
+    domestic_vulnerability_score: float | None = None
+    domestic_deterioration_score: float | None = None
+    domestic_vulnerability_contribution: float | None = None
+    domestic_deterioration_contribution: float | None = None
+    global_contribution: float | None = None
+    base_state: str | None = None
+    display_state: str | None = None
+    global_active_modules: list[str] = Field(default_factory=list)
+    as_of_at: str | None = None
+    decision_trade_date: date | None = None
     composite_score: float | None = None
     risk_level: str | None = None
     risk_level_label: str | None = None
@@ -417,6 +480,15 @@ class QuantRiskStrategySpanResponse(BaseModel):
     release_date: date | None = None
     active_days: int
     mode: str | None = None
+    key_evidence: list[str] = Field(default_factory=list)
+
+
+class QuantRiskStateSpanResponse(BaseModel):
+    display_state: str
+    state_label: str
+    start_date: date
+    end_date: date
+    active_days: int
     key_evidence: list[str] = Field(default_factory=list)
 
 
@@ -439,12 +511,15 @@ class QuantRiskEventResponse(BaseModel):
     first_trigger_date: date
     active_strategies: list[str] = Field(default_factory=list)
     strategy_spans: list[QuantRiskStrategySpanResponse] = Field(default_factory=list)
+    state_spans: list[QuantRiskStateSpanResponse] = Field(default_factory=list)
     drawdowns: list[QuantRiskDrawdownResponse] = Field(default_factory=list)
 
 
 class QuantRiskDashboardResponse(BaseModel):
     target_code: str
     target_name: str
+    scoring_mode: str = "grouped"
+    model_version: str = ""
     range_mode: str
     start_date: date
     end_date: date
@@ -462,6 +537,9 @@ class QuantRiskEvidenceCellResponse(BaseModel):
     percentile: float | None = None
     absolute_threshold: float | None = None
     percentile_threshold: float | None = None
+    score: float | None = None
+    weight: float | None = None
+    contribution: float | None = None
     direction: str | None = None
     matched: bool | None = None
     partial: bool = False
@@ -482,6 +560,9 @@ class QuantRiskEvidenceRowResponse(BaseModel):
 
 
 class QuantRiskEvidenceResponse(BaseModel):
+    target_code: str
+    target_name: str
+    scoring_mode: str = "grouped"
     start_date: date
     end_date: date
     dates: list[date] = Field(default_factory=list)

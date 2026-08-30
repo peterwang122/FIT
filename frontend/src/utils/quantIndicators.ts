@@ -159,6 +159,11 @@ export const US_INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
   'us-put-call-index',
   'us-put-call-equity',
   'us-put-call-etf',
+  'us-put-call-premium',
+  'us-put-call-price-current',
+  'us-put-call-price-next',
+  'us-put-call-price-quarter-1',
+  'us-put-call-price-quarter-2',
   'us-yield-3m',
   'us-yield-2y',
   'us-yield-10y',
@@ -1143,6 +1148,11 @@ function buildIndexQuantFilterFields(
       { key: 'us-put-call-index', group: 'put-call', label: '指数Put/Call' },
       { key: 'us-put-call-equity', group: 'put-call', label: '股票Put/Call' },
       { key: 'us-put-call-etf', group: 'put-call', label: 'ETF Put/Call' },
+      { key: 'us-put-call-premium', group: 'put-call', label: '成交额Put/Call（Optionomics）' },
+      { key: 'us-put-call-price-current', group: 'put-call', label: 'ETF期权价格P/C 当月' },
+      { key: 'us-put-call-price-next', group: 'put-call', label: 'ETF期权价格P/C 下月' },
+      { key: 'us-put-call-price-quarter-1', group: 'put-call', label: 'ETF期权价格P/C 季月1' },
+      { key: 'us-put-call-price-quarter-2', group: 'put-call', label: 'ETF期权价格P/C 季月2' },
     )
   }
   if (options.includeUsTreasuryYield) {
@@ -1340,6 +1350,13 @@ export function buildIndexQuantFilterDataset(
         'us-put-call-index': Number.isFinite(Number(item.index_put_call_ratio)) ? Number(item.index_put_call_ratio) : null,
         'us-put-call-equity': Number.isFinite(Number(item.equity_put_call_ratio)) ? Number(item.equity_put_call_ratio) : null,
         'us-put-call-etf': Number.isFinite(Number(item.etf_put_call_ratio)) ? Number(item.etf_put_call_ratio) : null,
+        'us-put-call-premium': Number.isFinite(Number(item.premium_put_call_ratio))
+          ? Number(item.premium_put_call_ratio)
+          : null,
+        'us-put-call-price-current': toFiniteNullableNumber(item.current_month_price_put_call_ratio),
+        'us-put-call-price-next': toFiniteNullableNumber(item.next_month_price_put_call_ratio),
+        'us-put-call-price-quarter-1': toFiniteNullableNumber(item.quarter_1_price_put_call_ratio),
+        'us-put-call-price-quarter-2': toFiniteNullableNumber(item.quarter_2_price_put_call_ratio),
       },
     ]),
   )
@@ -1654,6 +1671,11 @@ export function buildIndexQuantFilterDataset(
       'us-put-call-index': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-index'] ?? null,
       'us-put-call-equity': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-equity'] ?? null,
       'us-put-call-etf': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-etf'] ?? null,
+      'us-put-call-premium': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-premium'] ?? null,
+      'us-put-call-price-current': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-price-current'] ?? null,
+      'us-put-call-price-next': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-price-next'] ?? null,
+      'us-put-call-price-quarter-1': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-price-quarter-1'] ?? null,
+      'us-put-call-price-quarter-2': usPutCallByDate.get(snapshot.tradeDate)?.['us-put-call-price-quarter-2'] ?? null,
       'us-yield-3m': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-3m'] ?? null,
       'us-yield-2y': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-2y'] ?? null,
       'us-yield-10y': usTreasuryByDate.get(snapshot.tradeDate)?.['us-yield-10y'] ?? null,

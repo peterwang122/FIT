@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import AccountView from '../views/AccountView.vue'
+import BankLiquidityView from '../views/BankLiquidityView.vue'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
 import MacroView from '../views/MacroView.vue'
@@ -31,6 +32,7 @@ export const router = createRouter({
     { path: '/account', component: AccountView, meta: { requiresAuth: true } },
     { path: '/', component: HomeView, meta: { requiresAuth: true } },
     { path: '/macro', component: MacroView, meta: { requiresAuth: true } },
+    { path: '/macro/bank-liquidity', component: BankLiquidityView, meta: { requiresAuth: true } },
     { path: '/stocks', component: StocksView, meta: { requiresAuth: true } },
     { path: '/markets', component: MarketsView, meta: { requiresAuth: true } },
     {
@@ -72,7 +74,8 @@ export const router = createRouter({
       meta: { requiresAuth: true, requiresUser: true },
       children: [
         { path: '', redirect: '/risk/csi1000' },
-        { path: 'csi1000', component: Csi1000RiskView },
+        { path: 'csi1000', component: Csi1000RiskView, props: { indexCode: 'sh000852' } },
+        { path: 'hs300', component: Csi1000RiskView, props: { indexCode: 'sh000300' } },
       ],
     },
     { path: '/progress', component: ProgressView, meta: { requiresAuth: true } },

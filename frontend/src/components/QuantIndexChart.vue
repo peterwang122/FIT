@@ -82,7 +82,16 @@ type PanelKey =
   | 'usCredit'
 type SubPanelKey = Exclude<PanelKey, 'main'>
 type MainOverlayMode = 'ma' | 'boll'
-type UsPutCallMetricKey = 'total' | 'index' | 'equity' | 'etf'
+type UsPutCallMetricKey =
+  | 'total'
+  | 'index'
+  | 'equity'
+  | 'etf'
+  | 'premium'
+  | 'priceCurrent'
+  | 'priceNext'
+  | 'priceQuarter1'
+  | 'priceQuarter2'
 type CnOptionPutCallMetricKey = 'currentMonth' | 'nextMonth' | 'quarter1' | 'quarter2'
 type CnOptionFlowPutCallMetricKey = 'volume' | 'turnover' | 'turnoverCallPut'
 type SelfSentimentMetricKey = 'score' | 'core' | 'derivative'
@@ -428,7 +437,17 @@ const activeBasisKey = ref<BasisMetricKey>('adjusted')
 
 function applySubPanelControlPreference() {
   const preference = loadSubPanelControlPreference(props.preferenceScope, props.symbolCode)
-  activeUsPutCallKey.value = isStoredChoice(preference.usPutCallMetric, ['total', 'index', 'equity', 'etf'])
+  activeUsPutCallKey.value = isStoredChoice(preference.usPutCallMetric, [
+    'total',
+    'index',
+    'equity',
+    'etf',
+    'premium',
+    'priceCurrent',
+    'priceNext',
+    'priceQuarter1',
+    'priceQuarter2',
+  ])
     ? preference.usPutCallMetric
     : 'total'
   activeCnOptionPutCallKey.value = isStoredChoice(
@@ -954,6 +973,11 @@ const usPutCallMetricConfig: Record<UsPutCallMetricKey, { label: string; color: 
   index: { label: '指数Put/Call', color: '#2563eb' },
   equity: { label: '股票Put/Call', color: '#f97316' },
   etf: { label: 'ETF Put/Call', color: '#0f766e' },
+  premium: { label: '成交额Put/Call', color: '#be123c' },
+  priceCurrent: { label: '价格P/C 当月', color: '#7c3aed' },
+  priceNext: { label: '价格P/C 下月', color: '#2563eb' },
+  priceQuarter1: { label: '价格P/C 季月1', color: '#f97316' },
+  priceQuarter2: { label: '价格P/C 季月2', color: '#0f766e' },
 }
 
 const cnOptionPutCallMetricConfig: Record<CnOptionPutCallMetricKey, { label: string; color: string }> = {
@@ -995,14 +1019,18 @@ const usCreditMetricConfig: Record<UsCreditMetricKey, { label: string; color: st
 
 function getUsPutCallMetricValue(item: IndexUsPutCallPoint | undefined, key: UsPutCallMetricKey) {
   if (!item) return null
-  const value =
-    key === 'total'
-      ? item.total_put_call_ratio
-      : key === 'index'
-        ? item.index_put_call_ratio
-        : key === 'equity'
-          ? item.equity_put_call_ratio
-          : item.etf_put_call_ratio
+  const valueByKey: Record<UsPutCallMetricKey, number | null> = {
+    total: item.total_put_call_ratio,
+    index: item.index_put_call_ratio,
+    equity: item.equity_put_call_ratio,
+    etf: item.etf_put_call_ratio,
+    premium: item.premium_put_call_ratio,
+    priceCurrent: item.current_month_price_put_call_ratio,
+    priceNext: item.next_month_price_put_call_ratio,
+    priceQuarter1: item.quarter_1_price_put_call_ratio,
+    priceQuarter2: item.quarter_2_price_put_call_ratio,
+  }
+  const value = valueByKey[key]
   return toNullableNumber(value)
 }
 
@@ -1679,6 +1707,24 @@ const usPutCallPointByDate = computed(
           index: item.index_put_call_ratio,
           equity: item.equity_put_call_ratio,
           etf: item.etf_put_call_ratio,
+          premium: item.premium_put_call_ratio,
+          premiumTotal: item.total_premium_million_usd,
+          premiumCall: item.call_premium_million_usd,
+          premiumPut: item.put_premium_million_usd,
+          premiumRoundingUnit: item.premium_rounding_unit_million_usd,
+          premiumValueBasis: item.premium_value_basis,
+          productCode: item.option_product_code,
+          productName: item.option_product_name,
+          priceCurrent: item.current_month_price_put_call_ratio,
+          priceCurrentMonth: item.current_month_contract_month,
+          priceNext: item.next_month_price_put_call_ratio,
+          priceNextMonth: item.next_month_contract_month,
+          priceQuarter1: item.quarter_1_price_put_call_ratio,
+          priceQuarter1Month: item.quarter_1_contract_month,
+          priceQuarter2: item.quarter_2_price_put_call_ratio,
+          priceQuarter2Month: item.quarter_2_contract_month,
+          priceValueBasis: item.price_value_basis,
+          priceDataSource: item.price_data_source,
         },
       ]),
     ),
@@ -1894,11 +1940,18 @@ const usHedgeLegend = computed(() => [
   },
 ])
 
+const usOptionProductName = computed(
+  () => props.usPutCallPoints.find((item) => item.option_product_name)?.option_product_name ?? 'ETF期权',
+)
+const usOptionProductCode = computed(
+  () => props.usPutCallPoints.find((item) => item.option_product_code)?.option_product_code ?? 'ETF',
+)
+
 const usPutCallLegend = computed(() =>
   (Object.entries(usPutCallMetricConfig) as Array<[UsPutCallMetricKey, { label: string; color: string }]>).map(
     ([key, item]) => ({
       key,
-      label: item.label,
+      label: key.startsWith('price') ? `${usOptionProductCode.value} ${item.label.replace('价格P/C ', '')}` : item.label,
       color: item.color,
       active: activeUsPutCallKey.value === key,
     }),
@@ -2542,6 +2595,24 @@ const activeIndicatorSnapshot = computed(() => {
       index: usPutCallPointByDate.value.get(tradeDate)?.index ?? null,
       equity: usPutCallPointByDate.value.get(tradeDate)?.equity ?? null,
       etf: usPutCallPointByDate.value.get(tradeDate)?.etf ?? null,
+      premium: usPutCallPointByDate.value.get(tradeDate)?.premium ?? null,
+      premiumTotal: usPutCallPointByDate.value.get(tradeDate)?.premiumTotal ?? null,
+      premiumCall: usPutCallPointByDate.value.get(tradeDate)?.premiumCall ?? null,
+      premiumPut: usPutCallPointByDate.value.get(tradeDate)?.premiumPut ?? null,
+      premiumRoundingUnit: usPutCallPointByDate.value.get(tradeDate)?.premiumRoundingUnit ?? null,
+      premiumValueBasis: usPutCallPointByDate.value.get(tradeDate)?.premiumValueBasis ?? null,
+      productCode: usPutCallPointByDate.value.get(tradeDate)?.productCode ?? null,
+      productName: usPutCallPointByDate.value.get(tradeDate)?.productName ?? null,
+      priceCurrent: usPutCallPointByDate.value.get(tradeDate)?.priceCurrent ?? null,
+      priceCurrentMonth: usPutCallPointByDate.value.get(tradeDate)?.priceCurrentMonth ?? null,
+      priceNext: usPutCallPointByDate.value.get(tradeDate)?.priceNext ?? null,
+      priceNextMonth: usPutCallPointByDate.value.get(tradeDate)?.priceNextMonth ?? null,
+      priceQuarter1: usPutCallPointByDate.value.get(tradeDate)?.priceQuarter1 ?? null,
+      priceQuarter1Month: usPutCallPointByDate.value.get(tradeDate)?.priceQuarter1Month ?? null,
+      priceQuarter2: usPutCallPointByDate.value.get(tradeDate)?.priceQuarter2 ?? null,
+      priceQuarter2Month: usPutCallPointByDate.value.get(tradeDate)?.priceQuarter2Month ?? null,
+      priceValueBasis: usPutCallPointByDate.value.get(tradeDate)?.priceValueBasis ?? null,
+      priceDataSource: usPutCallPointByDate.value.get(tradeDate)?.priceDataSource ?? null,
     },
     usTreasury: {
       yield3m: usTreasuryYieldPointByDate.value.get(tradeDate)?.yield3m ?? null,
@@ -2951,11 +3022,38 @@ const summaryCards = computed<SummaryCard[]>(() => {
           {
             key: 'us-put-call',
             title: 'Put/Call',
+            hint: `价格：${indicator.usPutCall.productName || usOptionProductName.value}真实收盘成交；成交量：Cboe；成交额：Optionomics网页展示值`,
             rows: [
               { label: '总Put/Call', value: formatMetric(indicator.usPutCall.total) },
               { label: '指数Put/Call', value: formatMetric(indicator.usPutCall.index) },
               { label: '股票Put/Call', value: formatMetric(indicator.usPutCall.equity) },
               { label: 'ETF Put/Call', value: formatMetric(indicator.usPutCall.etf) },
+              { label: '成交额Put/Call', value: formatMetric(indicator.usPutCall.premium) },
+              {
+                label: `价格P/C 当月${indicator.usPutCall.priceCurrentMonth ? `(${indicator.usPutCall.priceCurrentMonth})` : ''}`,
+                value: formatMetric(indicator.usPutCall.priceCurrent),
+              },
+              {
+                label: `价格P/C 下月${indicator.usPutCall.priceNextMonth ? `(${indicator.usPutCall.priceNextMonth})` : ''}`,
+                value: formatMetric(indicator.usPutCall.priceNext),
+              },
+              {
+                label: `价格P/C 季月1${indicator.usPutCall.priceQuarter1Month ? `(${indicator.usPutCall.priceQuarter1Month})` : ''}`,
+                value: formatMetric(indicator.usPutCall.priceQuarter1),
+              },
+              {
+                label: `价格P/C 季月2${indicator.usPutCall.priceQuarter2Month ? `(${indicator.usPutCall.priceQuarter2Month})` : ''}`,
+                value: formatMetric(indicator.usPutCall.priceQuarter2),
+              },
+              { label: 'Call成交额', value: formatMetricWithSuffix(indicator.usPutCall.premiumCall, 'M美元') },
+              { label: 'Put成交额', value: formatMetricWithSuffix(indicator.usPutCall.premiumPut, 'M美元') },
+              { label: '总成交额', value: formatMetricWithSuffix(indicator.usPutCall.premiumTotal, 'M美元') },
+              {
+                label: '成交额口径',
+                value: indicator.usPutCall.premiumValueBasis
+                  ? `网页展示值（${formatMetric(indicator.usPutCall.premiumRoundingUnit)}M精度）`
+                  : '-',
+              },
             ],
           },
         ]
@@ -4521,7 +4619,7 @@ onBeforeUnmount(() => {
     <div v-if="isSubPanelVisible('usFearGreed')" class="quant-panel"><div class="quant-panel-head"><h3>恐贪指数</h3><div class="quant-legend"><span v-for="item in usFearGreedLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usFearGreedPoints.length" class="muted">当前范围暂无恐贪指数数据</p><div ref="usFearGreedContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
 
     <div v-if="isSubPanelVisible('usHedge')" class="quant-panel"><div class="quant-panel-head"><h3>对冲基金代理</h3><div class="quant-legend"><span v-for="item in usHedgeLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usHedgeProxyPoints.length" class="muted">当前范围暂无对冲基金代理数据</p><div ref="usHedgeContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
-    <div v-if="isSubPanelVisible('usPutCall')" class="quant-panel"><div class="quant-panel-head"><h3>Put/Call</h3><div class="quant-legend"><button v-for="item in usPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectUsPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!usPutCallPoints.length" class="muted">当前范围暂无 Put/Call 数据</p><div ref="usPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
+    <div v-if="isSubPanelVisible('usPutCall')" class="quant-panel"><div class="quant-panel-head"><h3>Put/Call · {{ usOptionProductName }}</h3><div class="quant-legend"><button v-for="item in usPutCallLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectUsPutCallMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!usPutCallPoints.length" class="muted">当前范围暂无 Put/Call 数据</p><div ref="usPutCallContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
     <div v-if="isSubPanelVisible('usTreasury')" class="quant-panel"><div class="quant-panel-head"><h3>美债利差</h3><div class="quant-legend"><span v-for="item in usTreasuryLegend" :key="item.label" class="quant-legend-item"><i :style="{ background: item.color }"></i>{{ item.label }}</span></div></div><p v-if="!usTreasuryYieldPoints.length" class="muted">当前范围暂无美债收益率数据</p><div ref="usTreasuryContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
     <div v-if="isSubPanelVisible('usCredit')" class="quant-panel"><div class="quant-panel-head"><h3>高收益债利差</h3><div class="quant-legend"><button v-for="item in usCreditLegend" :key="item.key" type="button" class="quant-legend-item quant-legend-button" :class="{ 'is-muted': !item.active }" @click="selectUsCreditMetric(item.key)"><i :style="{ background: item.active ? item.color : '#cbd5e1' }"></i>{{ item.label }}</button></div></div><p v-if="!usCreditSpreadPoints.length" class="muted">当前范围暂无高收益债利差数据</p><div ref="usCreditContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div></div>
   </section>

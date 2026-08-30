@@ -1978,6 +1978,92 @@ class StockService:
             if row.get("trade_date") is not None
         ]
 
+    def list_index_us_option_premium_data(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_us_option_premium_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+
+        sql = (
+            f"SELECT "
+            f"`{settings.index_us_option_premium_date_column}` AS trade_date, "
+            f"`{settings.index_us_option_premium_total_column}` AS total_premium_million_usd, "
+            f"`{settings.index_us_option_premium_call_column}` AS call_premium_million_usd, "
+            f"`{settings.index_us_option_premium_put_column}` AS put_premium_million_usd, "
+            f"`{settings.index_us_option_premium_ratio_column}` AS premium_put_call_ratio, "
+            f"`{settings.index_us_option_premium_rounding_column}` AS premium_rounding_unit_million_usd, "
+            f"`{settings.index_us_option_premium_basis_column}` AS premium_value_basis "
+            f"FROM `{table_name}` "
+            f"WHERE 1 = 1"
+        )
+        params: dict[str, object] = {}
+        if start_date:
+            sql += f" AND `{settings.index_us_option_premium_date_column}` >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += f" AND `{settings.index_us_option_premium_date_column}` <= :end_date"
+            params["end_date"] = end_date
+        sql += f" ORDER BY `{settings.index_us_option_premium_date_column}` ASC"
+
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "total_premium_million_usd": _to_float(row.get("total_premium_million_usd")),
+                "call_premium_million_usd": _to_float(row.get("call_premium_million_usd")),
+                "put_premium_million_usd": _to_float(row.get("put_premium_million_usd")),
+                "premium_put_call_ratio": _to_float(row.get("premium_put_call_ratio")),
+                "premium_rounding_unit_million_usd": _to_float(
+                    row.get("premium_rounding_unit_million_usd")
+                ),
+                "premium_value_basis": str(row.get("premium_value_basis") or "").strip() or None,
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
+    def list_index_us_option_price_pc_source_data(
+        self,
+        underlying_code: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        bind = self.db.get_bind()
+        table_name = settings.index_us_option_price_pc_table_name
+        if bind is None or not inspect(bind).has_table(table_name):
+            return []
+        normalized_code = str(underlying_code or "").strip().upper()
+        if normalized_code not in {"SPY", "QQQ"}:
+            return []
+        sql = (
+            f"SELECT trade_date, underlying_code, MIN(underlying_name) AS underlying_name, "
+            f"MIN(value_basis) AS value_basis, "
+            f"GROUP_CONCAT(DISTINCT data_source ORDER BY data_source SEPARATOR ',') AS data_source "
+            f"FROM `{table_name}` WHERE underlying_code = :underlying_code"
+        )
+        params: dict[str, object] = {"underlying_code": normalized_code}
+        if start_date:
+            sql += " AND trade_date >= :start_date"
+            params["start_date"] = start_date
+        if end_date:
+            sql += " AND trade_date <= :end_date"
+            params["end_date"] = end_date
+        sql += " GROUP BY trade_date, underlying_code ORDER BY trade_date ASC"
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "underlying_code": str(row.get("underlying_code") or "").strip().upper(),
+                "underlying_name": str(row.get("underlying_name") or "").strip(),
+                "value_basis": str(row.get("value_basis") or "").strip() or None,
+                "data_source": str(row.get("data_source") or "").strip() or None,
+            }
+            for row in self.db.execute(text(sql), params).mappings().all()
+            if row.get("trade_date") is not None
+        ]
+
     def list_index_us_treasury_yield_data(
         self,
         start_date: date | None = None,

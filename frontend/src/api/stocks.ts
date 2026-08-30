@@ -143,6 +143,7 @@ export async function fetchIndexDashboard(
 
 export async function fetchQuantRiskDashboard(
   options: {
+    indexCode?: string
     mode?: 'default' | 'full' | 'custom'
     startDate?: string
     endDate?: string
@@ -151,6 +152,7 @@ export async function fetchQuantRiskDashboard(
 ) {
   const { data } = await http.get<ApiResponse<QuantRiskDashboardResponse>>('/stocks/quant/risk-dashboard', {
     params: {
+      index_code: options.indexCode ?? 'sh000852',
       mode: options.mode ?? 'default',
       start_date: options.startDate,
       end_date: options.endDate,
@@ -163,12 +165,13 @@ export async function fetchQuantRiskDashboard(
 export async function fetchQuantRiskEvidence(
   startDate: string,
   endDate: string,
+  indexCode = 'sh000852',
   signal?: AbortSignal,
 ) {
   const { data } = await http.get<ApiResponse<QuantRiskEvidenceResponse>>(
     '/stocks/quant/risk-dashboard/evidence',
     {
-      params: { start_date: startDate, end_date: endDate },
+      params: { index_code: indexCode, start_date: startDate, end_date: endDate },
       signal,
     },
   )
