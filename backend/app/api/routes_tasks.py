@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.schemas.task import (
+    ManualDouyinEmotionPayload,
     RootVisibleStrategyResponse,
     ScheduledTaskResponse,
     ScheduledTaskRunResponse,
@@ -193,6 +194,31 @@ def run_task_now(task_id: int, db: Session = Depends(get_db), current_user: User
     except Exception as exc:  # noqa: BLE001
         _handle_task_exception(exc)
     return ApiResponse(data=ScheduledTaskRunResponse.model_validate(item))
+
+
+@router.post("/{task_id}/manual-emotions", response_model=ApiResponse[dict])
+def save_manual_douyin_emotions(
+    task_id: int,
+    payload: ManualDouyinEmotionPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_root_user),
+):
+    service = TaskService(db)
+    try:
+        item = service.save_manual_douyin_emotions(
+            task_id=task_id,
+            owner_user_id=current_user.id,
+            emotion_date=payload.emotion_date,
+            values={
+                "sz50_emotion": payload.sz50_emotion,
+                "hs300_emotion": payload.hs300_emotion,
+                "zz500_emotion": payload.zz500_emotion,
+                "zz1000_emotion": payload.zz1000_emotion,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        _handle_task_exception(exc)
+    return ApiResponse(data=item)
 
 
 @router.get("/{task_id}/runs", response_model=ApiResponse[list[ScheduledTaskRunResponse]])

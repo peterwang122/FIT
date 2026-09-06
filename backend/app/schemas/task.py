@@ -35,6 +35,14 @@ class TaskTogglePayload(BaseModel):
     enabled: bool
 
 
+class ManualDouyinEmotionPayload(BaseModel):
+    emotion_date: date
+    sz50_emotion: float = Field(ge=0, le=100)
+    hs300_emotion: float = Field(ge=0, le=100)
+    zz500_emotion: float = Field(ge=0, le=100)
+    zz1000_emotion: float = Field(ge=0, le=100)
+
+
 class ScheduledTaskRunResponse(BaseModel):
     id: int
     scheduled_task_id: int

@@ -2,7 +2,16 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { createTask, deleteTask, fetchTaskRuns, fetchTasks, runTaskNow, toggleTask, updateTask } from '../api/tasks'
+import {
+  createTask,
+  deleteTask,
+  fetchTaskRuns,
+  fetchTasks,
+  runTaskNow,
+  saveManualDouyinEmotions,
+  toggleTask,
+  updateTask,
+} from '../api/tasks'
 import { fetchQuantStrategies, fetchSymbols } from '../api/stocks'
 import { useAuthStore } from '../stores/auth'
 import type { QuantStrategyConfig } from '../types/quant'
@@ -48,6 +57,14 @@ type CollectionTargetOption = {
   calendarDaily?: boolean
   fixedTargetCode?: string
   fixedTargetName?: string
+}
+
+type ManualEmotionDraft = {
+  emotion_date: string
+  sz50_emotion: string
+  hs300_emotion: string
+  zz500_emotion: string
+  zz1000_emotion: string
 }
 
 const COLLECTION_TARGET_OPTIONS: CollectionTargetOption[] = [
@@ -489,6 +506,17 @@ function extractErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+function currentShanghaiDate() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
+}
+
 function getCollectionOption(key: CollectionCollectorKey | null | undefined) {
   return COLLECTION_TARGET_OPTIONS.find((item) => item.value === key) ?? COLLECTION_TARGET_OPTIONS[0]
 }
@@ -544,11 +572,19 @@ const loading = ref(false)
 const runsLoading = ref(false)
 const saving = ref(false)
 const actionLoading = ref(false)
+const manualEmotionSaving = ref(false)
 const error = ref('')
 const message = ref('')
 const isCreating = ref(false)
 const sourceStrategy = ref<SourceStrategyInfo | null>(null)
 const draft = reactive<TaskDraft>(createDefaultDraft('notification'))
+const manualEmotionDraft = reactive<ManualEmotionDraft>({
+  emotion_date: currentShanghaiDate(),
+  sz50_emotion: '',
+  hs300_emotion: '',
+  zz500_emotion: '',
+  zz1000_emotion: '',
+})
 
 const collectionKeyword = ref('')
 const selectedCollectionName = ref('')
@@ -557,6 +593,27 @@ const collectionSuggestionLoading = ref(false)
 const collectionSuggestions = ref<StockSymbol[]>([])
 
 const currentTask = computed(() => tasks.value.find((item) => item.id === selectedTaskId.value) ?? null)
+const isCurrentDouyinEmotionTask = computed(
+  () =>
+    !isCreating.value &&
+    currentTask.value?.task_type === 'collection' &&
+    inferCollectorKey(currentTask.value) === 'douyin_coze_emotion_daily' &&
+    authStore.isRoot,
+)
+const canSaveManualEmotion = computed(() => {
+  if (!isCurrentDouyinEmotionTask.value || !manualEmotionDraft.emotion_date || manualEmotionSaving.value) return false
+  return [
+    manualEmotionDraft.sz50_emotion,
+    manualEmotionDraft.hs300_emotion,
+    manualEmotionDraft.zz500_emotion,
+    manualEmotionDraft.zz1000_emotion,
+  ].every((rawValue) => {
+    const normalizedValue = String(rawValue ?? '').trim()
+    if (!normalizedValue) return false
+    const value = Number(normalizedValue)
+    return Number.isFinite(value) && value >= 0 && value <= 100
+  })
+})
 const canCreateCollection = computed(() => authStore.isRoot)
 const canCreateNotification = computed(() => authStore.isAuthenticated && !authStore.isGuest)
 const targetEmail = computed(() => authStore.user?.email ?? null)
@@ -898,6 +955,29 @@ async function runCurrentTask() {
   }
 }
 
+async function submitManualEmotion() {
+  if (!currentTask.value || !canSaveManualEmotion.value) return
+  manualEmotionSaving.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const result = await saveManualDouyinEmotions(currentTask.value.id, {
+      emotion_date: manualEmotionDraft.emotion_date,
+      sz50_emotion: Number(manualEmotionDraft.sz50_emotion),
+      hs300_emotion: Number(manualEmotionDraft.hs300_emotion),
+      zz500_emotion: Number(manualEmotionDraft.zz500_emotion),
+      zz1000_emotion: Number(manualEmotionDraft.zz1000_emotion),
+    })
+    message.value = result.summary
+    await loadRuns(currentTask.value.id)
+    await loadTasks(currentTask.value.id)
+  } catch (submitError) {
+    error.value = extractErrorMessage(submitError, '四项情绪指标手工录入失败')
+  } finally {
+    manualEmotionSaving.value = false
+  }
+}
+
 async function removeCurrentTask() {
   if (!currentTask.value) return
   actionLoading.value = true
@@ -1066,6 +1146,45 @@ onUnmounted(() => {
             </select>
           </label>
         </div>
+
+        <section v-if="isCurrentDouyinEmotionTask" class="task-form-section task-manual-emotion-section">
+          <div class="progress-section-head">
+            <div class="progress-section-copy">
+              <h3>手工录入四大指数情绪</h3>
+              <p class="muted">指定日期后填写四项原始值；提交会覆盖该日旧值，并立即重算当日量化指数看板。</p>
+            </div>
+            <span class="account-readonly-tag">0–100</span>
+          </div>
+
+          <div class="task-manual-emotion-grid">
+            <label class="quant-field">
+              <span class="quant-field-label">指标日期</span>
+              <input v-model="manualEmotionDraft.emotion_date" class="input" type="date" />
+            </label>
+            <label class="quant-field">
+              <span class="quant-field-label">上证50</span>
+              <input v-model="manualEmotionDraft.sz50_emotion" class="input" type="number" min="0" max="100" step="0.01" placeholder="0–100" />
+            </label>
+            <label class="quant-field">
+              <span class="quant-field-label">沪深300</span>
+              <input v-model="manualEmotionDraft.hs300_emotion" class="input" type="number" min="0" max="100" step="0.01" placeholder="0–100" />
+            </label>
+            <label class="quant-field">
+              <span class="quant-field-label">中证500</span>
+              <input v-model="manualEmotionDraft.zz500_emotion" class="input" type="number" min="0" max="100" step="0.01" placeholder="0–100" />
+            </label>
+            <label class="quant-field">
+              <span class="quant-field-label">中证1000</span>
+              <input v-model="manualEmotionDraft.zz1000_emotion" class="input" type="number" min="0" max="100" step="0.01" placeholder="0–100" />
+            </label>
+          </div>
+
+          <div class="progress-hero-actions task-manual-emotion-actions">
+            <button class="btn primary" :disabled="!canSaveManualEmotion" @click="submitManualEmotion()">
+              {{ manualEmotionSaving ? '保存并重算中...' : '保存四项指标并重算' }}
+            </button>
+          </div>
+        </section>
 
         <div v-if="draft.task_type === 'collection'" class="task-form-section">
           <div v-if="sourceStrategy" class="task-source-banner">

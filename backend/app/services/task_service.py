@@ -26,6 +26,12 @@ US_INDEX_ALL_CODE = "ALL_US_INDEX"
 HK_INDEX_ALL_NAME = "港股指数全市场"
 US_INDEX_ALL_NAME = "美股指数全市场"
 DOUYIN_POLL_TERMINAL_SUMMARY_PREFIX = "已发现当天新作品"
+MANUAL_DOUYIN_EMOTION_FIELDS = {
+    "sz50_emotion": "上证50",
+    "hs300_emotion": "沪深300",
+    "zz500_emotion": "中证500",
+    "zz1000_emotion": "中证1000",
+}
 
 
 class TaskRunSkipped(RuntimeError):
@@ -1151,6 +1157,7 @@ class TaskService:
         if task.task_type != "collection":
             return False
         config = task.config_json or {}
+        data_written = False
         try:
             collector_key = self._normalize_collector_key(
                 config.get("collector_key"),
@@ -1552,6 +1559,42 @@ class TaskService:
             "updated_at": item.updated_at,
         }
 
+    def _has_active_task_run(self, task_id: int) -> bool:
+        return (
+            self.db.query(ScheduledTaskRun)
+            .filter(
+                ScheduledTaskRun.scheduled_task_id == task_id,
+                ScheduledTaskRun.status.in_(("queued", "running")),
+            )
+            .first()
+            is not None
+        )
+
+    def _latest_task_run(self, task_id: int) -> ScheduledTaskRun | None:
+        return (
+            self.db.query(ScheduledTaskRun)
+            .filter(ScheduledTaskRun.scheduled_task_id == task_id)
+            .order_by(ScheduledTaskRun.id.desc())
+            .first()
+        )
+
+    def _reconcile_stale_last_run_state(self, item: ScheduledTask) -> bool:
+        if str(item.last_run_status or "").strip().lower() not in {"queued", "running"}:
+            return False
+        if self._has_active_task_run(item.id):
+            return False
+
+        latest_run = self._latest_task_run(item.id)
+        if latest_run is None or str(latest_run.status or "").strip().lower() in {"queued", "running"}:
+            return False
+
+        item.last_run_at = latest_run.finished_at or latest_run.started_at or latest_run.scheduled_for
+        item.last_run_status = latest_run.status
+        item.last_run_summary = latest_run.summary or ""
+        item.last_error_message = latest_run.error_message or ""
+        self.db.add(item)
+        return True
+
     def list_root_visible_strategies(
         self,
         *,
@@ -1729,10 +1772,17 @@ class TaskService:
             .order_by(ScheduledTask.updated_at.desc(), ScheduledTask.id.desc())
             .all()
         )
+        reconciled = False
+        for item in items:
+            reconciled = self._reconcile_stale_last_run_state(item) or reconciled
+        if reconciled:
+            self.db.commit()
         return [self._serialize_task(item) for item in items]
 
     def get_task(self, task_id: int, owner_user_id: int) -> dict:
         item = self._get_owned_task(task_id, owner_user_id)
+        if self._reconcile_stale_last_run_state(item):
+            self.db.commit()
         return self._serialize_task(item)
 
     def create_task(self, payload: dict, current_user: User) -> dict:
@@ -1905,6 +1955,122 @@ class TaskService:
         task = self._get_owned_task(task_id, owner_user_id)
         run = self._create_run(task, trigger_type="manual", scheduled_for=self._now())
         return self._serialize_run(run)
+
+    def save_manual_douyin_emotions(
+        self,
+        *,
+        task_id: int,
+        owner_user_id: int,
+        emotion_date: date,
+        values: dict[str, float],
+    ) -> dict:
+        task = self._get_owned_task(task_id, owner_user_id)
+        collector_key = str((task.config_json or {}).get("collector_key") or "").strip().lower()
+        if task.task_type != "collection" or collector_key != "douyin_coze_emotion_daily":
+            raise ValueError("manual emotion entry is only available for the Douyin emotion task")
+
+        normalized_values: dict[str, float] = {}
+        for field_name in MANUAL_DOUYIN_EMOTION_FIELDS:
+            raw_value = values.get(field_name)
+            if raw_value is None:
+                raise ValueError("all four emotion values are required")
+            normalized_value = round(float(raw_value), 2)
+            if not 0 <= normalized_value <= 100:
+                raise ValueError("emotion values must be between 0 and 100")
+            normalized_values[field_name] = normalized_value
+
+        run = self._create_run(task, trigger_type="manual", scheduled_for=self._now())
+        started_at = self._now()
+        self._mark_run_state(run, task, status="running", started_at=started_at)
+        source_file = f"manual:task-{task.id}"
+        rows = [
+            {
+                "emotion_date": emotion_date,
+                "index_name": index_name,
+                "emotion_value": normalized_values[field_name],
+                "source_file": source_file,
+                "data_source": "manual_task_center",
+            }
+            for field_name, index_name in MANUAL_DOUYIN_EMOTION_FIELDS.items()
+        ]
+
+        try:
+            self.db.execute(
+                text(
+                    """
+                    INSERT INTO excel_index_emotion_daily (
+                        emotion_date,
+                        index_name,
+                        emotion_value,
+                        source_file,
+                        data_source
+                    ) VALUES (
+                        :emotion_date,
+                        :index_name,
+                        :emotion_value,
+                        :source_file,
+                        :data_source
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        emotion_value = VALUES(emotion_value),
+                        source_file = VALUES(source_file),
+                        data_source = VALUES(data_source),
+                        updated_at = CURRENT_TIMESTAMP
+                    """
+                ),
+                rows,
+            )
+            self.db.commit()
+            data_written = True
+            recompute_result = run_daily_collection_request(
+                collector_key="quant_index_daily",
+                endpoint="/collect-quant-index-daily",
+                payload={"target_date": emotion_date.isoformat()},
+            )
+            if str(recompute_result.get("status") or "").strip().lower() == "deduplicated":
+                raise RuntimeError("量化指数看板正在重算，请稍后再次提交以确认指定日期已重算")
+            self.stock_service.clear_index_emotions_cache()
+            self.quant_service.clear_index_dashboard_cache("cn")
+        except Exception as exc:
+            self.db.rollback()
+            error_message = (
+                f"四项情绪值已写入，但 {emotion_date.isoformat()} 看板重算失败：{exc}"
+                if data_written
+                else f"{emotion_date.isoformat()} 四项情绪值写入失败：{exc}"
+            )
+            self._mark_run_state(
+                run,
+                task,
+                status="failed",
+                summary=error_message,
+                error_message=error_message,
+                finished_at=self._now(),
+            )
+            raise RuntimeError(error_message) from exc
+
+        summary = (
+            f"手工录入完成：日期 {emotion_date.isoformat()}，"
+            f"上证50={normalized_values['sz50_emotion']:.2f}，"
+            f"沪深300={normalized_values['hs300_emotion']:.2f}，"
+            f"中证500={normalized_values['zz500_emotion']:.2f}，"
+            f"中证1000={normalized_values['zz1000_emotion']:.2f}；"
+            "已重算当日量化指数看板。"
+        )
+        self._mark_run_state(
+            run,
+            task,
+            status="success",
+            summary=summary,
+            error_message="",
+            finished_at=self._now(),
+        )
+        self.db.refresh(run)
+        return {
+            "emotion_date": emotion_date,
+            "values": normalized_values,
+            "run": self._serialize_run(run),
+            "summary": summary,
+        }
 
     def _scheduled_run_exists(self, task_id: int, scheduled_for: datetime) -> bool:
         return (
@@ -2932,6 +3098,7 @@ class TaskService:
                         f"定盘利率来源日 {source_dates.get('frr') or '-'}，"
                         f"日终回购来源日 {source_dates.get('closing_repo') or '-'}，"
                         f"中债来源日 {source_dates.get('chinabond') or '-'}，"
+                        f"政策利率来源日 {source_dates.get('policy_rate') or '-'}，"
                         f"央行公告来源日 {source_dates.get('pbc') or '-'}。"
                     )
                 else:

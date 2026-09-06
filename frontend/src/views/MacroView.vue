@@ -525,6 +525,7 @@ onMounted(loadDashboard)
       <nav class="macro-subnav" aria-label="宏观页面导航">
         <RouterLink to="/macro" class="active">综合指标</RouterLink>
         <RouterLink to="/macro/bank-liquidity">银行流动性</RouterLink>
+        <RouterLink to="/macro/market-regime">市场环境</RouterLink>
       </nav>
 
       <header class="macro-header">

@@ -73,6 +73,20 @@ body::before {
   background: linear-gradient(180deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.8));
 }
 
+.task-manual-emotion-section {
+  margin-bottom: 18px;
+}
+
+.task-manual-emotion-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  gap: 12px;
+}
+
+.task-manual-emotion-actions {
+  margin-top: 0;
+}
+
 .task-email-banner {
   display: flex;
   align-items: center;
@@ -3413,6 +3427,10 @@ button.quant-scan-event-item {
 @media (max-width: 900px) {
   .site-header {
     flex-wrap: wrap;
+  }
+
+  .task-manual-emotion-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .brand-lockup {

@@ -530,6 +530,7 @@ def ensure_runtime_tables() -> None:
             market_scope="cn_stock",
             enforce_schedule_time=True,
             enforce_name=True,
+            enforce_enabled=True,
         )
         _ensure_default_collection_task(
             db,
@@ -832,6 +833,7 @@ def _ensure_default_collection_task(
     market_scope: str = "cn_stock",
     enforce_schedule_time: bool = False,
     enforce_name: bool = False,
+    enforce_enabled: bool = False,
     legacy_names: tuple[str, ...] = (),
     legacy_collector_keys: tuple[str, ...] = (),
 ) -> ScheduledTask:
@@ -861,6 +863,9 @@ def _ensure_default_collection_task(
                 db.add(item)
             if enforce_name and item.name != name:
                 item.name = name
+                db.add(item)
+            if enforce_enabled and not item.enabled:
+                item.enabled = True
                 db.add(item)
             return item
 

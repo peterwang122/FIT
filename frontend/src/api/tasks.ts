@@ -1,5 +1,13 @@
 import { http } from './client'
-import type { RootVisibleStrategy, RootVisibleStrategyQuery, ScheduledTask, ScheduledTaskRun, TaskPayload } from '../types/tasks'
+import type {
+  ManualDouyinEmotionPayload,
+  ManualDouyinEmotionResult,
+  RootVisibleStrategy,
+  RootVisibleStrategyQuery,
+  ScheduledTask,
+  ScheduledTaskRun,
+  TaskPayload,
+} from '../types/tasks'
 
 interface ApiResponse<T> {
   code: number
@@ -39,6 +47,14 @@ export async function toggleTask(taskId: number, enabled: boolean) {
 
 export async function runTaskNow(taskId: number) {
   const { data } = await http.post<ApiResponse<ScheduledTaskRun>>(`/tasks/${taskId}/run`)
+  return data.data
+}
+
+export async function saveManualDouyinEmotions(taskId: number, payload: ManualDouyinEmotionPayload) {
+  const { data } = await http.post<ApiResponse<ManualDouyinEmotionResult>>(
+    `/tasks/${taskId}/manual-emotions`,
+    payload,
+  )
   return data.data
 }
 

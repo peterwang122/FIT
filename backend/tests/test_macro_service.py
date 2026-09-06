@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from math import sqrt
 
 import pytest
@@ -123,6 +123,9 @@ def test_get_bank_liquidity_serializes_official_dates_and_coverage():
             "closing_repo_available_at": None,
             "chinabond_available_at": None,
             "pbc_available_at": None,
+            "reverse_repo_7d_policy_source_date": date(2026, 8, 27),
+            "reverse_repo_7d_policy_available_at": datetime(2026, 8, 27, 9, 20),
+            "source_url_reverse_repo_7d_policy": "https://www.pbc.gov.cn/policy/index.html",
             "components_json": '{"method":"prior_midrank_percentile_v1"}',
             "sources_json": None,
         }
@@ -150,6 +153,8 @@ def test_get_bank_liquidity_serializes_official_dates_and_coverage():
 
     assert dashboard["latest"]["trade_date"] == "2026-08-28"
     assert dashboard["latest"]["components_json"]["method"] == "prior_midrank_percentile_v1"
+    assert dashboard["latest"]["reverse_repo_7d_policy_source_date"] == "2026-08-27"
+    assert dashboard["latest"]["reverse_repo_7d_policy_available_at"] == "2026-08-27 09:20:00"
     assert dashboard["coverage"]["score_start"] == "2026-08-28"
     assert dashboard["coverage"]["latest_complete_date"] == "2026-08-28"
     assert dashboard["monthly_tool_points"][0]["period_end"] == "2026-07-31"

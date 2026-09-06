@@ -5,6 +5,7 @@ import BankLiquidityView from '../views/BankLiquidityView.vue'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
 import MacroView from '../views/MacroView.vue'
+import MarketRegimeView from '../views/MarketRegimeView.vue'
 import MarketsView from '../views/MarketsView.vue'
 import ProgressView from '../views/ProgressView.vue'
 import QuantIndexView from '../views/QuantIndexView.vue'
@@ -33,6 +34,7 @@ export const router = createRouter({
     { path: '/', component: HomeView, meta: { requiresAuth: true } },
     { path: '/macro', component: MacroView, meta: { requiresAuth: true } },
     { path: '/macro/bank-liquidity', component: BankLiquidityView, meta: { requiresAuth: true } },
+    { path: '/macro/market-regime', component: MarketRegimeView, meta: { requiresAuth: true } },
     { path: '/stocks', component: StocksView, meta: { requiresAuth: true } },
     { path: '/markets', component: MarketsView, meta: { requiresAuth: true } },
     {

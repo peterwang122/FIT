@@ -65,6 +65,9 @@ export interface BankLiquidityDailyPoint {
   r001_weighted_pct: number | null
   r007_weighted_pct: number | null
   reverse_repo_7d_policy_rate_pct: number | null
+  reverse_repo_7d_policy_source_date: string | null
+  reverse_repo_7d_policy_available_at: string | null
+  source_url_reverse_repo_7d_policy: string | null
   bank_bond_aaa_1y_yield_pct: number | null
   cgb_1y_yield_pct: number | null
   factor_fdr007_policy_spread_bp: number | null

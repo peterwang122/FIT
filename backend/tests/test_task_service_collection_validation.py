@@ -1587,6 +1587,7 @@ def test_bank_liquidity_success_summary_lists_score_and_source_dates(monkeypatch
                         "closing_repo": "2026-08-28",
                         "chinabond": "2026-08-28",
                         "pbc": "2026-08-28",
+                        "policy_rate": "2026-08-27",
                     },
                 },
             },
@@ -1598,4 +1599,5 @@ def test_bank_liquidity_success_summary_lists_score_and_source_dates(monkeypatch
     assert result["status"] == "success"
     assert "紧张度 42.12" in result["summary"]
     assert "日终回购来源日 2026-08-28" in result["summary"]
+    assert "政策利率来源日 2026-08-27" in result["summary"]
     assert "央行公告来源日 2026-08-28" in result["summary"]

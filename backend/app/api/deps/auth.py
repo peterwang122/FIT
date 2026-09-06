@@ -7,6 +7,15 @@ from app.models.user import User
 from app.services.auth_service import AuthService
 
 
+def _detach_user_snapshot(db: Session, user: User) -> User:
+    # Session refreshes may commit and expire ORM attributes. Reload every
+    # column before detaching so route handlers can safely use the user after
+    # the authentication checkout is released.
+    db.refresh(user)
+    db.expunge(user)
+    return user
+
+
 def get_current_user(
     request: Request,
     response: Response,
@@ -22,7 +31,7 @@ def get_current_user(
             service.logout(session_id, response)
             raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
         service.refresh_session(session_id, response, user, request)
-        return user
+        return _detach_user_snapshot(db, user)
     finally:
         # Authentication finishes before the route handler. Release its checkout
         # now so chart requests do not hold a connection through route processing.
@@ -44,7 +53,7 @@ def get_current_user_optional(
             service.logout(session_id, response)
             return None
         service.refresh_session(session_id, response, user, request)
-        return user
+        return _detach_user_snapshot(db, user)
     finally:
         db.close()
 

@@ -31,28 +31,60 @@ const scoreSeries: BankLiquiditySeriesDefinition[] = [
   { key: 'pct_bank_funding_spread', label: '银行负债压力', color: '#dc2626', unit: '分', precision: 1, sourceDateKey: 'chinabond_source_date', availableAtKey: 'chinabond_available_at', sourceUrlKey: 'source_url_chinabond', sourceLabel: '中债收益率曲线' },
 ]
 
+const SCORE_SERIES_STORAGE_KEY = 'fit:bank-liquidity:score-series'
+const allScoreSeriesKeys = scoreSeries.map((item) => String(item.key))
+
+function loadSelectedScoreSeriesKeys() {
+  if (typeof window === 'undefined') return [...allScoreSeriesKeys]
+  try {
+    const storedValue = window.localStorage.getItem(SCORE_SERIES_STORAGE_KEY)
+    if (!storedValue) return [...allScoreSeriesKeys]
+    const parsedValue: unknown = JSON.parse(storedValue)
+    if (!Array.isArray(parsedValue)) return [...allScoreSeriesKeys]
+    const storedKeys = new Set(parsedValue.filter((item): item is string => typeof item === 'string'))
+    const validKeys = allScoreSeriesKeys.filter((key) => storedKeys.has(key))
+    return validKeys.length ? validKeys : [...allScoreSeriesKeys]
+  } catch {
+    return [...allScoreSeriesKeys]
+  }
+}
+
+const selectedScoreSeriesKeys = ref<string[]>(loadSelectedScoreSeriesKeys())
+
+function updateSelectedScoreSeriesKeys(keys: string[]) {
+  const requestedKeys = new Set(keys)
+  const validKeys = allScoreSeriesKeys.filter((key) => requestedKeys.has(key))
+  if (!validKeys.length) return
+  selectedScoreSeriesKeys.value = validKeys
+  try {
+    window.localStorage.setItem(SCORE_SERIES_STORAGE_KEY, JSON.stringify(validKeys))
+  } catch {
+    // The chart selection still works when browser storage is unavailable.
+  }
+}
+
 const rateSeries: BankLiquiditySeriesDefinition[] = [
-  { key: 'fdr001_pct', label: 'FDR001', color: '#2563eb', unit: '%', precision: 3, sourceDateKey: 'frr_source_date', availableAtKey: 'frr_available_at', sourceUrlKey: 'source_url_frr', sourceLabel: '中国货币网定盘利率' },
-  { key: 'fdr007_pct', label: 'FDR007', color: '#0f766e', unit: '%', precision: 3 },
-  { key: 'fr007_pct', label: 'FR007', color: '#7c3aed', unit: '%', precision: 3 },
-  { key: 'reverse_repo_7d_policy_rate_pct', label: '7天逆回购政策利率', color: '#b45309', unit: '%', precision: 3, sourceDateKey: 'pbc_source_date', availableAtKey: 'pbc_available_at', sourceUrlKey: 'source_url_pbc', sourceLabel: '人民银行公开市场公告' },
-  { key: 'dr001_weighted_pct', label: 'DR001日终', color: '#0284c7', unit: '%', precision: 3, sourceDateKey: 'closing_repo_source_date', availableAtKey: 'closing_repo_available_at', sourceUrlKey: 'source_url_closing_repo', sourceLabel: '中国货币网全日回购' },
-  { key: 'dr007_weighted_pct', label: 'DR007日终', color: '#16a34a', unit: '%', precision: 3 },
-  { key: 'r001_weighted_pct', label: 'R001日终', color: '#e11d48', unit: '%', precision: 3 },
-  { key: 'r007_weighted_pct', label: 'R007日终', color: '#ea580c', unit: '%', precision: 3 },
+  { key: 'fdr001_pct', label: 'FDR001', color: '#2563eb', unit: '%', precision: 4, sourceDateKey: 'frr_source_date', availableAtKey: 'frr_available_at', sourceUrlKey: 'source_url_frr', sourceLabel: '中国货币网定盘利率' },
+  { key: 'fdr007_pct', label: 'FDR007', color: '#0f766e', unit: '%', precision: 4 },
+  { key: 'fr007_pct', label: 'FR007', color: '#7c3aed', unit: '%', precision: 4 },
+  { key: 'reverse_repo_7d_policy_rate_pct', label: '7天逆回购政策利率', color: '#b45309', unit: '%', precision: 4, sourceDateKey: 'reverse_repo_7d_policy_source_date', availableAtKey: 'reverse_repo_7d_policy_available_at', sourceUrlKey: 'source_url_reverse_repo_7d_policy', sourceLabel: '政策利率原始公告' },
+  { key: 'dr001_weighted_pct', label: 'DR001日终', color: '#0284c7', unit: '%', precision: 4, sourceDateKey: 'closing_repo_source_date', availableAtKey: 'closing_repo_available_at', sourceUrlKey: 'source_url_closing_repo', sourceLabel: '中国货币网全日回购' },
+  { key: 'dr007_weighted_pct', label: 'DR007日终', color: '#16a34a', unit: '%', precision: 4 },
+  { key: 'r001_weighted_pct', label: 'R001日终', color: '#e11d48', unit: '%', precision: 4 },
+  { key: 'r007_weighted_pct', label: 'R007日终', color: '#ea580c', unit: '%', precision: 4 },
 ]
 
 const operationSeries: BankLiquiditySeriesDefinition[] = [
-  { key: 'reverse_repo_net_cny', label: '当日净投放', color: '#0f766e', type: 'histogram', unit: '亿元', precision: 0, sourceDateKey: 'pbc_source_date', availableAtKey: 'pbc_available_at', sourceUrlKey: 'source_url_pbc', sourceLabel: '人民银行公开市场公告' },
-  { key: 'reverse_repo_injection_cny', label: '投放', color: '#2563eb', unit: '亿元', precision: 0 },
-  { key: 'reverse_repo_maturity_cny', label: '到期', color: '#dc2626', unit: '亿元', precision: 0 },
-  { key: 'reverse_repo_net_5d_cny', label: '5日累计', color: '#7c3aed', unit: '亿元', precision: 0 },
-  { key: 'reverse_repo_net_20d_cny', label: '20日累计', color: '#b45309', unit: '亿元', precision: 0 },
+  { key: 'reverse_repo_net_cny', label: '当日净投放', color: '#0f766e', type: 'histogram', unit: '亿元', precision: 2, sourceDateKey: 'pbc_source_date', availableAtKey: 'pbc_available_at', sourceUrlKey: 'source_url_pbc', sourceLabel: '人民银行公开市场公告' },
+  { key: 'reverse_repo_injection_cny', label: '投放', color: '#2563eb', unit: '亿元', precision: 2 },
+  { key: 'reverse_repo_maturity_cny', label: '到期', color: '#dc2626', unit: '亿元', precision: 2 },
+  { key: 'reverse_repo_net_5d_cny', label: '5日累计', color: '#7c3aed', unit: '亿元', precision: 2 },
+  { key: 'reverse_repo_net_20d_cny', label: '20日累计', color: '#b45309', unit: '亿元', precision: 2 },
 ]
 
 const fundingSeries: BankLiquiditySeriesDefinition[] = [
-  { key: 'bank_bond_aaa_1y_yield_pct', label: '1Y AAA银行普通债', color: '#2563eb', unit: '%', precision: 3, sourceDateKey: 'chinabond_source_date', availableAtKey: 'chinabond_available_at', sourceUrlKey: 'source_url_chinabond', sourceLabel: '中债收益率曲线' },
-  { key: 'cgb_1y_yield_pct', label: '1Y国债', color: '#0f766e', unit: '%', precision: 3 },
+  { key: 'bank_bond_aaa_1y_yield_pct', label: '1Y AAA银行普通债', color: '#2563eb', unit: '%', precision: 4, sourceDateKey: 'chinabond_source_date', availableAtKey: 'chinabond_available_at', sourceUrlKey: 'source_url_chinabond', sourceLabel: '中债收益率曲线' },
+  { key: 'cgb_1y_yield_pct', label: '1Y国债', color: '#0f766e', unit: '%', precision: 4 },
   { key: 'factor_bank_funding_spread_bp', label: '银行负债利差', color: '#dc2626', unit: 'bp', precision: 1, priceScaleId: 'left' },
 ]
 
@@ -150,7 +182,7 @@ function formatScore(value: number | null | undefined) {
 }
 
 function formatRate(value: number | null | undefined) {
-  return value == null || !Number.isFinite(value) ? '-' : `${value.toFixed(3)}%`
+  return value == null || !Number.isFinite(value) ? '-' : `${value.toFixed(4)}%`
 }
 
 function formatBp(value: number | null | undefined) {
@@ -158,13 +190,15 @@ function formatBp(value: number | null | undefined) {
 }
 
 function formatYi(value: number | null | undefined) {
-  return value == null || !Number.isFinite(value) ? '-' : `${(value / 100_000_000).toFixed(0)}亿元`
+  if (value == null || !Number.isFinite(value)) return '-'
+  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value / 100_000_000)}亿元`
 }
 
 function formatSignedYi(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return '-'
   const yi = value / 100_000_000
-  return `${yi > 0 ? '+' : ''}${yi.toFixed(0)}亿元`
+  const formatted = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(yi)
+  return `${yi > 0 ? '+' : ''}${formatted}亿元`
 }
 
 function statusClass(state: string | null | undefined) {
@@ -198,6 +232,7 @@ onMounted(loadDashboard)
       <nav class="macro-subnav" aria-label="宏观页面导航">
         <RouterLink to="/macro">综合指标</RouterLink>
         <RouterLink to="/macro/bank-liquidity" class="active">银行流动性</RouterLink>
+        <RouterLink to="/macro/market-regime">市场环境</RouterLink>
       </nav>
 
       <header class="liquidity-header">
@@ -270,6 +305,9 @@ onMounted(loadDashboard)
             :points="chartPoints"
             :series="chartConfig.series"
             :visible-start-date="visibleStartDate"
+            :selectable="activeView === 'score'"
+            :selected-keys="selectedScoreSeriesKeys"
+            @update:selected-keys="updateSelectedScoreSeriesKeys"
           />
         </section>
 

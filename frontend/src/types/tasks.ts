@@ -111,6 +111,21 @@ export interface TaskTogglePayload {
   enabled: boolean
 }
 
+export interface ManualDouyinEmotionPayload {
+  emotion_date: string
+  sz50_emotion: number
+  hs300_emotion: number
+  zz500_emotion: number
+  zz1000_emotion: number
+}
+
+export interface ManualDouyinEmotionResult {
+  emotion_date: string
+  values: Omit<ManualDouyinEmotionPayload, 'emotion_date'>
+  run: ScheduledTaskRun
+  summary: string
+}
+
 export interface RootVisibleStrategy {
   id: number
   name: string

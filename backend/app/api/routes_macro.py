@@ -6,9 +6,26 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.common import ApiResponse
 from app.services.macro_service import MacroService
+from app.schemas.market_regime import MarketRegimeResponse, RegimeIndex
+from app.services.market_regime_service import get_market_regime
 
 
 router = APIRouter()
+
+
+@router.get("/market-regime", response_model=ApiResponse[MarketRegimeResponse])
+def get_market_regime_dashboard(
+    index_code: RegimeIndex = Query(default="sh000852"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+):
+    try:
+        payload = get_market_regime(index_code, start_date, end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ApiResponse(data=payload)
 
 
 @router.get("/dashboard", response_model=ApiResponse[dict])

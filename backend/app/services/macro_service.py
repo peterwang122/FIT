@@ -118,6 +118,9 @@ class MacroService:
                         dr001_weighted_pct, dr007_weighted_pct,
                         r001_weighted_pct, r007_weighted_pct,
                         reverse_repo_7d_policy_rate_pct,
+                        reverse_repo_7d_policy_source_date,
+                        reverse_repo_7d_policy_available_at,
+                        source_url_reverse_repo_7d_policy,
                         bank_bond_aaa_1y_yield_pct, cgb_1y_yield_pct,
                         factor_fdr007_policy_spread_bp,
                         factor_overnight_pressure_bp,
@@ -310,12 +313,14 @@ class MacroService:
             "closing_repo_source_date",
             "chinabond_source_date",
             "pbc_source_date",
+            "reverse_repo_7d_policy_source_date",
         }
         datetime_keys = {
             "frr_available_at",
             "closing_repo_available_at",
             "chinabond_available_at",
             "pbc_available_at",
+            "reverse_repo_7d_policy_available_at",
             "published_at",
         }
         text_keys = {
@@ -330,6 +335,7 @@ class MacroService:
             "source_url_closing_repo",
             "source_url_chinabond",
             "source_url_pbc",
+            "source_url_reverse_repo_7d_policy",
         }
         json_keys = {"components_json", "sources_json"}
         for key, value in list(payload.items()):

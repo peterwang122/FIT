@@ -13,28 +13,71 @@ CONDA = Path("/Users/wanghequan/miniconda3/bin/conda")
 NODE = Path("/Users/wanghequan/miniconda3/envs/FIT/bin/node")
 NPM = Path("/Users/wanghequan/miniconda3/envs/FIT/bin/npm")
 NPM_CLI = Path("/Users/wanghequan/miniconda3/envs/FIT/lib/node_modules/npm/bin/npm-cli.js")
+WAIT_FOR_TCP = REPO_ROOT / "scripts" / "wait_for_tcp.py"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+
+
+def wait_for_tcp(endpoints: list[str], command: list[str]) -> list[str]:
+    return [
+        str(PYTHON),
+        str(WAIT_FOR_TCP),
+        "--timeout",
+        "900",
+        *endpoints,
+        "--",
+        *command,
+    ]
 
 
 SERVICES = {
     "api": {
         "label": "com.fit.api",
-        "args": [str(PYTHON), "-m", "uvicorn", "app.main:app", "--port", "8000"],
+        "args": wait_for_tcp(
+            ["127.0.0.1:3306", "127.0.0.1:6379"],
+            [str(PYTHON), "-m", "uvicorn", "app.main:app", "--port", "8000"],
+        ),
         "cwd": BACKEND_ROOT,
     },
     "worker": {
         "label": "com.fit.worker",
-        "args": [str(PYTHON), "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info"],
+        "args": wait_for_tcp(
+            ["127.0.0.1:3306", "127.0.0.1:6379"],
+            [
+                str(PYTHON),
+                "-m",
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "worker",
+                "--loglevel=info",
+                "--concurrency=4",
+                "--prefetch-multiplier=1",
+            ],
+        ),
         "cwd": BACKEND_ROOT,
     },
     "beat": {
         "label": "com.fit.beat",
-        "args": [str(PYTHON), "-m", "celery", "-A", "app.workers.celery_app", "beat", "--loglevel=info"],
+        "args": wait_for_tcp(
+            ["127.0.0.1:3306", "127.0.0.1:6379"],
+            [
+                str(PYTHON),
+                "-m",
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "beat",
+                "--loglevel=info",
+            ],
+        ),
         "cwd": BACKEND_ROOT,
     },
     "frontend": {
         "label": "com.fit.frontend",
-        "args": [str(NODE), str(NPM_CLI), "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"],
+        "args": wait_for_tcp(
+            ["127.0.0.1:8000"],
+            [str(NODE), str(NPM_CLI), "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"],
+        ),
         "cwd": FRONTEND_ROOT,
     },
 }
@@ -59,24 +102,31 @@ def plist_payload(name: str, service: dict) -> dict:
     }
 
 
-def install(service_name: str) -> Path:
+def install(service_name: str, *, write_only: bool = False) -> Path:
     service = SERVICES[service_name]
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     plist_path = LAUNCH_AGENTS / f"{service['label']}.plist"
     with plist_path.open("wb") as file:
         plistlib.dump(plist_payload(service_name, service), file)
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
-    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    if not write_only:
+        subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
     return plist_path
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install macOS launchd services for FIT.")
+    parser.add_argument(
+        "--write-only",
+        action="store_true",
+        help="Write plist files without reloading services.",
+    )
     parser.add_argument("services", nargs="*", choices=sorted(SERVICES), default=sorted(SERVICES))
     args = parser.parse_args()
     for service_name in args.services:
-        plist_path = install(service_name)
-        print(f"installed {service_name}: {plist_path}")
+        plist_path = install(service_name, write_only=args.write_only)
+        action = "wrote" if args.write_only else "installed"
+        print(f"{action} {service_name}: {plist_path}")
     return 0
 
 
