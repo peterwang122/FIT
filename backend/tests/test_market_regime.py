@@ -205,3 +205,67 @@ def test_failed_publication_keeps_previous_snapshot(publication):
     with pytest.raises(ValueError, match="Invalid OHLC"):
         publish(inputs, target)
     assert target.read_bytes() == original
+
+
+def test_publication_breadth_and_strategy_dates_are_independent(publication):
+    publish, inputs, target, manifest = publication
+    data = json.loads(manifest.read_text())
+    data["breadth_as_of"] = "2026-09-04"
+    manifest.write_text(json.dumps(data))
+    publish(inputs, target)
+    result = json.loads(target.read_text())
+    assert result["breadth_as_of"] == "2026-09-04"
+    assert result["strategy_evaluation_end"] == "2026-03-13"
+    assert result["series"]["sh000852"]["points"][-1]["traded"] == 0
+
+
+def test_publication_rejects_inputs_changed_since_calculation(publication):
+    publish, inputs, target, manifest = publication
+    publish(inputs, target)
+    original = target.read_bytes()
+    data = json.loads(manifest.read_text())
+    data["input_sha256"] = {"sh000852.json": "obsolete"}
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="recompute before publication"):
+        publish(inputs, target)
+    assert target.read_bytes() == original
+
+
+def test_api_preserves_rules_horizons_and_filters_gaps(report):
+    data = payload()
+    series = data["series"]["sh000852"]
+    series["points"][0].update(pause_streak=2, pause_met=True, full_streak=0, full_met=False, coverage_pct=90)
+    series["points"][-1].update(missing_reasons=["insufficient_coverage"], coverage_pct=59)
+    series["coverage_gaps"] = [{"start": "2026-09-04", "end": "2026-09-04", "days": 1,
+                                "min_coverage_pct": 59, "max_coverage_pct": 59, "reasons": ["insufficient_coverage"]}]
+    series["events"] = [{"start": "2026-03-13", "end": "2026-03-13", "days": 1, "closed": False,
+                          "drawdown_5d_pct": -7, "upside_60d_pct": 3}]
+    report.write_text(json.dumps(data))
+    result = service.get_market_regime()
+    assert result.points[0].pause_streak == 2 and result.points[0].pause_met is True
+    assert result.coverage_gaps[0].days == 1
+    assert result.latest.missing_reasons == ["insufficient_coverage"]
+    assert result.events[0].drawdown_5d_pct == -7 and result.events[0].upside_60d_pct == 3
+    assert not service.get_market_regime(end_date=date(2026, 3, 13)).coverage_gaps
+
+
+def test_gap_aggregation_uses_observed_sessions_and_recovers(publication):
+    script = Path(__file__).resolve().parents[2] / "scripts/research/publish_market_regime.py"
+    gaps = runpy.run_path(str(script))["coverage_gaps"]([
+        point("2015-04-13"),
+        point("2015-04-14", state="unavailable", coverage_pct=59.8, missing_reasons=["insufficient_coverage"]),
+        point("2015-04-17", state="unavailable", coverage_pct=55, missing_reasons=["insufficient_coverage"]),
+        point("2015-04-20"),
+        point("2015-04-21", state="unavailable", coverage_pct=None, missing_reasons=["breadth_history_missing"]),
+    ])
+    assert len(gaps) == 2 and gaps[0]["days"] == 2
+    assert gaps[0]["min_coverage_pct"] == 55 and gaps[0]["max_coverage_pct"] == 59.8
+    assert gaps[1]["min_coverage_pct"] is None
+
+
+def test_available_state_with_low_coverage_is_rejected(report):
+    data = payload()
+    data["series"]["sh000852"]["points"][0]["eligible"] = 599
+    report.write_text(json.dumps(data))
+    with pytest.raises(RuntimeError):
+        service.get_market_regime()

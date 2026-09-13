@@ -170,6 +170,50 @@ def test_calendar_daily_collection_runs_when_market_is_closed():
     assert task.last_scheduled_date == date(2026, 6, 28)
 
 
+def test_weekday_forex_collection_runs_when_us_market_is_closed():
+    task = _make_task(1, "us_index")
+    task.name = "汇率18时盘中更新"
+    task.schedule_time = "18:00"
+    task.config_json = {"collector_key": "forex_intraday"}
+    db = _FakeSession(tasks=[task])
+    service = TaskService(db)
+    service.market_calendar = _ClosedMarketCalendar()
+    service._now = lambda: datetime(2026, 9, 7, 18, 0)
+
+    run_ids = service.enqueue_due_task_runs()
+
+    assert run_ids == [1]
+    assert db.runs[0].status == "queued"
+    assert db.runs[0].scheduled_for == datetime(2026, 9, 7, 18, 0)
+    assert task.last_scheduled_date == date(2026, 9, 7)
+
+
+def test_weekday_forex_collection_does_not_create_weekend_run():
+    task = _make_task(1, "us_index")
+    task.name = "美元指数18时盘中更新"
+    task.schedule_time = "18:00"
+    task.config_json = {"collector_key": "usd_index_intraday"}
+    db = _FakeSession(tasks=[task])
+    service = TaskService(db)
+    service.market_calendar = _ClosedMarketCalendar()
+    service._now = lambda: datetime(2026, 9, 12, 18, 0)
+
+    assert service.enqueue_due_task_runs() == []
+    assert db.runs == []
+
+
+def test_weekday_forex_next_run_skips_weekend():
+    task = _make_task(1, "us_index")
+    task.name = "汇率日更"
+    task.schedule_time = "09:10"
+    task.config_json = {"collector_key": "forex_daily"}
+    service = TaskService(_FakeSession(tasks=[task]))
+    service.market_calendar = _ClosedMarketCalendar()
+    service._now = lambda: datetime(2026, 9, 11, 10, 0)
+
+    assert service._compute_next_run_at(task) == datetime(2026, 9, 14, 9, 10)
+
+
 def test_douyin_polling_next_run_uses_window_and_next_calendar_day():
     task = _make_task(1, "cn_stock")
     task.schedule_time = "19:00"

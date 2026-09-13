@@ -811,6 +811,54 @@ def test_forex_probe_requires_all_seven_configured_pairs():
 
 
 @pytest.mark.parametrize(
+    "collector_key",
+    ["forex_daily", "forex_intraday", "usd_index_daily", "usd_index_intraday"],
+)
+def test_forex_collectors_use_beijing_weekday_scheduling(collector_key):
+    assert task_service_module.COLLECTION_TASK_DEFINITIONS[collector_key]["weekday_daily"] is True
+
+
+@pytest.mark.parametrize("collector_key", ["forex_intraday", "usd_index_intraday"])
+def test_intraday_forex_validation_uses_current_beijing_date_on_us_holiday(collector_key):
+    task = _make_collection_task(collector_key, market_scope="us_index")
+    task.schedule_time = "18:00"
+    service = TaskService(_FakeSession())
+    service.market_calendar = _FixedMarketCalendar(
+        date(2026, 9, 7),
+        trading=False,
+        previous_date=date(2026, 9, 4),
+    )
+
+    target = service._collection_target_trade_date_for_task(
+        collector_key,
+        task,
+        datetime(2026, 9, 7, 18, 0),
+    )
+
+    assert target == date(2026, 9, 7)
+
+
+@pytest.mark.parametrize("collector_key", ["forex_daily", "usd_index_daily"])
+def test_morning_forex_validation_keeps_latest_completed_us_trade_date(collector_key):
+    task = _make_collection_task(collector_key, market_scope="us_index")
+    task.schedule_time = "09:10"
+    service = TaskService(_FakeSession())
+    service.market_calendar = _FixedMarketCalendar(
+        date(2026, 9, 6),
+        trading=False,
+        previous_date=date(2026, 9, 4),
+    )
+
+    target = service._collection_target_trade_date_for_task(
+        collector_key,
+        task,
+        datetime(2026, 9, 7, 9, 10),
+    )
+
+    assert target == date(2026, 9, 4)
+
+
+@pytest.mark.parametrize(
     ("collector_key", "expected_endpoint", "target_count", "expected_label"),
     [
         (

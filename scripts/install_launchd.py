@@ -56,6 +56,26 @@ SERVICES = {
         ),
         "cwd": BACKEND_ROOT,
     },
+    "wechat_worker": {
+        "label": "com.fit.wechat-worker",
+        "args": wait_for_tcp(
+            ["127.0.0.1:3306", "127.0.0.1:6379"],
+            [
+                str(PYTHON),
+                "-m",
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "worker",
+                "--loglevel=info",
+                "--queues=wechat-miniapp",
+                "--hostname=wechat-miniapp@%h",
+                "--concurrency=1",
+                "--prefetch-multiplier=1",
+            ],
+        ),
+        "cwd": BACKEND_ROOT,
+    },
     "beat": {
         "label": "com.fit.beat",
         "args": wait_for_tcp(

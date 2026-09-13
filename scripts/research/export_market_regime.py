@@ -27,12 +27,60 @@ def save(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
 
 
+def extend_hfq_breadth(total, calendar, out):
+    # Calculate each source's moving averages independently, then join aggregates.
+    cutoff = "2026-03-13"
+    following = calendar[calendar > cutoff]
+    if following.empty:
+        return total, []
+    first = calendar.get_loc(following[0])
+    warmup = str(calendar[max(0, first - 119)])
+    end = str(calendar[-1])
+    codes = fetch("SELECT DISTINCT stock_code FROM stock_hfq_daily_data "
+                  "WHERE trade_date>=:start AND trade_date<=:end ORDER BY stock_code",
+                  {"start": following[0], "end": end})
+    if not codes:
+        raise ValueError("No current adjusted history available")
+    extension = None
+    audit = []
+    for start in range(0, len(codes), 80):
+        subset = [row["stock_code"] for row in codes[start:start + 80]]
+        placeholders = ",".join(f":c{i}" for i in range(len(subset)))
+        rows = fetch("SELECT stock_code AS prefixed_code,trade_date,close_price,volume,data_source "
+                     f"FROM stock_hfq_daily_data WHERE stock_code IN ({placeholders}) "
+                     "AND trade_date>=:warmup AND trade_date<=:end ORDER BY stock_code,trade_date",
+                     {**{f"c{i}": code for i, code in enumerate(subset)}, "warmup": warmup, "end": end})
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            continue
+        frame["trade_date"] = frame.trade_date.astype(str)
+        part = stock_breadth_parts(frame, calendar[calendar >= warmup])
+        extension = part if extension is None else extension.add(part, fill_value=0)
+        audit.append({"codes": subset, "rows": len(rows), "sources": frame.data_source.value_counts().to_dict(),
+                      "first": frame.trade_date.min(), "last": frame.trade_date.max()})
+        print("current hfq breadth", min(start + 80, len(codes)), "/", len(codes), flush=True)
+    if extension is None:
+        raise ValueError("No adjusted prices returned")
+    dates = extension.index[(extension.index > cutoff) & extension.observed.gt(0)]
+    if dates.empty:
+        raise ValueError("No adjusted observations after legacy cutoff")
+    replace = extension.index[extension.index > cutoff]
+    total.loc[replace, extension.columns] = extension.loc[replace]
+    extension.to_csv(out / "breadth-hfq-extension.csv", index_label="date")
+    save(out / "breadth-hfq-extension-audit.json", {"warmup_start": warmup, "batches": audit})
+    return total, [{"table": "stock_hfq_daily_data", "start": dates[0], "end": dates[-1],
+                    "note": "真实后复权日线，单独预热120日；未获取的股票不填价格，覆盖率按日保留。"}]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--breadth", action="store_true")
     parser.add_argument("--legacy-hfq", action="store_true")
+    parser.add_argument("--refresh-hfq", action="store_true", help="Extend legacy aggregates with current adjusted history")
     args = parser.parse_args()
+    if args.refresh_hfq and not (args.legacy_hfq and args.breadth):
+        parser.error("--refresh-hfq requires --breadth --legacy-hfq")
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
     for code in ("sh000001", "sh000300", "sh000852", "sh000985", "sz399106"):
@@ -92,9 +140,22 @@ def main():
     for file in sorted(batches.glob("*.csv")):
         part = pd.read_csv(file, index_col="date")
         total = part if total is None else total.add(part, fill_value=0)
+    if total is None:
+        raise ValueError("No breadth batches available")
+    total = total.reindex(calendar, fill_value=0)
+    sources = []
+    if args.legacy_hfq:
+        observed = total.index[total.observed.gt(0)]
+        sources = [{"table": "stock_data", "start": observed[0], "end": observed[-1],
+                    "note": "旧采集器后复权历史，完整市场交易日窗口；停牌与原始缺口尚未逐股区分。"}]
+    if args.refresh_hfq:
+        total, extra_sources = extend_hfq_breadth(total, calendar, out)
+        sources.extend(extra_sources)
     for w in (40, 60, 80, 120):
         total[f"breadth{w}"] = total[f"above{w}"] / total[f"valid{w}"].replace(0, float("nan")) * 100
     total.to_csv(out / ("breadth-legacy-hfq.csv" if args.legacy_hfq else "breadth-raw.csv"), index_label="date")
+    if args.legacy_hfq:
+        save(out / "breadth-provenance.json", {"sources": sources})
     print("BREADTH COMPLETE", len(total), flush=True)
 
 

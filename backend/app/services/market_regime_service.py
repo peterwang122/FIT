@@ -41,7 +41,10 @@ def get_market_regime(
         schema_version=report.schema_version, generated_at=report.generated_at,
         rule_name=report.rule_name, index_code=index_code, index_name=series.index_name,
         breadth_as_of=report.breadth_as_of, notes=report.notes,
+        strategy_evaluation_end=report.strategy_evaluation_end, breadth_sources=report.breadth_sources,
         history_start=series.points[0].date if series.points else None,
         history_end=series.points[-1].date if series.points else None,
         latest=points[-1] if points else None, points=points, events=events,
+        coverage_gaps=[gap for gap in series.coverage_gaps
+                       if points and gap.end >= points[0].date and gap.start <= points[-1].date],
     )

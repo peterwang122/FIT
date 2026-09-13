@@ -31,6 +31,21 @@ def write_json(path, value):
     path.write_text(json.dumps(clean(value), ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")
 
 
+def write_csv(path, records):
+    frame = pd.DataFrame(records)
+    for column in frame.columns:
+        if any(isinstance(value, (list, dict)) for value in frame[column]):
+            frame[column] = frame[column].map(lambda value: json.dumps(clean(value), ensure_ascii=False))
+    frame.to_csv(path, index=False)
+
+
+def breadth_end(breadth):
+    available = breadth.index[breadth["traded"].gt(0) & breadth["breadth120"].notna()]
+    if available.empty:
+        raise ValueError("No adjusted breadth observations available")
+    return str(available[-1])
+
+
 def prices_from(path):
     frame = pd.DataFrame(json.loads(path.read_text()))
     for key in ("open", "close", "high", "low"):
@@ -48,6 +63,7 @@ def main():
     out.mkdir(exist_ok=True)
     breadth_file = "breadth-legacy-hfq.csv" if args.legacy_hfq else "breadth-raw.csv"
     breadth = pd.read_csv(inputs / breadth_file, index_col="date")
+    breadth_as_of = breadth_end(breadth)
     manifests = {f.name: hashlib.sha256(f.read_bytes()).hexdigest()
                  for f in inputs.glob("sh*.json")}
     manifests[breadth_file] = hashlib.sha256((inputs / breadth_file).read_bytes()).hexdigest()
@@ -60,8 +76,8 @@ def main():
             key = index + "_" + rule.name
             all_points[key] = points
             events = episodes(points, prices)
-            pd.DataFrame(points).to_csv(out / f"{key}-daily.csv", index=False)
-            pd.DataFrame(events).to_csv(out / f"{key}-events.csv", index=False)
+            write_csv(out / f"{key}-daily.csv", points)
+            write_csv(out / f"{key}-events.csv", events)
             for label, start, end in (("2005-2023", "2005-01-01", "2023-12-31"),
                                       ("2024+", "2024-01-01", "9999")):
                 sample = [r for r in points if start <= r["date"] <= end]
@@ -88,7 +104,7 @@ def main():
     prices = [{"date": str(r["trade_date"]), **{k: float(r[k]) for k in ("open", "high", "low", "close")}}
               for r in data["prices"] if str(r["trade_date"]) >= "2025-01-01"]
     if args.legacy_hfq:
-        prices = [r for r in prices if r["date"] <= "2026-03-13"]
+        prices = [r for r in prices if r["date"] <= breadth_as_of]
     comparison, detailed = [], {}
     for label, config, sell in (("original", data["original"], .5),
                                 ("high39_half_exit", data["combined"], .5),
@@ -120,11 +136,16 @@ def main():
     write_json(out / "strategy-details.json", detailed)
     pd.DataFrame(comparison).to_csv(out / "strategy-comparison.csv", index=False)
     write_json(out / "history-summary.json", history)
+    provenance_file = inputs / "breadth-provenance.json"
+    provenance = json.loads(provenance_file.read_text()) if provenance_file.exists() else {}
+    if provenance_file.exists():
+        manifests[provenance_file.name] = hashlib.sha256(provenance_file.read_bytes()).hexdigest()
     write_json(out / "manifest.json", {"rules": rule_manifest(), "input_sha256": manifests,
         "strategy_inputs_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "code_sha256": hashlib.sha256((Path(__file__).parent / "market_regime.py").read_bytes()).hexdigest(),
         "breadth_kind": "legacy_hfq_observed_stocks" if args.legacy_hfq else "unadjusted_observed_stock_proxy",
-        "strategy_evaluation_end": prices[-1]["date"], "production_approved": False})
+        "strategy_evaluation_end": prices[-1]["date"], "breadth_as_of": breadth_as_of,
+        "breadth_sources": provenance.get("sources", []), "production_approved": False})
     preview = {index: [{**r, **{k: row[k] for k in ("open", "high", "low")}}
                         for r, row in zip(all_points[index + "_balanced"], prices_from(inputs / f"{index}.json").to_dict("records"))
                         if r["date"] >= "2024-01-01"] for index in ("sh000852", "sh000985")}

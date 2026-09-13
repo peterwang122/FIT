@@ -8,6 +8,7 @@ celery==5.5.3
 redis==6.4.0
 httpx==0.28.1
 python-dotenv==1.1.1
+pypinyin>=0.50,<1
 flower==2.0.1
 pandas-market-calendars>=4.4,<6
 alibabacloud-dypnsapi20170525==1.2.1

@@ -112,6 +112,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "requires_target": False,
         "endpoint": "/collect-forex-daily",
         "accept_previous_trading_day": True,
+        "weekday_daily": True,
     },
     "forex_intraday": {
         "label": "汇率18时盘中更新",
@@ -119,6 +120,8 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-forex-intraday",
+        "weekday_daily": True,
+        "validate_current_local_date": True,
     },
     "usd_index_daily": {
         "label": "美元指数日更",
@@ -127,6 +130,7 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "requires_target": False,
         "endpoint": "/collect-usd-index-daily",
         "accept_previous_trading_day": True,
+        "weekday_daily": True,
     },
     "usd_index_intraday": {
         "label": "美元指数18时盘中更新",
@@ -134,6 +138,8 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "target_type": None,
         "requires_target": False,
         "endpoint": "/collect-usd-index-intraday",
+        "weekday_daily": True,
+        "validate_current_local_date": True,
     },
     "futures_daily": {
         "label": "中金所期货日更",
@@ -1153,6 +1159,18 @@ class TaskService:
         definition = COLLECTION_TASK_DEFINITIONS.get(str(collector_key).strip().lower())
         return bool(definition and definition.get("calendar_daily"))
 
+    def _is_weekday_daily_collection(self, collector_key: str | None) -> bool:
+        if not collector_key:
+            return False
+        definition = COLLECTION_TASK_DEFINITIONS.get(str(collector_key).strip().lower())
+        return bool(definition and definition.get("weekday_daily"))
+
+    def _uses_current_local_date_validation(self, collector_key: str | None) -> bool:
+        if not collector_key:
+            return False
+        definition = COLLECTION_TASK_DEFINITIONS.get(str(collector_key).strip().lower())
+        return bool(definition and definition.get("validate_current_local_date"))
+
     def _is_manual_only_task(self, task: ScheduledTask) -> bool:
         if task.task_type != "collection":
             return False
@@ -1187,6 +1205,23 @@ class TaskService:
         except ValueError:
             return False
         return self._is_calendar_daily_collection(collector_key)
+
+    def _is_weekday_daily_task(self, task: ScheduledTask) -> bool:
+        if task.task_type != "collection":
+            return False
+        config = task.config_json or {}
+        try:
+            collector_key = self._normalize_collector_key(
+                config.get("collector_key"),
+                task.market_scope,
+                config.get("target_type"),
+                config.get("target_code") or config.get("stock_code"),
+                config.get("target_name"),
+                task.name,
+            )
+        except ValueError:
+            return False
+        return self._is_weekday_daily_collection(collector_key)
 
     def _polling_window_for_task(
         self,
@@ -1314,6 +1349,8 @@ class TaskService:
         if self._is_manual_only_task(task):
             return None
         if not task.enabled:
+            return None
+        if self._is_weekday_daily_task(task) and now.weekday() >= 5:
             return None
 
         if self._uses_internal_polling(task):
@@ -1488,6 +1525,17 @@ class TaskService:
             now = self._now()
             candidate = datetime.combine(now.date(), time(hour=hour, minute=minute))
             return candidate if candidate > now else candidate + timedelta(days=1)
+        if self._is_weekday_daily_task(item):
+            hour, minute = self._parse_schedule_parts(item.schedule_time)
+            now = self._now()
+            run_date = now.date()
+            candidate = datetime.combine(run_date, time(hour=hour, minute=minute))
+            if run_date.weekday() < 5 and candidate > now:
+                return candidate
+            run_date += timedelta(days=1)
+            while run_date.weekday() >= 5:
+                run_date += timedelta(days=1)
+            return datetime.combine(run_date, time(hour=hour, minute=minute))
         market_scope = self._effective_task_market_scope(item)
         return self._compute_next_run_at_for_scope(market_scope, item.schedule_time)
 
@@ -2109,6 +2157,14 @@ class TaskService:
                 created_run_ids.append(run.id)
                 continue
 
+            if self._is_weekday_daily_task(task):
+                run = self._create_run(task, trigger_type="schedule", scheduled_for=scheduled_for)
+                task.last_scheduled_date = now.date()
+                self.db.add(task)
+                self.db.commit()
+                created_run_ids.append(run.id)
+                continue
+
             market_scope = self._effective_task_market_scope(task)
             market_reference_date = self.market_calendar.current_market_date(market_scope, now)
             if not self.market_calendar.is_trading_day(market_scope, market_reference_date):
@@ -2306,7 +2362,7 @@ class TaskService:
         return lagged_date
 
     def _collection_target_trade_date(self, collector_key: str, reference_dt: datetime | None = None) -> date:
-        if self._is_calendar_daily_collection(collector_key):
+        if self._is_calendar_daily_collection(collector_key) or self._uses_current_local_date_validation(collector_key):
             reference = reference_dt or self._now()
             localized = (
                 reference.replace(tzinfo=SHANGHAI_TZ)
@@ -2332,8 +2388,15 @@ class TaskService:
         task: ScheduledTask,
         reference_dt: datetime | None = None,
     ) -> date:
-        market_scope = self._collection_validation_market_scope(collector_key)
         reference = reference_dt or self._now()
+        if self._uses_current_local_date_validation(collector_key):
+            localized = (
+                reference.replace(tzinfo=SHANGHAI_TZ)
+                if reference.tzinfo is None
+                else reference.astimezone(SHANGHAI_TZ)
+            )
+            return localized.date()
+        market_scope = self._collection_validation_market_scope(collector_key)
         market_date = self.market_calendar.current_market_date(market_scope, reference)
         if not self.market_calendar.is_trading_day(market_scope, market_date):
             target_trade_date = self.market_calendar.previous_trading_day(market_scope, market_date)

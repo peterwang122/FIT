@@ -52,6 +52,43 @@ class TestMarketRegime(unittest.TestCase):
         breadth["valid120"] = 400
         self.assertTrue(all(p["state"] == "unavailable" for p in regime_points(prices, breadth, Rule("test"))))
 
+    def test_coverage_boundary_and_explanations(self):
+        prices, breadth = fixture()
+        breadth["valid120"] = 600
+        points = regime_points(prices, breadth, Rule("test"))
+        self.assertEqual(60, points[180]["coverage_pct"])
+        self.assertEqual([], points[180]["missing_reasons"])
+        self.assertEqual("valid", points[180]["state"])
+        breadth.loc[prices.iloc[180].date, "valid120"] = 599
+        points = regime_points(prices, breadth, Rule("test"))
+        self.assertEqual(["insufficient_coverage"], points[180]["missing_reasons"])
+        self.assertIsNone(points[180]["pause_met"])
+        self.assertEqual(0, points[180]["full_streak"])
+
+    def test_exact_confirmation_days_and_gap_resets(self):
+        prices, breadth = fixture()
+        points = regime_points(prices, breadth, Rule("test"))
+        paused = next(i for i, row in enumerate(points) if row["state"] == "paused")
+        self.assertEqual([1, 2, 3], [r["pause_streak"] for r in points[paused - 2:paused + 1]])
+        self.assertNotEqual("paused", points[paused - 1]["state"])
+        invalid = next(i for i, row in enumerate(points) if row["state"] == "invalid")
+        self.assertEqual(10, points[invalid]["invalid_streak"])
+        self.assertNotEqual("invalid", points[invalid - 1]["state"])
+        breadth.loc[prices.iloc[paused - 1].date, "breadth120"] = np.nan
+        changed = regime_points(prices, breadth, Rule("test"))
+        self.assertEqual(1, changed[paused]["pause_streak"])
+        self.assertNotEqual("paused", changed[paused]["state"])
+        self.assertEqual("paused", changed[paused + 2]["state"])
+
+    def test_full_recovery_is_stricter_than_half_allowance(self):
+        prices, breadth = fixture()
+        breadth["breadth120"] = 45
+        points = regime_points(prices, breadth, Rule("test"))
+        self.assertEqual("repair", points[-1]["state"])
+        self.assertEqual(.5, points[-1]["buy_multiplier"])
+        self.assertTrue(points[-1]["recover_met"])
+        self.assertFalse(points[-1]["full_met"])
+
     def test_no_future_stock_or_stale_suspension(self):
         dates = pd.bdate_range("2020-01-01", periods=150).strftime("%Y-%m-%d")
         frame = pd.DataFrame({"trade_date": dates, "prefixed_code": "sh600000",
@@ -87,6 +124,25 @@ class TestMarketRegime(unittest.TestCase):
         self.assertFalse(events[0]["closed"])
         self.assertAlmostEqual(-10, events[0]["drawdown_5d_pct"])
         self.assertIsNone(events[1]["drawdown_5d_pct"])
+
+    def test_event_resumption_and_unknown_price_window(self):
+        prices = [{"date": str(i), "close": 100, "low": 90, "high": 105} for i in range(8)]
+        pts = [{"date": str(i), "state": "paused" if i < 2 else "repair"} for i in range(8)]
+        event = episodes(pts, prices)[0]
+        self.assertEqual("2", event["resumed_date"])
+        self.assertEqual(["paused"], event["states"])
+        self.assertEqual(2, event["days"])
+        prices[4]["low"] = None
+        event = episodes(pts, prices)[0]
+        self.assertIsNone(event["drawdown_5d_pct"])
+        self.assertIsNone(event["upside_5d_pct"])
+
+    def test_breadth_date_comes_from_observations_not_strategy(self):
+        from run_market_regime import breadth_end
+        _, breadth = fixture()
+        self.assertEqual(str(breadth.index[-1]), breadth_end(breadth))
+        breadth.iloc[-1, breadth.columns.get_loc("traded")] = 0
+        self.assertEqual(str(breadth.index[-2]), breadth_end(breadth))
 
 
 if __name__ == "__main__":

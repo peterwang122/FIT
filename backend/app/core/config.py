@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     github_api_base_url: str = "https://api.github.com"
     github_request_timeout_seconds: int = 30
 
+    wechat_miniapp_sync_enabled: bool = False
+    wechat_miniapp_ingest_url: str = ""
+    wechat_miniapp_ingest_secret: str = ""
+    wechat_miniapp_sync_lookback_days: int = 45
+    wechat_miniapp_sync_batch_size: int = 20
+    wechat_miniapp_request_timeout_seconds: int = 30
+    wechat_miniapp_notification_task_name: str = "每日通知"
+
     codex_reset_watchdog_enabled: bool = True
     codex_reset_watchdog_source_url: str = (
         "https://api.dayclaw.com/api/source/public/x/thsottiaux/items"

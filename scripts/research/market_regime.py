@@ -63,15 +63,29 @@ def regime_points(prices, breadth, rule):
         sufficient = (row.get("traded", 0) >= 500 and
                       row.get(f"valid{rule.long}", 0) >= row.get("traded", 0) * .60)
         available = all(pd.notna(v) and np.isfinite(v) for v in required) and sufficient
+        coverage = (row.get(f"valid{rule.long}") / row.traded * 100
+                    if pd.notna(row.get("traded")) and row.traded > 0 else None)
+        issues = []
+        if any(pd.isna(v) or not np.isfinite(v) for v in required[:4]):
+            issues.append("trend_history_short")
+        if any(pd.isna(v) or not np.isfinite(v) for v in required[4:]):
+            issues.append("breadth_history_missing")
+        if pd.isna(row.get("traded")) or row.traded < 500:
+            issues.append("insufficient_traded")
+        if coverage is None or pd.isna(coverage) or coverage < 60:
+            issues.append("insufficient_coverage")
         record = {"date": str(day), "close": row.close, "medium_ma": row.medium_ma,
                   "long_ma": row.long_ma, "long_slope": row.long_slope,
                   "breadth_medium": row.medium_breadth, "breadth_long": row.long_breadth,
                   "observed": row.get("observed"), "traded": row.get("traded"),
-                  "eligible": row.get(f"valid{rule.long}")}
+                  "eligible": row.get(f"valid{rule.long}"), "coverage_pct": coverage,
+                  "missing_reasons": issues}
         if not available:
             pause_streak = invalid_streak = recover_streak = full_streak = 0
             out.append({**record, "state": "unavailable", "buy_multiplier": 0.0,
-                        "reason": "warmup_or_coverage_gap"})
+                        "reason": "warmup_or_coverage_gap",
+                        **{f"{name}_streak": 0 for name in ("pause", "invalid", "recover", "full")},
+                        **{f"{name}_met": None for name in ("pause", "invalid", "recover", "full")}})
             continue
         pause = row.close < row.medium_ma and row.medium_breadth < rule.pause_breadth
         invalid = (row.close < row.long_ma and row.long_slope < 0 and
@@ -96,7 +110,9 @@ def regime_points(prices, breadth, rule):
         multiplier = {"valid": 1.0, "repair": .5, "paused": 0.0, "invalid": 0.0}[state]
         out.append({**record, "state": state, "buy_multiplier": multiplier,
                     "reason": state, "pause_streak": pause_streak,
-                    "invalid_streak": invalid_streak, "recover_streak": recover_streak})
+                    "invalid_streak": invalid_streak, "recover_streak": recover_streak,
+                    "full_streak": full_streak, "pause_met": bool(pause),
+                    "invalid_met": bool(invalid), "recover_met": bool(recover), "full_met": bool(full)})
     return out
 
 
@@ -152,7 +168,7 @@ def episodes(points, prices):
         blocked = p["state"] in ("paused", "invalid")
         if blocked and current is None:
             current = {"start": p["date"], "end": p["date"], "days": 0,
-                       "states": [], "closed": False, "end_reason": None}
+                       "states": [], "closed": False, "end_reason": None, "resumed_date": None}
         if current and blocked:
             current["end"] = p["date"]
             current["days"] += 1
@@ -161,6 +177,8 @@ def episodes(points, prices):
         elif current:
             current["closed"] = p["state"] != "unavailable"
             current["end_reason"] = p["state"]
+            if current["closed"]:
+                current["resumed_date"] = p["date"]
             events.append(current)
             current = None
     if current:
@@ -170,10 +188,13 @@ def episodes(points, prices):
         close = prices[i]["close"]
         for w in (5, 10, 20, 60):
             future = prices[i + 1:i + w + 1]
+            complete = len(future) == w and all(
+                r.get(key) is not None and np.isfinite(r[key]) and r[key] > 0
+                for r in future for key in ("low", "high"))
             e[f"drawdown_{w}d_pct"] = ((min(r["low"] for r in future) / close - 1) * 100
-                                          if len(future) == w else None)
+                                          if complete else None)
             e[f"upside_{w}d_pct"] = ((max(r["high"] for r in future) / close - 1) * 100
-                                        if len(future) == w else None)
+                                        if complete else None)
     return events
 
 
