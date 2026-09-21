@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from types import SimpleNamespace
 
 from app.services import wechat_miniapp_sync_service as module
@@ -135,13 +135,15 @@ def test_score_records_use_1000_global_value_and_flag_mismatch():
 
 
 def test_notification_uses_future_event_time_stable_aliases_and_actual_basis_date(monkeypatch):
+    run_date = date.today() - timedelta(days=1)
+    basis_date = run_date - timedelta(days=1)
     root = SimpleNamespace(id=1)
     task = SimpleNamespace(id=11, enabled=True, config_json={"strategy_ids": [8, 3, 5]})
     run = SimpleNamespace(
         id=27,
-        scheduled_for=datetime(2026, 9, 9, 21, 0),
-        finished_at=datetime(2026, 9, 9, 21, 0, 12),
-        summary="Sent notification email based on trade date 2026-09-08.",
+        scheduled_for=datetime.combine(run_date, time(21, 0)),
+        finished_at=datetime.combine(run_date, time(21, 0, 12)),
+        summary=f"Sent notification email based on trade date {basis_date.isoformat()}.",
     )
 
     class _QuantService:
@@ -151,7 +153,7 @@ def test_notification_uses_future_event_time_stable_aliases_and_actual_basis_dat
         def list_strategy_notification_summaries(self, strategy_ids, owner_id, basis_trade_date):
             assert strategy_ids == [8, 3, 5]
             assert owner_id == 1
-            assert basis_trade_date == date(2026, 9, 8)
+            assert basis_trade_date == basis_date
             return [
                 {"strategy_id": 8, "signal_text": "蓝", "strategy_name": "沪深300期现强化", "target_name": "沪深300"},
                 {"strategy_id": 3, "signal_text": "无操作", "strategy_name": "北自科技测试", "target_name": "北自科技"},
@@ -169,8 +171,8 @@ def test_notification_uses_future_event_time_stable_aliases_and_actual_basis_dat
     ).build_notification_event()
 
     assert event["event_id"] == "event_11_27"
-    assert event["basis_date"] == "2026-09-08"
-    assert event["completed_at"] == "2026-09-09T21:00:12"
+    assert event["basis_date"] == basis_date.isoformat()
+    assert event["completed_at"] == datetime.combine(run_date, time(21, 0, 12)).isoformat()
     assert event["total_count"] == 3
     assert event["effective_count"] == 2
     assert "effective_aliases" not in event

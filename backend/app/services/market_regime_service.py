@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.schemas.market_regime import MarketRegimeResponse, RegimeIndex, RegimeReport
+from app.services.market_regime_research import read_snapshot
 
 REPORT_PATH = Path(__file__).resolve().parents[3] / "runtime/reports/market_regime/report.json"
 
@@ -47,4 +48,5 @@ def get_market_regime(
         latest=points[-1] if points else None, points=points, events=events,
         coverage_gaps=[gap for gap in series.coverage_gaps
                        if points and gap.end >= points[0].date and gap.start <= points[-1].date],
+        lightweight_research=read_snapshot(start_date, end_date),
     )

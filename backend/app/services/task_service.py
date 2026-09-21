@@ -207,6 +207,16 @@ COLLECTION_TASK_DEFINITIONS: dict[str, dict[str, str | bool | int | None]] = {
         "requires_target": False,
         "endpoint": "/collect-cn-macro-daily",
     },
+    "cn_macro_cycle_daily": {
+        "label": "宏观周期数据检查", "market_scope": "cn_stock",
+        "target_type": None, "requires_target": False,
+        "endpoint": "/collect-cn-macro-cycle-daily", "calendar_daily": True,
+    },
+    "market_regime_daily": {
+        "label": "市场环境轻量更新", "market_scope": "cn_stock",
+        "target_type": None, "requires_target": False,
+        "endpoint": "/collect-market-regime-daily",
+    },
     "margin_trading_daily": {
         "label": "A股融资融券日更",
         "market_scope": "cn_stock",
@@ -429,6 +439,8 @@ COLLECTION_TASK_LABEL_OVERRIDES = {
     "cn_risk_free_rate_daily": "人民币无风险利率日更",
     "cn_bank_liquidity_daily": "银行流动性日更",
     "cn_macro_daily": "A股宏观指标日更",
+    "cn_macro_cycle_daily": "宏观周期数据检查",
+    "market_regime_daily": "市场环境轻量更新",
     "margin_trading_daily": "A股融资融券日更",
     "quant_index_daily": "量化指数看板日更",
     "global_risk_daily": "全球冲击因子日更",
@@ -2389,7 +2401,7 @@ class TaskService:
         reference_dt: datetime | None = None,
     ) -> date:
         reference = reference_dt or self._now()
-        if self._uses_current_local_date_validation(collector_key):
+        if self._is_calendar_daily_collection(collector_key) or self._uses_current_local_date_validation(collector_key):
             localized = (
                 reference.replace(tzinfo=SHANGHAI_TZ)
                 if reference.tzinfo is None
@@ -2782,6 +2794,8 @@ class TaskService:
             "cn_risk_free_rate_daily",
             "cn_bank_liquidity_daily",
             "cn_macro_daily",
+            "cn_macro_cycle_daily",
+            "market_regime_daily",
             "margin_trading_daily",
             "fund_purchase_limit_daily",
             "index_csi_dividend_daily",
@@ -2802,6 +2816,8 @@ class TaskService:
                 "cn_risk_free_rate_daily",
                 "cn_bank_liquidity_daily",
                 "cn_macro_daily",
+                "cn_macro_cycle_daily",
+                "market_regime_daily",
                 "margin_trading_daily",
                 "fund_purchase_limit_daily",
                 "index_csi_dividend_daily",
@@ -2887,6 +2903,17 @@ class TaskService:
             if isinstance(result_value, dict)
             else ""
         )
+        if collector_key in {"cn_macro_cycle_daily", "market_regime_daily"}:
+            if result_status != "OK":
+                raise RuntimeError(f"{label}未完成：{result_value}")
+            if str(result_value.get("target_date")) != str(explicit_target_trade_date):
+                raise RuntimeError(f"{label}返回日期与目标日期不一致")
+            if collector_key == "market_regime_daily":
+                from app.services.market_regime_research import publish_snapshot
+                self.db.rollback()
+                report = publish_snapshot(self.db, explicit_target_trade_date)
+                result_value["research_as_of_at"] = str(report["as_of_at"])
+                result_value["missing_macro"] = report["missing_macro"]
         if collector_key == "margin_trading_daily" and result_status == "SOURCE_NOT_READY":
             target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
             latest_complete = str(result_value.get("latest_complete_date") or "-")
@@ -3164,6 +3191,18 @@ class TaskService:
                         f"政策利率来源日 {source_dates.get('policy_rate') or '-'}，"
                         f"央行公告来源日 {source_dates.get('pbc') or '-'}。"
                     )
+                elif collector_key == "cn_macro_cycle_daily":
+                    summary = (
+                        f"{label}完成：检查日期 {target_date}，"
+                        f"检查公告 {result_value.get('checked_releases', 0)} 篇，"
+                        f"新增版本观测 {result_value.get('new_observations', 0)} 条。"
+                        "月度数据仅在正式发布后更新；没有新公告不是采集故障。"
+                    )
+                elif collector_key == "market_regime_daily":
+                    summary = (f"{label}完成：{target_date} 四条必需指数已校验；"
+                               f"研究截止 {result_value.get('research_as_of_at')}，"
+                               f"缺少宏观序列 {len(result_value.get('missing_macro', []))} 项；"
+                               "保留旧判定，未触发停买、交易或通知。")
                 else:
                     summary = f"{label}执行完成，结果：{result_value}。"
             else:

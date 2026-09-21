@@ -25,6 +25,8 @@ export type CollectionCollectorKey =
   | 'cn_risk_free_rate_daily'
   | 'cn_bank_liquidity_daily'
   | 'cn_macro_daily'
+  | 'cn_macro_cycle_daily'
+  | 'market_regime_daily'
   | 'margin_trading_daily'
   | 'fund_purchase_limit_daily'
   | 'quant_index_daily'

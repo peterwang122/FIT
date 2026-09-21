@@ -144,3 +144,4 @@ class MarketRegimeResponse(BaseModel):
     points: list[RegimePoint]
     events: list[RegimeEvent]
     coverage_gaps: list[RegimeGap] = Field(default_factory=list)
+    lightweight_research: dict | None = None

@@ -170,6 +170,31 @@ def test_calendar_daily_collection_runs_when_market_is_closed():
     assert task.last_scheduled_date == date(2026, 6, 28)
 
 
+def test_macro_cycle_checks_weekends_but_regime_is_trading_day_only():
+    for key, expected in (("cn_macro_cycle_daily", "queued"), ("market_regime_daily", "skipped")):
+        task = _make_task(1, "cn_stock")
+        task.schedule_time = "21:40"
+        task.config_json = {"collector_key": key}
+        db = _FakeSession(tasks=[task])
+        service = TaskService(db)
+        service.market_calendar = _ClosedMarketCalendar()
+        service._now = lambda: datetime(2026, 9, 20, 21, 40)
+        service.enqueue_due_task_runs()
+        assert db.runs[0].status == expected
+
+
+def test_macro_cycle_execution_target_is_calendar_date_on_weekend():
+    task = _make_task(1, "cn_stock")
+    task.schedule_time = "21:40"
+    task.config_json = {"collector_key": "cn_macro_cycle_daily"}
+    service = TaskService(_FakeSession(tasks=[task]))
+    service.market_calendar = _ClosedMarketCalendar()
+    reference = datetime(2026, 9, 20, 21, 40)
+    assert service._collection_target_trade_date_for_task(
+        "cn_macro_cycle_daily", task, reference
+    ) == date(2026, 9, 20)
+
+
 def test_weekday_forex_collection_runs_when_us_market_is_closed():
     task = _make_task(1, "us_index")
     task.name = "汇率18时盘中更新"

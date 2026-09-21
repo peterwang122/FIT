@@ -542,6 +542,14 @@ def ensure_runtime_tables() -> None:
             enforce_schedule_time=True,
         )
         _ensure_default_collection_task(
+            db, root_user, collector_key="cn_macro_cycle_daily",
+            name="宏观周期数据检查", schedule_time="21:40", market_scope="cn_stock",
+        )
+        _ensure_default_collection_task(
+            db, root_user, collector_key="market_regime_daily",
+            name="市场环境轻量更新", schedule_time="22:45", market_scope="cn_stock",
+        )
+        _ensure_default_collection_task(
             db,
             root_user,
             collector_key="margin_trading_daily",

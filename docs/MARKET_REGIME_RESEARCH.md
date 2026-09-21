@@ -2,6 +2,9 @@
 
 版本：research-v1，2026-09-06。离线研究、视觉预览已完成；用户确认布局后已实现只读页面，模型仍未通过验收。
 
+2026-09新增的轻量日更和宏观周期版本化采集见
+[`MARKET_REGIME_MACRO_CYCLE.md`](MARKET_REGIME_MACRO_CYCLE.md)。该阶段仍为研究用途，未替换本文件中的旧候选规则。
+
 ## 边界
 
 - 新模块位于宏观内部导航 `/macro/market-regime`，不改变抬头、侧栏、色系。

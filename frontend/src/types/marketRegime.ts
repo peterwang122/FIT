@@ -77,6 +77,53 @@ export interface MarketRegimeDashboard {
   points: RegimePoint[]
   events: RegimeEvent[]
   coverage_gaps?: RegimeGap[]
+  lightweight_research?: MarketRegimeResearch | null
+}
+
+export interface MacroCycleEvidence {
+  series_key: string
+  period_end: string
+  period_kind: 'monthly' | 'ytd' | 'stock'
+  basis_version: string
+  value: number
+  unit: string
+  source_url: string
+  published_at: string | null
+  available_at: string
+  replay_available_at: string
+  publication_precision: string
+  vintage_status: string
+  revision: boolean
+  parser_correction: boolean
+  independent_months: number
+  change_3m: number | null
+  mean_3m: number | null
+  point_in_time_verified: boolean
+}
+
+export interface MarketRegimeResearch {
+  schema_version: 'market-regime-lightweight-v1'
+  research_only: true
+  model_approved: false
+  as_of_at: string
+  target_date: string
+  timezone: 'Asia/Shanghai'
+  daily_points: {
+    date: string
+    close: number
+    ma60: number | null
+    ma120: number | null
+    trend_supportive: boolean | null
+    index_participation_ma60_pct: number | null
+    index_participation_ma120_pct: number | null
+    missing_reasons: string[]
+  }[]
+  macro_evidence: MacroCycleEvidence[]
+  archive_macro_evidence: MacroCycleEvidence[]
+  missing_macro: string[]
+  stale_macro: string[]
+  macro_complete: boolean
+  notes: string[]
 }
 
 export const regimeMissingLabels: Record<RegimeMissingReason, string> = {
