@@ -17,6 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 WATCHDOG_HISTORY_LIMIT = 30
 WATCHDOG_SOURCE_HANDLE = "thsottiaux"
+WATCHDOG_CANONICAL_URL_PATTERN = re.compile(
+    r"^https://(?:www\.)?x\.com/thsottiaux/status/(?P<item_id>\d+)(?:[/?#].*)?$",
+    flags=re.IGNORECASE,
+)
 SLASH_COMMAND_PATTERN = re.compile(
     r"(?<!/)/[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*"
 )
@@ -176,28 +180,40 @@ def classify_reset_finding(text: str) -> ResetFinding | None:
     return ResetFinding(status="possible", evidence="原文同时包含额度与重置含义，建议核对原文")
 
 
-def normalize_source_item(raw: dict) -> WatchdogItem | None:
-    if not isinstance(raw, dict):
-        return None
-    item_id = str(raw.get("external_id") or raw.get("id") or "").strip()
-    text = _normalize_text(str(raw.get("content") or raw.get("title") or ""))
-    if not item_id or not text:
-        return None
-    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-    return WatchdogItem(
-        item_id=item_id,
-        text=text,
-        url=str(raw.get("url") or "").strip() or None,
-        author=str(metadata.get("author_user_name") or raw.get("author") or "").strip() or None,
-        published_at=str(raw.get("published_at") or "").strip() or None,
-    )
+def extract_public_feed_items(payload: dict) -> list[WatchdogItem]:
+    """Normalize the independent Tibo timeline feed after strict author checks."""
+    if not isinstance(payload, dict):
+        raise ValueError("public feed response is not a JSON object")
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    if str(profile.get("handle") or "").lower() != WATCHDOG_SOURCE_HANDLE:
+        raise ValueError("public feed does not identify the thsottiaux timeline")
+    if payload.get("stale") is True:
+        raise ValueError("public feed reports stale timeline data")
 
+    raw_items: list[dict] = []
+    for key in ("tweets", "radar_context"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            raw_items.extend(item for item in values if isinstance(item, dict))
 
-def extract_source_items(payload: dict) -> list[WatchdogItem]:
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list):
-        raw_items = (payload.get("data") or {}).get("items") if isinstance(payload.get("data"), dict) else []
-    return [item for raw in raw_items if (item := normalize_source_item(raw)) is not None]
+    items_by_id: dict[str, WatchdogItem] = {}
+    for raw in raw_items:
+        item_id = str(raw.get("id") or "").strip()
+        text = _normalize_text(str(raw.get("text") or ""))
+        url = str(raw.get("url") or "").strip()
+        match = WATCHDOG_CANONICAL_URL_PATTERN.fullmatch(url)
+        if not item_id or not text or match is None or match.group("item_id") != item_id:
+            continue
+        items_by_id[item_id] = WatchdogItem(
+            item_id=item_id,
+            text=text,
+            url=url,
+            author=WATCHDOG_SOURCE_HANDLE,
+            published_at=str(raw.get("at") or raw.get("declared_at") or "").strip() or None,
+        )
+    if not items_by_id:
+        raise ValueError("public feed returned no verified Tibo items")
+    return list(items_by_id.values())
 
 
 def extract_translation(payload: object) -> str | None:
@@ -418,25 +434,21 @@ class CodexResetWatchdogService:
         timeout = max(int(settings.codex_reset_watchdog_request_timeout_seconds), 1)
         backoff = max(int(settings.codex_reset_watchdog_retry_backoff_seconds), 0)
         last_error: Exception | None = None
-
         for attempt in range(1, attempts + 1):
             try:
                 with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
                     response = client.get(settings.codex_reset_watchdog_source_url)
                     response.raise_for_status()
                     payload = response.json()
-                if not isinstance(payload, dict):
-                    raise ValueError("Dayclaw response is not a JSON object")
-                items = extract_source_items(payload)
-                if not items:
-                    raise ValueError("Dayclaw returned no usable source items")
-                return items
+                return extract_public_feed_items(payload)
             except (httpx.HTTPError, ValueError) as exc:
                 last_error = exc
                 if attempt < attempts and backoff:
                     time.sleep(min(backoff * (2 ** (attempt - 1)), 30))
 
-        raise RuntimeError(f"Dayclaw source request failed after {attempts} attempts: {last_error}")
+        raise RuntimeError(
+            f"Codex dynamic source failed after {attempts} attempts: {last_error}"
+        )
 
     def _build_signal_notification(
         self,
@@ -470,8 +482,8 @@ class CodexResetWatchdogService:
         return WatchdogNotification(
             title="Codex 额度监控连续失败",
             body=f"已连续 {failure_count} 次无法读取 Tibo 的公开动态。监控会自动继续重试；原因：{_excerpt(detail, 160)}",
-            action_url="https://github.com/thinkingjimmy/codex-reset-watchdog",
-            action_label="查看监控说明",
+            action_url=settings.codex_reset_watchdog_source_url,
+            action_label="查看动态源",
             dedupe_key=f"codex-reset-watchdog:error:{failure_count}",
             payload={
                 "consecutive_failures": failure_count,

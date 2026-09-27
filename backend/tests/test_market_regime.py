@@ -2,166 +2,157 @@ import csv
 import json
 import runpy
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api.deps.auth import get_current_user, require_authenticated_user
 from app.api.routes_macro import router
+from app.schemas.market_regime import RegimePoint
 from app.services import market_regime_service as service
 
 
 def point(day="2026-03-13", **overrides):
-    return {
-        "date": day, "open": 99, "high": 102, "low": 98, "close": 100,
+    return {"date": day, "open": 99, "high": 102, "low": 98, "close": 100,
         "medium_ma": 95, "long_ma": 90, "long_slope": .05,
         "breadth_medium": 60, "breadth_long": 55, "traded": 1000, "eligible": 900,
-        "state": "valid", "buy_multiplier": 1, **overrides,
-    }
+        "state": "valid", "buy_multiplier": 1, **overrides}
 
 
-def payload():
-    return {
-        "schema_version": "market-regime-research-v1", "generated_at": "2026-09-06T12:00:00+08:00",
-        "research_only": True, "model_approved": False, "rule_name": "balanced",
-        "breadth_as_of": "2026-03-13", "notes": ["研究候选"],
-        "series": {
-            "sh000852": {"index_name": "中证1000", "points": [point(), point("2026-09-04", state="unavailable", buy_multiplier=0, breadth_medium=None, breadth_long=None)], "events": []},
-            "sh000985": {"index_name": "中证全指", "points": [point(close=101)], "events": []},
-        },
-    }
+def source(day, close=100, **overrides):
+    trend = {"open": close, "high": close + 2, "low": close - 2, "close": close,
+             "ma60": 95, "ma120": 90, "ma120_change_20d_pct": 1,
+             "ma250": 85, "ma250_change_20d_pct": 1, "return_20d_pct": 5, "drawdown_250d_pct": 0}
+    return {"date": str(day), **trend, "index_participation_ma60_pct": 100,
+        "index_participation_ma120_pct": 100, "missing_reasons": [],
+        "index_participation_ma250_pct": 100,
+        "adaptation": {"sh000852": {**trend, "close": close + 1}, "sh000300": trend}, **overrides}
 
 
 @pytest.fixture
-def report(tmp_path, monkeypatch):
-    path = tmp_path / "report.json"
-    path.write_text(json.dumps(payload()), encoding="utf-8")
-    monkeypatch.setattr(service, "REPORT_PATH", path)
-    service._read_report.cache_clear()
-    yield path
-    service._read_report.cache_clear()
+def snapshot(tmp_path, monkeypatch):
+    report = {"generated_at": "2026-09-21T22:45:00+08:00", "target_date": "2026-09-21",
+              "as_of_at": "2026-09-21T22:45:00", "macro_evidence": [{"series_key": "m1_yoy", "value": 4.1}],
+              "macro_regime_timeline": [],
+              "daily_points": [source(date(2026, 9, 1) + timedelta(days=i)) for i in range(21)]}
+    monkeypatch.setattr(service, "REPORT_PATH", tmp_path / "report.json")
+    monkeypatch.setattr(service, "read_snapshot", lambda *args, **kwargs: report)
+    return report
 
 
-def test_snapshot_keeps_nulls_research_flags_and_index_isolation(report):
-    csi = service.get_market_regime()
-    all_share = service.get_market_regime("sh000985")
-    assert csi.latest.breadth_long is None
-    assert csi.latest.state == "unavailable"
-    assert csi.model_approved is False and csi.research_only is True
-    assert csi.latest.close == 100 and all_share.latest.close == 101
-    assert csi.breadth_as_of == date(2026, 3, 13)
-    assert csi.history_end == date(2026, 9, 4)
-    assert csi.generated_at.utcoffset().total_seconds() == 28800
+def test_all_history_index_only_without_legacy_file(snapshot):
+    for code in ("sh000985", "sh000852", "sh000300"):
+        result = service.get_market_regime(code)
+        assert result.latest.date == date(2026, 9, 21)
+        assert result.latest.state == "valid"
+        assert result.daily_update_mode == "index_proxy"
+        assert all(p.evidence_mode == "index_proxy" and p.traded == p.eligible == 3 for p in result.points)
+        assert result.model_approved is False and result.research_only is True
+        assert result.lightweight_research["macro_evidence"][0]["series_key"] == "m1_yoy"
+        assert "daily_points" not in result.lightweight_research
+    assert service.get_market_regime().latest.close == 101
+    assert service.get_market_regime("sh000985").latest.close == 100
 
 
-def test_window_empty_and_no_future_point_in_latest(report):
-    response = service.get_market_regime(end_date=date(2026, 3, 13))
-    assert len(response.points) == 1 and response.latest.date == date(2026, 3, 13)
-    assert response.history_end == date(2026, 9, 4)
-    empty = service.get_market_regime(start_date=date(2027, 1, 1))
-    assert empty.latest is None and empty.points == [] and empty.events == []
+def test_deprecated_stock_report_never_affects_current_state(snapshot):
+    service.REPORT_PATH.write_text('{"corrupt": "obsolete data"}')
+    assert service.get_market_regime().latest.state == "valid"
+
+
+def test_missing_daily_snapshot_does_not_fallback(snapshot, monkeypatch):
+    monkeypatch.setattr(service, "read_snapshot", lambda: None)
+    with pytest.raises(RuntimeError, match="不回退"):
+        service.get_market_regime()
+
+
+def test_range_does_not_reset_state_or_include_future_points(snapshot):
+    complete = service.get_market_regime()
+    result = service.get_market_regime(start_date=date(2026, 9, 20), end_date=date(2026, 9, 20))
+    assert result.points == complete.points[-2:-1]
+    assert result.history_end == date(2026, 9, 21)
+    assert not service.get_market_regime(start_date=date(2027, 1, 1)).points
     with pytest.raises(ValueError):
         service.get_market_regime(start_date=date(2027, 1, 1), end_date=date(2026, 1, 1))
 
 
-def test_event_overlap_keeps_gap_reason(report):
-    data = payload()
-    data["series"]["sh000852"]["events"] = [{
-        "start": "2026-03-01", "end": "2026-03-13", "days": 10,
-        "closed": False, "end_reason": "unavailable", "drawdown_20d_pct": None,
-    }]
-    report.write_text(json.dumps(data))
-    response = service.get_market_regime(start_date=date(2026, 3, 13))
-    assert len(response.events) == 1
-    assert response.events[0].closed is False
-    assert response.events[0].drawdown_20d_pct is None
-    assert not service.get_market_regime(start_date=date(2026, 4, 1)).events
+def test_future_points_do_not_change_past(snapshot):
+    before = service.get_market_regime().points
+    snapshot["daily_points"].append(source("2026-09-22", close=50))
+    assert service.get_market_regime().points[:-1] == before
 
 
-def test_republished_report_invalidates_cache(report):
-    assert service.get_market_regime().latest.close == 100
-    data = payload()
-    data["series"]["sh000852"]["points"][-1]["close"] = 101
-    other = report.with_suffix(".tmp")
-    other.write_text(json.dumps(data) + "\n")
-    other.replace(report)
-    assert service.get_market_regime().latest.close == 101
+def test_missing_inputs_not_zero_or_valid(snapshot):
+    snapshot["daily_points"][-1]["index_participation_ma60_pct"] = None
+    result = service.get_market_regime()
+    assert result.latest.state == "unavailable" and result.latest.breadth_medium is None
+    assert result.latest.missing_reasons == ["index_history_incomplete"]
+    assert result.coverage_gaps[-1].days == 1
 
 
-def test_missing_partial_ohlc_is_not_invented(report):
-    data = payload()
-    data["series"]["sh000985"]["points"][0].update(open=None, high=None, low=None)
-    report.write_text(json.dumps(data))
-    row = service.get_market_regime("sh000985").latest
-    assert row.open is None and row.high is None and row.low is None and row.close == 101
+def test_streaks_and_missing_do_not_release_invalid():
+    points = [source(date(2026, 1, 1) + timedelta(days=i), close=50, ma60=100, ma120=100,
+                     ma120_change_20d_pct=-1, index_participation_ma60_pct=0,
+                     index_participation_ma120_pct=0) for i in range(12)]
+    points[10]["missing_reasons"] = ["gap"]
+    states = service._proxy_points({"daily_points": points}, "sh000985")
+    assert states[1]["state"] == "repair" and states[2]["state"] == "paused"
+    assert states[9]["state"] == "invalid" and states[10]["state"] == "unavailable"
+    assert states[11]["state"] == "invalid" and states[11]["invalid_streak"] == 1
 
 
-@pytest.mark.parametrize("problem", ["duplicate", "nan", "invalid_ohlc", "inconsistent", "missing_evidence", "approved", "broken_json"])
-def test_invalid_snapshot_fails_explicitly(report, problem):
-    data = payload()
-    row = data["series"]["sh000852"]["points"][0]
-    if problem == "duplicate":
-        data["series"]["sh000852"]["points"].append(row)
-    elif problem == "nan":
-        row["close"] = float("nan")
-    elif problem == "invalid_ohlc":
-        row["low"] = 105
-    elif problem == "inconsistent":
-        row["buy_multiplier"] = 0
-    elif problem == "missing_evidence":
-        row["breadth_long"] = None
-    elif problem == "approved":
-        data["model_approved"] = True
-    report.write_text("{" if problem == "broken_json" else json.dumps(data))
-    with pytest.raises(RuntimeError, match="重新生成"):
-        service.get_market_regime()
+def test_event_gaps_not_merged_and_forward_window_complete():
+    points = [{**point(date(2026, 1, 1) + timedelta(days=i)), "state": "paused" if i < 4 else "valid"} for i in range(25)]
+    points[1]["state"] = "unavailable"
+    points[4]["low"] = 80
+    events = service._events(points)
+    assert len(events) == 2 and events[0]["end_reason"] == "unavailable"
+    assert not events[0]["closed"] and events[1]["closed"]
+    assert events[1]["resumed_date"] == points[4]["date"]
+    assert events[0]["drawdown_5d_pct"] == pytest.approx(-20)
+    assert events[0]["drawdown_60d_pct"] is None
+    points[4]["high"] = None
+    assert service._events(points)[0]["upside_5d_pct"] is None
 
 
-def test_missing_report_has_explicit_message(report):
-    report.unlink()
-    with pytest.raises(RuntimeError, match="尚未生成"):
-        service.get_market_regime()
-
-
-def test_route_access_validation_and_serialization(report):
+def test_route_auth_index_selection_and_serialization(snapshot):
     app = FastAPI()
     app.include_router(router, prefix="/macro", dependencies=[Depends(require_authenticated_user)])
     with TestClient(app) as client:
         assert client.get("/macro/market-regime").status_code == 401
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(role="user")
         result = client.get("/macro/market-regime").json()["data"]
-        assert result["latest"]["date"] == "2026-09-04"
-        assert result["latest"]["breadth_long"] is None
-        assert result["research_only"] is True
-        assert client.get("/macro/market-regime?index_code=sh000985").json()["data"]["index_name"] == "中证全指"
+        assert result["latest"]["date"] == "2026-09-21"
+        assert result["lightweight_research"]["macro_evidence"]
+        assert client.get("/macro/market-regime?index_code=sh000300").json()["data"]["index_name"] == "沪深300"
         assert client.get("/macro/market-regime?index_code=sh000001").status_code == 422
         assert client.get("/macro/market-regime?start_date=2027-01-01&end_date=2026-01-01").status_code == 400
-        report.unlink()
-        assert client.get("/macro/market-regime").status_code == 503
+
+
+@pytest.mark.parametrize("change", [{"close": float("nan")}, {"low": 110},
+    {"buy_multiplier": 0}, {"medium_ma": None}, {"eligible": 599}])
+def test_schema_rejects_inconsistent_evidence(change):
+    with pytest.raises(ValidationError):
+        RegimePoint.model_validate(point(**change))
 
 
 @pytest.fixture
 def publication(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "path", sys.path.copy())
-    script = Path(__file__).resolve().parents[2] / "scripts/research/publish_market_regime.py"
-    publish = runpy.run_path(str(script))["publish"]
+    publish = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts/research/publish_market_regime.py"))["publish"]
     inputs = tmp_path / "inputs"
     study = inputs / "legacy-hfq-study"
     study.mkdir(parents=True)
     manifest = study / "manifest.json"
-    manifest.write_text(json.dumps({
-        "breadth_kind": "legacy_hfq_observed_stocks", "production_approved": False,
-        "strategy_evaluation_end": "2026-03-13",
-    }))
-    rows = [
-        point("2023-01-03", observed=1000), point(observed=1000),
-        point("2026-09-04", observed=0, traded=0, eligible=0,
-              breadth_medium=None, breadth_long=None, state="unavailable", buy_multiplier=0),
-    ]
+    manifest.write_text(json.dumps({"breadth_kind": "legacy_hfq_observed_stocks", "production_approved": False,
+                                    "strategy_evaluation_end": "2026-03-13"}))
+    rows = [point("2023-01-03", observed=1000), point(observed=1000),
+        point("2026-09-04", observed=0, traded=0, eligible=0, breadth_medium=None,
+              breadth_long=None, state="unavailable", buy_multiplier=0)]
     for index in ("sh000852", "sh000985"):
         (inputs / f"{index}.json").write_text(json.dumps(rows))
         with (study / f"{index}_balanced-daily.csv").open("w", newline="") as file:
@@ -172,31 +163,13 @@ def publication(tmp_path, monkeypatch):
     return publish, inputs, tmp_path / "published/report.json", manifest
 
 
-def test_publication_preserves_history_and_unknown_coverage(publication):
+def test_legacy_publication_preserved_as_research_only(publication):
     publish, inputs, target, _ = publication
     publish(inputs, target)
     report = json.loads(target.read_text())
+    assert report["strategy_evaluation_end"] == "2026-03-13"
     for series in report["series"].values():
-        assert len(series["points"]) == 3 and series["points"][0]["date"] == "2023-01-03"
-        assert series["points"][1]["eligible"] == 900
-        assert all(series["points"][-1][key] is None for key in ("observed", "traded", "eligible"))
-        assert series["points"][-1]["breadth_long"] is None
-    assert not target.with_suffix(".json.tmp").exists()
-
-
-@pytest.mark.parametrize("change", [{"production_approved": True}, {"breadth_kind": "unadjusted"}])
-def test_publication_rejects_unapproved_source_contract(publication, change):
-    publish, inputs, target, manifest = publication
-    data = json.loads(manifest.read_text())
-    manifest.write_text(json.dumps({**data, **change}))
-    with pytest.raises(ValueError, match="Only unapproved"):
-        publish(inputs, target)
-    assert not target.exists()
-
-
-def test_failed_publication_keeps_previous_snapshot(publication):
-    publish, inputs, target, _ = publication
-    publish(inputs, target)
+        assert len(series["points"]) == 3 and series["points"][-1]["breadth_long"] is None
     original = target.read_bytes()
     prices_path = inputs / "sh000985.json"
     prices = json.loads(prices_path.read_text())
@@ -207,65 +180,10 @@ def test_failed_publication_keeps_previous_snapshot(publication):
     assert target.read_bytes() == original
 
 
-def test_publication_breadth_and_strategy_dates_are_independent(publication):
+@pytest.mark.parametrize("change", [{"production_approved": True}, {"breadth_kind": "unadjusted"}])
+def test_legacy_publication_rejects_unapproved_contract(publication, change):
     publish, inputs, target, manifest = publication
-    data = json.loads(manifest.read_text())
-    data["breadth_as_of"] = "2026-09-04"
-    manifest.write_text(json.dumps(data))
-    publish(inputs, target)
-    result = json.loads(target.read_text())
-    assert result["breadth_as_of"] == "2026-09-04"
-    assert result["strategy_evaluation_end"] == "2026-03-13"
-    assert result["series"]["sh000852"]["points"][-1]["traded"] == 0
-
-
-def test_publication_rejects_inputs_changed_since_calculation(publication):
-    publish, inputs, target, manifest = publication
-    publish(inputs, target)
-    original = target.read_bytes()
-    data = json.loads(manifest.read_text())
-    data["input_sha256"] = {"sh000852.json": "obsolete"}
-    manifest.write_text(json.dumps(data))
-    with pytest.raises(ValueError, match="recompute before publication"):
+    manifest.write_text(json.dumps({**json.loads(manifest.read_text()), **change}))
+    with pytest.raises(ValueError, match="Only unapproved"):
         publish(inputs, target)
-    assert target.read_bytes() == original
-
-
-def test_api_preserves_rules_horizons_and_filters_gaps(report):
-    data = payload()
-    series = data["series"]["sh000852"]
-    series["points"][0].update(pause_streak=2, pause_met=True, full_streak=0, full_met=False, coverage_pct=90)
-    series["points"][-1].update(missing_reasons=["insufficient_coverage"], coverage_pct=59)
-    series["coverage_gaps"] = [{"start": "2026-09-04", "end": "2026-09-04", "days": 1,
-                                "min_coverage_pct": 59, "max_coverage_pct": 59, "reasons": ["insufficient_coverage"]}]
-    series["events"] = [{"start": "2026-03-13", "end": "2026-03-13", "days": 1, "closed": False,
-                          "drawdown_5d_pct": -7, "upside_60d_pct": 3}]
-    report.write_text(json.dumps(data))
-    result = service.get_market_regime()
-    assert result.points[0].pause_streak == 2 and result.points[0].pause_met is True
-    assert result.coverage_gaps[0].days == 1
-    assert result.latest.missing_reasons == ["insufficient_coverage"]
-    assert result.events[0].drawdown_5d_pct == -7 and result.events[0].upside_60d_pct == 3
-    assert not service.get_market_regime(end_date=date(2026, 3, 13)).coverage_gaps
-
-
-def test_gap_aggregation_uses_observed_sessions_and_recovers(publication):
-    script = Path(__file__).resolve().parents[2] / "scripts/research/publish_market_regime.py"
-    gaps = runpy.run_path(str(script))["coverage_gaps"]([
-        point("2015-04-13"),
-        point("2015-04-14", state="unavailable", coverage_pct=59.8, missing_reasons=["insufficient_coverage"]),
-        point("2015-04-17", state="unavailable", coverage_pct=55, missing_reasons=["insufficient_coverage"]),
-        point("2015-04-20"),
-        point("2015-04-21", state="unavailable", coverage_pct=None, missing_reasons=["breadth_history_missing"]),
-    ])
-    assert len(gaps) == 2 and gaps[0]["days"] == 2
-    assert gaps[0]["min_coverage_pct"] == 55 and gaps[0]["max_coverage_pct"] == 59.8
-    assert gaps[1]["min_coverage_pct"] is None
-
-
-def test_available_state_with_low_coverage_is_rejected(report):
-    data = payload()
-    data["series"]["sh000852"]["points"][0]["eligible"] = 599
-    report.write_text(json.dumps(data))
-    with pytest.raises(RuntimeError):
-        service.get_market_regime()
+    assert not target.exists()

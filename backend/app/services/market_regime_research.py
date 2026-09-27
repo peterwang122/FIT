@@ -9,6 +9,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 
 from sqlalchemy import text
+from app.services.market_regime_model import macro_timeline
 
 
 REPORT_PATH = Path(__file__).resolve().parents[3] / "runtime/reports/market_regime/lightweight.json"
@@ -147,21 +148,29 @@ def index_features(rows):
             ma120 = (prefix[i + 1] - prefix[i - 119]) / 120 if i >= 119 else None
             old_ma = (prefix[i - 19] - prefix[i - 139]) / 120 if i >= 139 else None
             slope = (ma120 / old_ma - 1) * 100 if old_ma else None
+            ma250 = (prefix[i + 1] - prefix[i - 249]) / 250 if i >= 249 else None
+            old250 = (prefix[i - 19] - prefix[i - 269]) / 250 if i >= 269 else None
             trend = None if slope is None else closes[i] >= ma120 and slope > 0
-            points[row["trade_date"]] = {"date": row["trade_date"], "close": closes[i],
+            points[row["trade_date"]] = {"date": row["trade_date"],
+                "open": finite(row.get("open_price")), "high": finite(row.get("high_price")),
+                "low": finite(row.get("low_price")), "close": closes[i],
                 "ma60": ma60, "ma120": ma120, "ma120_change_20d_pct": slope,
+                "ma250": ma250, "ma250_change_20d_pct": (ma250 / old250 - 1) * 100 if old250 else None,
+                "return_20d_pct": (closes[i] / closes[i-20] - 1) * 100 if i >= 20 else None,
+                "drawdown_250d_pct": (closes[i] / max(closes[i-249:i+1]) - 1) * 100 if i >= 249 else None,
                 "above_ma60": closes[i] >= ma60 if ma60 else None,
                 "above_ma120": closes[i] >= ma120 if ma120 else None,
+                "above_ma250": closes[i] >= ma250 if ma250 else None,
                 "trend_supportive": trend, "data_source": row.get("data_source")}
         features[code] = points
     main = []
     for day, point in sorted(features.get("sh000985", {}).items()):
         point = dict(point)
         missing = []
-        for window in (60, 120):
+        for window in (60, 120, 250):
             votes = [features.get(code, {}).get(day, {}).get(f"above_ma{window}") for code in PROXY_CODES]
             point[f"index_participation_ma{window}_pct"] = sum(votes) / 3 * 100 if all(v is not None for v in votes) else None
-            if any(v is None for v in votes):
+            if window != 250 and any(v is None for v in votes):
                 missing.append(f"index_proxy_ma{window}_missing")
         point["adaptation"] = {code: features.get(code, {}).get(day) for code in ("sh000300", "sh000852")}
         point["missing_reasons"] = missing + (["main_trend_history_short"] if point["trend_supportive"] is None else [])
@@ -221,7 +230,8 @@ def build_snapshot(db, target_date, as_of=None):
     as_of = as_of or datetime.combine(target_date, time(22, 45))
     if as_of > datetime.now():
         raise ValueError("Cannot publish a snapshot with a future knowledge cutoff")
-    rows = [dict(r) for r in db.execute(text("""SELECT index_code,trade_date,close_price,data_source
+    rows = [dict(r) for r in db.execute(text("""SELECT index_code,trade_date,
+        open_price,high_price,low_price,close_price,data_source
         FROM index_daily_data WHERE index_code IN ('sh000985','sh000300','sh000905','sh000852')
         AND trade_date<=:target ORDER BY index_code,trade_date"""), {"target": target_date}).mappings()]
     points = index_features(rows)
@@ -237,6 +247,7 @@ def build_snapshot(db, target_date, as_of=None):
             "timezone": "Asia/Shanghai",
             "target_date": target_date, "latest": points[-1], "daily_points": points,
             "macro_evidence": evidence, "derived_evidence": macro_derived(evidence),
+            "macro_regime_timeline": macro_timeline(observations, [p["date"] for p in points], select_macro, as_of),
             "archive_macro_evidence": archive_evidence,
             "daily_context": daily_context(db, target_date, as_of),
             "coverage": coverage, "missing_macro": missing, "stale_macro": stale,
@@ -244,7 +255,7 @@ def build_snapshot(db, target_date, as_of=None):
             "notes": ["均线参与比例是沪深300/中证500/中证1000三指数代理，不是个股广度。",
                       "月度数据仅沿用已经公开并留存的版本；严格时点不早于首次抓取。",
                       "历史归档可展示，但未经当时版本核验的宏观历史不进入严格回测。",
-                      "本快照不替换旧牛熊判定，不产生停买、交易或通知。",
+                      "环境候选使用独立长期结构和宏观确认，不自动产生停买、交易或通知。",
                       "指数发布前的回溯行情只能作扩展研究，不能当成当时已存在的实时产品。"]}
 
 

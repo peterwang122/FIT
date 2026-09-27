@@ -3,9 +3,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-RegimeIndex = Literal["sh000852", "sh000985"]
-RegimeState = Literal["valid", "paused", "invalid", "repair", "unavailable"]
-RegimeMissingReason = Literal["trend_history_short", "breadth_history_missing", "insufficient_traded", "insufficient_coverage"]
+RegimeIndex = Literal["sh000852", "sh000985", "sh000300"]
+RegimeState = Literal["valid", "adjustment", "warning", "paused", "invalid", "repair", "unavailable"]
+RegimeMissingReason = Literal["trend_history_short", "breadth_history_missing", "insufficient_traded", "insufficient_coverage", "index_history_incomplete"]
+RegimeEvidenceMode = Literal["stock_breadth", "index_proxy"]
 
 
 class RegimePoint(BaseModel):
@@ -29,6 +30,7 @@ class RegimePoint(BaseModel):
     reason: str | None = None
     coverage_pct: float | None = Field(default=None, ge=0, le=100)
     missing_reasons: list[RegimeMissingReason] = Field(default_factory=list)
+    evidence_mode: RegimeEvidenceMode = "stock_breadth"
     pause_met: bool | None = None
     invalid_met: bool | None = None
     recover_met: bool | None = None
@@ -37,22 +39,44 @@ class RegimePoint(BaseModel):
     invalid_streak: int | None = Field(default=None, ge=0)
     recover_streak: int | None = Field(default=None, ge=0)
     full_streak: int | None = Field(default=None, ge=0)
+    annual_ma: float | None = None
+    annual_slope_pct: float | None = None
+    breadth_annual: float | None = None
+    drawdown_250d_pct: float | None = None
+    return_20d_pct: float | None = None
+    model_version: str | None = None
+    state_since: date | None = None
+    trigger_rule: str | None = None
+    macro_status: str | None = None
+    macro_complete: bool = False
+    macro_support_count: int = 0
+    macro_adverse_count: int = 0
+    macro_evidence_date: date | None = None
+    macro_applied: bool = False
+    rules: list[dict] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_point(self):
         if self.open is not None and self.high is not None and self.low is not None:
             if self.high < max(self.open, self.close, self.low) or self.low > min(self.open, self.close):
                 raise ValueError("Invalid OHLC")
-        expected = {"valid": 1, "repair": .5, "paused": 0, "invalid": 0, "unavailable": 0}
+        expected = {"valid": 1, "adjustment": 1, "warning": .5, "repair": .5, "paused": 0, "invalid": 0, "unavailable": 0}
         if self.buy_multiplier != expected[self.state]:
             raise ValueError("State and candidate permission differ")
         required = (self.medium_ma, self.long_ma, self.long_slope, self.breadth_medium, self.breadth_long)
         if self.state != "unavailable" and any(value is None for value in required):
             raise ValueError("Available state needs complete evidence")
-        if self.state != "unavailable" and (self.missing_reasons or
-                (self.traded is not None and self.traded < 500) or
-                (self.traded is not None and self.eligible is not None and self.eligible < self.traded * .6)):
-            raise ValueError("Available state needs sufficient coverage")
+        if self.state != "unavailable":
+            if self.missing_reasons:
+                raise ValueError("Available state needs sufficient coverage")
+            if self.evidence_mode == "stock_breadth" and (
+                    (self.traded is not None and self.traded < 500) or
+                    (self.traded is not None and self.eligible is not None
+                     and self.eligible < self.traded * .6)):
+                raise ValueError("Available stock breadth needs sufficient coverage")
+            if self.evidence_mode == "index_proxy" and (
+                    self.traded != 3 or self.eligible != 3 or self.coverage_pct != 100):
+                raise ValueError("Available index proxy needs all three proxy indexes")
         return self
 
 
@@ -132,9 +156,12 @@ class MarketRegimeResponse(BaseModel):
     research_only: Literal[True] = True
     model_approved: Literal[False] = False
     rule_name: str
+    model_rules: dict[str, str] = Field(default_factory=dict)
     index_code: RegimeIndex
     index_name: str
     breadth_as_of: date
+    daily_as_of: date | None = None
+    daily_update_mode: RegimeEvidenceMode = "stock_breadth"
     strategy_evaluation_end: date | None = None
     breadth_sources: list[RegimeBreadthSource] = Field(default_factory=list)
     history_start: date | None
@@ -145,3 +172,4 @@ class MarketRegimeResponse(BaseModel):
     events: list[RegimeEvent]
     coverage_gaps: list[RegimeGap] = Field(default_factory=list)
     lightweight_research: dict | None = None
+    strategy_comparison: dict | None = None

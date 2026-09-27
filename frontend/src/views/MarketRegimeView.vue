@@ -4,12 +4,13 @@ import { RouterLink } from 'vue-router'
 import { fetchMarketRegime } from '../api/marketRegime'
 import AppSidebar from '../components/AppSidebar.vue'
 import MarketRegimeChart from '../components/MarketRegimeChart.vue'
+import MarketRegimeMacroEvidence from '../components/MarketRegimeMacroEvidence.vue'
 import {
   regimeColors, regimeLabels, regimePermissions, regimeMissingLabels,
   type MarketRegimeDashboard, type RegimeIndex, type RegimePoint, type RegimeEvent, type RegimeWindow,
 } from '../types/marketRegime'
 
-const indexCode = ref<RegimeIndex>('sh000852')
+const indexCode = ref<RegimeIndex>('sh000985')
 const dashboard = shallowRef<MarketRegimeDashboard | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -21,6 +22,10 @@ const eventPage = ref(0)
 const historyTab = ref<'events' | 'gaps'>('events')
 const eventWindow = ref<RegimeWindow>(20)
 const historyPeriod = ref<'all' | 'recent'>('recent')
+const comparisonKey = ref('sh000985')
+const comparison = computed(() => dashboard.value?.strategy_comparison)
+const selectedComparison = computed(() => comparison.value?.results.find(row => row.key === comparisonKey.value))
+const affectedEntries = computed(() => selectedComparison.value?.restricted_entries.filter(row => row.baseline_bought) ?? [])
 const windows: RegimeWindow[] = [5, 10, 20, 60]
 let request: AbortController | null = null
 let sequence = 0
@@ -28,6 +33,10 @@ const points = computed(() => dashboard.value?.points ?? [])
 const pointMap = computed(() => new Map(points.value.map(point => [point.date, point])))
 const lockedPoint = computed(() => pointMap.value.get(committedDate.value) ?? null)
 const displayPoint = computed(() => pointMap.value.get(previewDate.value ?? '') ?? lockedPoint.value)
+const macroAt = (date: string) => [...(dashboard.value?.lightweight_research?.macro_regime_timeline ?? [])].reverse().find(row => row.date <= date)
+const displayMacro = computed(() => macroAt(displayPoint.value?.date ?? ''))
+const lockedMacro = computed(() => macroAt(committedDate.value))
+const macroDirection = (value: number | null) => value == null ? '未核验' : value > 0 ? '改善 / 支持' : value < 0 ? '走弱' : '分化'
 const events = computed(() => [...(dashboard.value?.events ?? [])]
   .filter(event => historyPeriod.value === 'all' || event.start >= '2024-01-01').reverse())
 const gaps = computed(() => [...(dashboard.value?.coverage_gaps ?? [])]
@@ -43,19 +52,9 @@ const eventStats = computed(() => {
     missedRise: complete.filter(event => eventChange(event, 'drawdown')! > -3 && eventChange(event, 'upside')! >= 5).length,
   }
 })
-const ruleRows = computed(() => {
-  const point = lockedPoint.value
-  return [
-    { key: 'pause', label: '临时暂停', met: point?.pause_met, streak: point?.pause_streak, days: 3,
-      threshold: '收盘 < MA60，MA60上方比例 < 40%' },
-    { key: 'invalid', label: '假设失效', met: point?.invalid_met, streak: point?.invalid_streak, days: 10,
-      threshold: '收盘 < MA120，MA120下降，MA120上方比例 < 30%' },
-    { key: 'recover', label: '修复观察', met: point?.recover_met, streak: point?.recover_streak, days: 5,
-      threshold: '收盘 > MA60，MA60上方比例 ≥ 50%' },
-    { key: 'full', label: '环境有效', met: point?.full_met, streak: point?.full_streak, days: 5,
-      threshold: '修复条件 + 收盘 > MA120，MA120不下降，MA120上方比例 ≥ 50%' },
-  ]
-})
+const ruleNames: Record<string, string> = { warning: '转弱观察', bear: '结构转熊', shock: '深度破坏', repair: '熊市修复', bull: '牛市确认' }
+const triggerNames: Record<string, string> = { ...ruleNames, initial: '初始观察', pullback: '牛市内调整' }
+const ruleRows = computed(() => (lockedPoint.value?.rules ?? []).map(rule => ({ ...rule, label: ruleNames[rule.key] ?? rule.key, threshold: dashboard.value?.model_rules?.[rule.key] ?? '' })))
 const snapshotTime = computed(() => dashboard.value
   ? new Date(dashboard.value.generated_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '')
 
@@ -108,7 +107,9 @@ function relativeMA(point: RegimePoint | null) {
 }
 function breadthNote(point: RegimePoint | null) {
   if (!point) return '暂无数据'
-  if (dashboard.value && point.date > dashboard.value.breadth_as_of) return '后复权历史未覆盖该日，未与未复权序列拼接。'
+  if (point.evidence_mode === 'index_proxy') {
+    return `三宽基指数MA60参与度 ${number(point.breadth_medium, 1, '%')}；MA120参与度 ${number(point.breadth_long, 1, '%')}。${point.state === 'unavailable' ? '指数缺值或窗口不足。' : '沪深300、中证500、中证1000均完整。'}`
+  }
   if (point.breadth_long == null) return '历史广度缺失或均线样本不足，未填补数据。'
   return `MA60以上 ${number(point.breadth_medium, 1, '%')}；MA120以上 ${number(point.breadth_long, 1, '%')}。MA120可评估 ${number(point.eligible, 0)} 只，覆盖 ${number(coverage(point), 2, '%')}。`
 }
@@ -121,6 +122,7 @@ function missingNote(point: RegimePoint | null) {
   return point?.missing_reasons?.map(reason => regimeMissingLabels[reason]).join('；') || '历史样本或来源覆盖待核验'
 }
 function sourceNote(point: RegimePoint | null) {
+  if (point?.evidence_mode === 'index_proxy') return '三宽基指数代理 · 每日轻量更新'
   const source = dashboard.value?.breadth_sources?.find(item => point && item.start <= point.date && item.end >= point.date)
   return source?.table === 'stock_hfq_daily_data' ? '回补后复权 · 独立均线窗口' : '历史后复权 · 覆盖待审计'
 }
@@ -146,32 +148,35 @@ onBeforeUnmount(() => { sequence++; request?.abort() })
         <RouterLink to="/macro/market-regime" class="active" aria-current="page">市场环境</RouterLink>
       </nav>
       <div class="regime-head">
-        <div><h2>市场环境</h2><p class="regime-note">环境判断与低吸许可分离</p></div>
+        <div><h2>市场环境</h2><p class="regime-note">全A主环境 · 指数适配 · 宏观证据</p></div>
         <select v-model="indexCode" class="regime-control" aria-label="观察指数">
+          <option value="sh000985">中证全指 · 全A主环境</option>
+          <option value="sh000300">沪深300 · 策略适用环境</option>
           <option value="sh000852">中证1000 · 策略适用环境</option>
-          <option value="sh000985">中证全指 · 市场参照</option>
         </select>
       </div>
       <div v-if="loading" class="regime-empty" role="status">正在加载研究快照…</div>
       <div v-else-if="error" class="regime-error" role="alert">{{ error }} <button class="btn btn-secondary btn-compact" @click="load">重试</button></div>
       <template v-else-if="dashboard">
-        <div class="regime-warning">研究候选 · 尚未通过模型验收，不控制买卖。后复权广度截至{{ dashboard.breadth_as_of }}；静态快照生成于{{ snapshotTime }}（北京时间）。</div>
+        <div class="regime-warning">指数日更至{{ dashboard.daily_as_of ?? dashboard.history_end }} · {{ dashboard.rule_name }}。牛市内调整不再直接停买；宏观确认结构转弱或修复。宏观版本未核验的历史仅为指数基线，候选模型不控制实际买卖。快照：{{ snapshotTime }}（北京时间）。</div>
         <div v-if="!points.length" class="regime-empty" role="status">所选指数暂无研究数据</div>
         <template v-else>
           <div class="regime-stats">
             <div class="regime-stat"><label>环境状态 <span data-testid="regime-preview-date">{{ displayPoint?.date }}</span></label>
               <strong :style="{ color: displayPoint?.state === 'unavailable' ? '#64748b' : regimeColors[displayPoint?.state ?? 'unavailable'] }">{{ regimeLabels[displayPoint?.state ?? 'unavailable'] }}</strong>
-              <small>{{ displayPoint?.state === 'unavailable' ? '数据不足，不能当作平稳' : '基准候选 · 尚未批准接入' }}</small>
+              <small>{{ displayPoint?.state === 'unavailable' ? '指数数据不足' : displayPoint?.macro_complete ? '指数 + 宏观 · 研究候选' : '指数基线 · 宏观未核验' }}</small>
             </div>
-            <div class="regime-stat"><label>低吸许可 · 候选</label><strong>{{ regimePermissions[displayPoint?.state ?? 'unavailable'] }}</strong><small>只限制新买入，不代替持仓退出</small></div>
+            <div class="regime-stat"><label>策略适配 · 研究</label><strong>{{ regimePermissions[displayPoint?.state ?? 'unavailable'] }}</strong><small>未接入实际交易或自动停买</small></div>
             <div class="regime-stat"><label data-testid="regime-index-name">{{ dashboard.index_name }}</label><strong>{{ number(displayPoint?.close) }}</strong><small>日线收盘</small></div>
           </div>
           <div class="regime-chart-row">
             <MarketRegimeChart :key="indexCode" :points="points" :committed-date="committedDate" :focus-date="focusDate" :focus-revision="focusRevision" @preview="previewDate = $event" @confirm="confirmDate($event)" />
             <aside class="regime-review">
               <h3>日期复盘 <span class="regime-badge" data-testid="regime-review-date">{{ displayPoint?.date }}</span></h3>
+              <div v-if="displayPoint?.state_since" class="regime-evidence-line"><b>状态来源</b><span>{{ displayPoint.state_since }} · {{ triggerNames[displayPoint.trigger_rule ?? ''] }}；未满足切换条件时延续，不以单日反弹解除。</span></div>
               <div class="regime-evidence-line"><b>市场趋势</b><span>收盘 / MA60：{{ number(relativeMA(displayPoint), 2, '%') }}；MA120的20日变化：{{ number(displayPoint?.long_slope == null ? null : displayPoint.long_slope * 100, 2, '%') }}</span></div>
-              <div class="regime-evidence-line"><b>市场广度{{ displayPoint?.state === 'unavailable' ? ' · 数据不足' : '' }}</b><span>{{ breadthNote(displayPoint) }}</span></div>
+              <div class="regime-evidence-line"><b>指数参与度{{ displayPoint?.state === 'unavailable' ? ' · 数据不足' : '' }}</b><span>{{ breadthNote(displayPoint) }}</span></div>
+              <div class="regime-evidence-line"><b>宏观确认</b><span v-if="displayPoint?.macro_complete">{{ displayMacro?.support_count }}组支持，{{ displayMacro?.adverse_count }}组走弱；{{ displayPoint?.macro_applied ? '本日提前确认切换' : '本日未因宏观提前切换' }}</span><span v-else>当时版本不完整，仅指数基线；不倒填最新宏观值。</span></div>
               <div class="regime-evidence-line"><b>{{ displayPoint?.state === 'unavailable' ? '数据核验' : '候选买入额度' }}</b><span>{{ displayPoint?.state === 'unavailable' ? missingNote(displayPoint) : `原策略买入额度的${number((displayPoint?.buy_multiplier ?? 0) * 100, 0, '%')}；持仓卖出仍按原策略。` }}</span></div>
             </aside>
           </div>
@@ -182,24 +187,50 @@ onBeforeUnmount(() => { sequence++; request?.abort() })
             <div class="regime-table-wrap"><table class="regime-table"><thead><tr><th>证据</th><th>当日值</th><th>判断依据</th><th>数据口径</th></tr></thead><tbody>
               <tr><td>中期趋势</td><td>{{ number(relativeMA(lockedPoint), 2, '%') }}</td><td>收盘相对MA60</td><td>指数日线</td></tr>
               <tr><td>长期趋势</td><td>{{ number(lockedPoint?.long_slope == null ? null : lockedPoint.long_slope * 100, 2, '%') }}</td><td>MA120相对20日前</td><td>指数日线</td></tr>
-              <tr><td>中期 / 长期广度</td><td>{{ number(lockedPoint?.breadth_medium, 1, '%') }} / {{ number(lockedPoint?.breadth_long, 1, '%') }}</td><td>暂停阈值40%；失效阈值30%</td><td>{{ sourceNote(lockedPoint) }}</td></tr>
-              <tr><td>MA120可评估 / 当日交易</td><td>{{ number(lockedPoint?.eligible, 0) }} / {{ number(lockedPoint?.traded, 0) }}<small data-testid="regime-coverage">有效覆盖 {{ number(coverage(lockedPoint), 2, '%') }}</small></td><td>至少500只交易股票；完整120日窗口覆盖至少60%</td><td>停牌、新股及原始缺口待区分</td></tr>
+              <tr><td>长期结构</td><td>MA250 {{ number(lockedPoint?.annual_ma) }}；20日变化 {{ number(lockedPoint?.annual_slope_pct, 2, '%') }}</td><td>长期结构破坏后才确认转熊</td><td>指数日线</td></tr>
+              <tr><td>MA60 / MA120 / MA250参与度</td><td>{{ number(lockedPoint?.breadth_medium, 1, '%') }} / {{ number(lockedPoint?.breadth_long, 1, '%') }} / {{ number(lockedPoint?.breadth_annual, 1, '%') }}</td><td>改善至少2/3；转弱至多1/3</td><td>{{ sourceNote(lockedPoint) }}</td></tr>
+              <tr><td>250日高点回撤</td><td>{{ number(lockedPoint?.drawdown_250d_pct, 2, '%') }}</td><td>20%深度破坏须同时满足趋势及参与度条件</td><td>历史收盘高点，无未来极值</td></tr>
+              <tr><td>{{ lockedPoint?.evidence_mode === 'index_proxy' ? '完整代理指数 / 应有指数' : 'MA120可评估 / 当日交易' }}</td><td>{{ number(lockedPoint?.eligible, 0) }} / {{ number(lockedPoint?.traded, 0) }}<small data-testid="regime-coverage">有效覆盖 {{ number(coverage(lockedPoint), 2, '%') }}</small></td><td>{{ lockedPoint?.evidence_mode === 'index_proxy' ? '沪深300、中证500、中证1000三条指数均需完整' : '至少500只交易股票；完整120日窗口覆盖至少60%' }}</td><td>{{ lockedPoint?.evidence_mode === 'index_proxy' ? '每日只采集4条指数，不逐股采集' : '停牌、新股及原始缺口待区分' }}</td></tr>
             </tbody></table></div>
             <p v-if="lockedPoint?.state === 'unavailable'" class="regime-data-warning" data-testid="regime-missing-reason">{{ missingNote(lockedPoint) }}。该日不给出低吸许可，不计入有效停买事件。</p>
             <div class="regime-table-wrap regime-rules"><table class="regime-table"><thead><tr><th>规则确认</th><th>当日条件</th><th>连续 / 所需交易日</th><th>全部条件</th></tr></thead><tbody>
               <tr v-for="rule in ruleRows" :key="rule.key" :data-rule="rule.key"><td>{{ rule.label }}</td><td>{{ rule.met == null ? '数据不足' : rule.met ? '满足' : '未满足' }}</td><td>{{ rule.met == null ? '—' : number(rule.streak, 0) }} / {{ rule.days }}</td><td>{{ rule.threshold }}</td></tr>
             </tbody></table></div>
-            <p class="regime-note">收盘后确认，下一交易日使用；缺失日打断连续计数，不解除此前失效状态。修复观察仅恢复原买入额度的50%。</p>
+            <p class="regime-note">收盘后确认，下一交易日观察。指数缺失打断连续计数，不解除此前熊市状态。牛市内调整保留100%研究额度，转弱及修复为50%，熊市为0%；不改变已保存策略。</p>
+            <div class="regime-table-wrap"><table class="regime-table"><thead><tr><th>宏观确认组</th><th>当前方向</th><th>判定依据</th></tr></thead><tbody>
+              <tr v-for="group in lockedMacro?.groups ?? []" :key="group.key"><td>{{ group.label }}</td><td>{{ macroDirection(group.direction) }}</td><td>{{ group.key === 'money_credit' ? 'M1-M2增速差与社融存量同比的3个月变化同向' : group.key === 'activity' ? 'PMI、新订单的3个月均值与3个月变化共同确认' : '利润与营业收入官方累计同比同向，不推算单月利润' }}</td></tr>
+            </tbody></table></div>
+            <p class="regime-note">至少两组走弱，价格转弱/转熊确认由10日缩短至5日；至少两组改善，价格修复确认由5日缩短至3日。宏观不能单独把牛市改成熊市，也不能凭空确认牛市。</p>
+          </section>
+          <MarketRegimeMacroEvidence :date="committedDate" :research="dashboard.lightweight_research ?? null" />
+          <section v-if="comparison" class="regime-section" data-testid="regime-strategy-comparison">
+            <div class="regime-section-head"><h3>情绪强化测试 · 买入限制对照</h3><span class="regime-note">{{ comparison.start_date }} 至 {{ comparison.end_date }}</span></div>
+            <p class="regime-note">同一套当前信号与{{ comparison.execution_asset }}成交价格，只改变新买入许可。红买蓝卖，每次总资产50%，次日开盘；含期末持仓浮盈亏，无手续费和滑点。原策略未修改。</p>
+            <p v-if="comparison.signal_data_quality && !comparison.signal_data_quality.strict_replay_complete" class="regime-data-warning">{{ comparison.signal_data_quality.note }}</p>
+            <p v-if="comparison.end_date !== dashboard.daily_as_of" class="regime-data-warning">研究报告截至{{ comparison.end_date }}，不代表之后交易日；日更环境已更新至{{ dashboard.daily_as_of }}。</p>
+            <div class="regime-table-wrap"><table class="regime-table"><thead><tr><th>限制口径</th><th>累计收益</th><th>最大回撤</th><th>比原策略少赚</th><th>原有买入被阻止 / 减半</th></tr></thead><tbody>
+              <tr v-for="row in comparison.results" :key="row.key"><td>{{ row.label }}</td><td>{{ number(row.return_pct, 2, '%') }}</td><td>{{ number(row.mdd_pct, 2, '%') }}</td><td>{{ number(row.missed_return_pp, 2, '个百分点') }}</td><td>{{ row.blocked_baseline_buys }} / {{ row.reduced_baseline_buys }}<small v-if="row.missing_gate_days.length">{{ row.missing_gate_days.length }}日数据缺失</small></td></tr>
+            </tbody></table></div>
+            <details class="regime-method"><summary>查看受影响买入与研究口径</summary>
+              <select v-model="comparisonKey" class="regime-control" aria-label="受限买入对照口径"><option v-for="row in comparison.results.filter(row => row.key !== 'ungated')" :key="row.key" :value="row.key">{{ row.label }}</option></select>
+              <div class="regime-table-wrap"><table class="regime-table"><thead><tr><th>信号日</th><th>次日成交日</th><th>限制状态</th><th>后20日收盘收益</th><th>后20日最高 / 最低价变化</th></tr></thead><tbody>
+                <tr v-for="row in affectedEntries" :key="row.signal_date"><td><button class="regime-date-link" @click="confirmDate(row.signal_date, true)">{{ row.signal_date }}</button></td><td>{{ row.execution_date }}</td><td>{{ regimeLabels[row.state] }} · {{ row.multiplier === 0 ? '不买入' : '半额' }}</td><td>{{ row.return_20d_pct == null ? '待验证' : number(row.return_20d_pct, 2, '%') }}</td><td>{{ number(row.upside_20d_pct, 2, '%') }} / {{ number(row.drawdown_20d_pct, 2, '%') }}</td></tr>
+                <tr v-if="!affectedEntries.length"><td colspan="5">无原策略实际买入受到限制</td></tr>
+              </tbody></table></div>
+              <p v-for="note in comparison.notes" :key="note">{{ note }}</p>
+              <p v-if="comparison.signal_data_quality?.missing_emotion_dates.length">原始情绪缺失日：{{ comparison.signal_data_quality.missing_emotion_dates.join('、') }}</p>
+              <p>保存策略起点{{ comparison.saved_start_date }}；本次仅研究回放延伸到2024-09-24。策略配置更新时间{{ comparison.strategy_updated_at }}。</p>
+            </details>
           </section>
           <section class="regime-section">
-            <div class="regime-section-head"><div class="regime-history-tabs" role="tablist" aria-label="历史记录类型"><button role="tab" :aria-selected="historyTab === 'events'" @click="historyTab = 'events'">停买事件</button><button role="tab" :aria-selected="historyTab === 'gaps'" @click="historyTab = 'gaps'">数据缺口</button></div>
+            <div class="regime-section-head"><div class="regime-history-tabs" role="tablist" aria-label="历史记录类型"><button role="tab" :aria-selected="historyTab === 'events'" @click="historyTab = 'events'">转弱 / 熊市事件</button><button role="tab" :aria-selected="historyTab === 'gaps'" @click="historyTab = 'gaps'">数据缺口</button></div>
               <div class="regime-history-controls"><select v-model="historyPeriod" class="regime-control" aria-label="历史评估区间"><option value="recent">2024年至今</option><option value="all">全部历史</option></select><select v-if="historyTab === 'events'" v-model="eventWindow" class="regime-control" aria-label="事件前瞻窗口"><option v-for="window in windows" :key="window" :value="window">后{{ window }}个交易日</option></select></div>
             </div>
             <template v-if="historyTab === 'events'">
-            <p class="regime-event-summary" data-testid="regime-event-summary">{{ events.length }}段停买 · {{ eventStats.complete }}段窗口完整 · 其中{{ eventStats.decline }}段下探≥5% · {{ eventStats.missedRise }}段回撤&lt;3%且上涨≥5% · {{ eventStats.pending }}段待验证</p>
+            <p class="regime-event-summary" data-testid="regime-event-summary">{{ events.length }}段转弱 / 熊市 · {{ eventStats.complete }}段窗口完整 · 其中{{ eventStats.decline }}段下探≥5% · {{ eventStats.missedRise }}段回撤&lt;3%且上涨≥5% · {{ eventStats.pending }}段待验证</p>
             <p class="regime-note">以首次触发日收盘为基准；未完成窗口或缺少区间高低价不参与统计，数据缺口不算停买命中。</p>
-            <div v-if="!events.length" class="regime-empty">暂无停买事件</div>
-            <div v-else class="regime-table-wrap"><table class="regime-table"><thead><tr><th>暂停开始</th><th>最后暂停日 / 恢复日</th><th>交易日</th><th>后{{ eventWindow }}日最低价变化</th><th>后{{ eventWindow }}日最高价变化</th></tr></thead><tbody>
+            <div v-if="!events.length" class="regime-empty">暂无转弱 / 熊市事件</div>
+            <div v-else class="regime-table-wrap"><table class="regime-table"><thead><tr><th>开始日期</th><th>最后风险日 / 恢复日</th><th>交易日</th><th>后{{ eventWindow }}日最低价变化</th><th>后{{ eventWindow }}日最高价变化</th></tr></thead><tbody>
               <tr v-for="event in pageEvents" :key="event.start" :data-event-date="event.start" :class="{ selected: committedDate === event.start }" @click="confirmDate(event.start, true)">
                 <td><button class="regime-date-link" :aria-label="`复盘${event.start}事件`" @click.stop="confirmDate(event.start, true)">{{ event.start }}</button></td>
                 <td>{{ event.end }}<small v-if="!event.closed">{{ event.end_reason === 'unavailable' ? '数据断点' : '尚未结束' }}</small><small v-else-if="event.resumed_date">{{ event.resumed_date }} {{ regimeLabels[event.end_reason as 'repair' | 'valid'] ?? '恢复' }}</small></td><td>{{ event.days }}</td>
@@ -220,7 +251,7 @@ onBeforeUnmount(() => { sequence++; request?.abort() })
               <button class="regime-control" :disabled="eventPage + 1 >= eventPages" aria-label="下一页事件" title="下一页事件" @click="eventPage++">→</button>
             </nav>
           </section>
-          <details class="regime-method"><summary>研究口径与数据限制</summary><p v-for="note in dashboard.notes" :key="note">{{ note }}</p><p v-for="source in dashboard.breadth_sources" :key="source.table">{{ source.start }}至{{ source.end }}：{{ source.note }}</p><p>价格覆盖：{{ dashboard.history_start }}至{{ dashboard.history_end }}；策略对照回测截至{{ dashboard.strategy_evaluation_end ?? '未记录' }}。候选规则：MA60/MA120，暂停连续3日，失效连续10日，修复连续5日。</p></details>
+          <details class="regime-method"><summary>研究口径与数据限制</summary><p v-for="note in dashboard.notes" :key="note">{{ note }}</p><p v-for="source in dashboard.breadth_sources" :key="source.table">{{ source.start }}至{{ source.end }}：{{ source.note }}</p><p>价格覆盖：{{ dashboard.history_start }}至{{ dashboard.history_end }}；策略对照截至{{ dashboard.strategy_evaluation_end ?? '未记录' }}。模型：{{ dashboard.rule_name }}。阈值本次固定后重算，不因收益结果自动调参。</p></details>
         </template>
       </template>
     </main>

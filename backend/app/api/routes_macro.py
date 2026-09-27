@@ -24,11 +24,13 @@ def get_market_regime_macro_evidence(
         as_of_at = as_of_at.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
     if as_of_at > datetime.now():
         raise HTTPException(status_code=400, detail="不能查询未来的已知数据")
-    evidence = select_macro(read_observations(db), as_of_at)
+    observations = read_observations(db)
+    evidence = select_macro(observations, as_of_at)
     missing, stale = macro_completeness(evidence)
     return ApiResponse(data={"as_of_at": as_of_at, "timezone": "Asia/Shanghai",
                              "research_only": True, "model_approved": False,
                              "macro_evidence": evidence, "derived_evidence": macro_derived(evidence),
+                             "archive_macro_evidence": select_macro(observations, as_of_at, strict=False),
                              "missing_macro": missing, "stale_macro": stale,
                              "macro_complete": not (missing or stale)})
 

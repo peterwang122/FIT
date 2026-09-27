@@ -17,7 +17,8 @@ let trackSeries: ISeriesApi<'Histogram'> | null = null
 let observer: ResizeObserver | null = null
 let disposed = false
 const byDate = computed(() => new Map(props.points.map(point => [point.date, point])))
-const states = Object.keys(regimeLabels) as RegimeState[]
+const states: RegimeState[] = ['valid', 'adjustment', 'warning', 'invalid', 'repair', 'unavailable']
+let annualSeries: ISeriesApi<'Line'> | null = null
 
 function focusDate(date: string) {
   if (!chart || !date) return
@@ -38,6 +39,8 @@ function updateData() {
     ? { time: point.date as Time } : { time: point.date as Time, value: point.medium_ma }))
   longSeries.setData(props.points.map(point => point.long_ma == null
     ? { time: point.date as Time } : { time: point.date as Time, value: point.long_ma }))
+  annualSeries?.setData(props.points.map(point => point.annual_ma == null
+    ? { time: point.date as Time } : { time: point.date as Time, value: point.annual_ma }))
   trackSeries.setData(props.points.map(point => ({ time: point.date as Time, value: 1, color: regimeColors[point.state] })))
   const last = props.points[props.points.length - 1]
   if (last) {
@@ -63,6 +66,7 @@ onMounted(async () => {
   })
   middleSeries = chart.addSeries(LineSeries, { color: '#2563eb', lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
   longSeries = chart.addSeries(LineSeries, { color: '#c49a42', lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+  annualSeries = chart.addSeries(LineSeries, { color: '#64748b', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false })
   trackSeries = chart.addSeries(HistogramSeries, {
     priceLineVisible: false, lastValueVisible: false,
     priceFormat: { type: 'custom', formatter: () => '', minMove: 1 },
@@ -90,7 +94,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); chart?.remove()
 
 <template>
   <section class="market-regime-plot">
-    <div class="plot-top"><h3>趋势与环境</h3><div class="legend"><span><i class="ma60" />MA60</span><span><i class="ma120" />MA120</span></div></div>
+    <div class="plot-top"><h3>趋势与环境</h3><div class="legend"><span><i class="ma60" />MA60</span><span><i class="ma120" />MA120</span><span><i class="ma250" />MA250</span></div></div>
     <div ref="container" class="market-regime-chart" role="img" :aria-label="`指数K线与候选环境轨道，证据锁定日期${committedDate}`" @mouseleave="emit('preview', null)" />
     <div class="legend states"><span v-for="state in states" :key="state"><i :style="{ background: regimeColors[state] }" />{{ regimeLabels[state] }}</span></div>
   </section>
@@ -103,6 +107,7 @@ h3 { font-size: 16px; margin: 0; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b; }
 .legend i { width: 14px; height: 3px; display: inline-block; vertical-align: middle; margin-right: 4px; }
 .ma60 { background: #2563eb; } .ma120 { background: #c49a42; }
+.ma250 { background: #64748b; }
 .market-regime-chart { height: 335px; width: 100%; position: relative; }
 .states { margin-top: 9px; } .states i { width: 8px; height: 8px; }
 @media (max-width: 1280px) { .market-regime-chart { height: 315px; } }

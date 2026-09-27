@@ -47,9 +47,7 @@ class Settings(BaseSettings):
     wechat_miniapp_notification_task_name: str = "每日通知"
 
     codex_reset_watchdog_enabled: bool = True
-    codex_reset_watchdog_source_url: str = (
-        "https://api.dayclaw.com/api/source/public/x/thsottiaux/items"
-    )
+    codex_reset_watchdog_source_url: str = "https://codex-reset.com/api/feed"
     codex_reset_watchdog_state_file: str = "runtime/state/codex_reset_watchdog.json"
     codex_reset_watchdog_request_timeout_seconds: int = 20
     codex_reset_watchdog_retry_attempts: int = 3

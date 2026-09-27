@@ -10,7 +10,7 @@ from app.services.codex_reset_watchdog_service import (
     WatchdogItem,
     classify_reset_finding,
     extract_mymemory_translation,
-    extract_source_items,
+    extract_public_feed_items,
     extract_translation,
     restore_slash_commands,
 )
@@ -117,26 +117,62 @@ def test_ignores_negated_and_non_quota_resets():
     assert classify_reset_finding("Why did you switch to Codex? Don't say reset.") is None
 
 
-def test_extracts_dayclaw_public_items():
-    items = extract_source_items(
+def test_extracts_verified_public_feed_tweets_and_radar_context():
+    items = extract_public_feed_items(
         {
-            "items": [
+            "stale": False,
+            "profile": {"handle": "thsottiaux"},
+            "tweets": [
                 {
-                    "id": "internal-id",
-                    "external_id": "123456",
-                    "content": "  Codex limits will reset tomorrow.  ",
-                    "url": "https://x.com/thsottiaux/status/123456",
-                    "author": "thsottiaux",
-                    "published_at": "2026-08-03T08:00:00",
-                    "metadata": {"author_user_name": "thsottiaux"},
+                    "id": "123",
+                    "text": "A reset is landing tonight.",
+                    "url": "https://x.com/thsottiaux/status/123",
+                    "at": "2026-09-12T03:20:36.000Z",
                 }
-            ]
+            ],
+            "radar_context": [
+                {
+                    "id": "124",
+                    "text": "A normal Codex update.",
+                    "url": "https://x.com/thsottiaux/status/124",
+                    "at": "2026-09-21T06:27:21.000Z",
+                }
+            ],
         }
     )
 
-    assert len(items) == 1
-    assert items[0].item_id == "123456"
-    assert items[0].text == "Codex limits will reset tomorrow."
+    assert [item.item_id for item in items] == ["123", "124"]
+    assert items[1].author == "thsottiaux"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"stale": True, "profile": {"handle": "thsottiaux"}, "tweets": []},
+        {"stale": False, "profile": {"handle": "somebody_else"}, "tweets": []},
+    ],
+)
+def test_rejects_stale_or_wrong_author_public_feed_payload(payload):
+    with pytest.raises(ValueError):
+        extract_public_feed_items(payload)
+
+
+def test_public_feed_rejects_noncanonical_author_urls():
+    with pytest.raises(ValueError):
+        extract_public_feed_items(
+            {
+                "stale": False,
+                "profile": {"handle": "thsottiaux"},
+                "tweets": [
+                    {
+                        "id": "123",
+                        "text": "Spoofed item",
+                        "url": "https://x.com/not_tibo/status/123",
+                        "at": "2026-09-21T06:27:21.000Z",
+                    }
+                ],
+            }
+        )
 
 
 def test_extracts_google_translation_segments():
