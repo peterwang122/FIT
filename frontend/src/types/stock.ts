@@ -341,6 +341,12 @@ export interface IndexRiskStrategyPoint {
   components: Record<string, unknown>
 }
 
+export interface IndexBearSwingPoint {
+  trade_date: string
+  values: Record<string, number | null>
+  as_of_at: string
+}
+
 export interface IndexDashboardResponse {
   index: {
     code: string
@@ -372,6 +378,8 @@ export interface IndexDashboardResponse {
   margin_financing_net_buy_sum_points: IndexMarginFinancingNetBuySumPoint[]
   turnover_concentration_points: IndexTurnoverConcentrationPoint[]
   self_sentiment_points: IndexSelfSentimentPoint[]
+  bear_swing_points?: IndexBearSwingPoint[]
+  csi500_swing_points?: IndexBearSwingPoint[]
   us_treasury_yield_points: IndexUsTreasuryYieldPoint[]
   us_credit_spread_points: IndexUsCreditSpreadPoint[]
   risk_strategy_points: IndexRiskStrategyPoint[]

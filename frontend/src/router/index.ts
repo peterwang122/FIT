@@ -14,6 +14,7 @@ import QuantStockView from '../views/QuantStockView.vue'
 import QuantStrategiesView from '../views/QuantStrategiesView.vue'
 import QuantView from '../views/QuantView.vue'
 import ResearchView from '../views/ResearchView.vue'
+import AshareOutlookResearchView from '../views/AshareOutlookResearchView.vue'
 import RiskView from '../views/RiskView.vue'
 import Csi1000RiskView from '../views/Csi1000RiskView.vue'
 import Csi1000FuturesResearchView from '../views/Csi1000FuturesResearchView.vue'
@@ -68,6 +69,7 @@ export const router = createRouter({
         { path: '', redirect: '/research/vix-options' },
         { path: 'vix-options', component: VixOptionResearchView },
         { path: 'csi1000-futures', component: Csi1000FuturesResearchView },
+        { path: 'ashare-outlook', component: AshareOutlookResearchView },
       ],
     },
     {

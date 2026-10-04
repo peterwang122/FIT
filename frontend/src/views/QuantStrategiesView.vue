@@ -1198,6 +1198,9 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <p v-if="targetChart?.data_coverage" class="muted">
+            因子完整起点：{{ targetChart.data_coverage.start_date ?? '数据不完整' }}；此前数据不完整，不回退其他模型。信息截止 {{ targetChart.data_coverage.as_of_time }}。
+          </p>
           <p v-if="targetChartLoading" class="muted">标的 K 线加载中...</p>
           <p v-else-if="targetChartError" class="banner-error">{{ targetChartError }}</p>
           <KlineChart

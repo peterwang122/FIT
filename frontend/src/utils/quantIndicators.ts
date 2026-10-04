@@ -12,6 +12,7 @@
 } from '../types/quant'
 import type {
   FuturesBasisPoint,
+  IndexBearSwingPoint,
   IndexBasisDeltaPoint,
   IndexBreadthPoint,
   IndexCffexNetShortDeltaPoint,
@@ -35,6 +36,8 @@ import type {
   IndexUsVixPoint,
   IndexVixPoint,
 } from '../types/stock'
+import { BEAR_SWING_FIELDS } from './bearSwing'
+import { CSI500_SWING_FIELDS } from './csi500Swing'
 
 export type QuantIndicatorCandle = {
   trade_date: string
@@ -60,6 +63,8 @@ function supportsVixSeries(symbolName: string) {
 }
 
 export const INDEX_QUANT_FILTER_FIELD_KEYS: QuantFilterFieldKey[] = [
+  ...BEAR_SWING_FIELDS.map((field) => field.key),
+  ...CSI500_SWING_FIELDS.map((field) => field.key),
   'emotion',
   'cn-market-fear-greed',
   'cn-baifenwei-fear-greed',
@@ -892,6 +897,7 @@ type IndexDatasetOptions = {
   marginTradingPoints?: IndexMarginTradingPoint[]
   marginFinancingNetBuySumPoints?: IndexMarginFinancingNetBuySumPoint[]
   selfSentimentPoints?: IndexSelfSentimentPoint[]
+  bearSwingPoints?: IndexBearSwingPoint[]
   riskStrategyPoints?: IndexRiskStrategyPoint[]
   cnMarketFearGreedPoints?: IndexCnMarketFearGreedPoint[]
   cnBaifenweiFearGreedPoints?: IndexCnBaifenweiFearGreedPoint[]
@@ -917,6 +923,8 @@ function buildIndexQuantFilterFields(
     includeFundPurchaseLimit: boolean
     includeMarginTrading: boolean
     includeSelfSentiment: boolean
+    includeBearSwing: boolean
+    includeCsi500Swing?: boolean
     includeRiskStrategy: boolean
     includeUsVix: boolean
     includeUsFearGreed: boolean
@@ -959,6 +967,12 @@ function buildIndexQuantFilterFields(
       { key: 'self-sentiment-core-score', group: 'emotion', label: '自建情绪核心分' },
       { key: 'self-sentiment-derivative-score', group: 'emotion', label: '自建情绪衍生分' },
     )
+  }
+  if (options.includeBearSwing) {
+    fields.unshift(...BEAR_SWING_FIELDS.map(({ key, label }) => ({ key, label, group: 'risk' as const })))
+  }
+  if (options.includeCsi500Swing) {
+    fields.unshift(...CSI500_SWING_FIELDS.map(({ key, label }) => ({ key, label, group: 'risk' as const })))
   }
   if (options.includeRiskStrategy) {
     fields.unshift(
@@ -1272,6 +1286,7 @@ export function buildIndexQuantFilterDataset(
   const marginTradingPoints = options.marginTradingPoints ?? []
   const marginFinancingNetBuySumPoints = options.marginFinancingNetBuySumPoints ?? []
   const selfSentimentPoints = options.selfSentimentPoints ?? []
+  const bearSwingByDate = new Map((options.bearSwingPoints ?? []).map((point) => [point.trade_date, point.values]))
   const riskStrategyPoints = options.riskStrategyPoints ?? []
   const cnMarketFearGreedPoints = options.cnMarketFearGreedPoints ?? []
   const cnBaifenweiFearGreedPoints = options.cnBaifenweiFearGreedPoints ?? []
@@ -1590,6 +1605,8 @@ export function buildIndexQuantFilterDataset(
       'cn-baifenwei-limit-up-down-ratio':
         cnBaifenweiFearGreedByDate.get(snapshot.tradeDate)?.limit_up_down_ratio_score ?? null,
       'self-sentiment-score': selfSentimentByDate.get(snapshot.tradeDate)?.['self-sentiment-score'] ?? null,
+      ...Object.fromEntries((symbolName === '中证500' ? CSI500_SWING_FIELDS : BEAR_SWING_FIELDS)
+        .map(({ key }) => [key, bearSwingByDate.get(snapshot.tradeDate)?.[key] ?? null])),
       'self-sentiment-core-score':
         selfSentimentByDate.get(snapshot.tradeDate)?.['self-sentiment-core-score'] ?? null,
       'self-sentiment-derivative-score':
@@ -1714,6 +1731,8 @@ export function buildIndexQuantFilterDataset(
       includeFundPurchaseLimit,
       includeMarginTrading,
       includeSelfSentiment,
+      includeBearSwing: symbolName === '中证1000',
+      includeCsi500Swing: symbolName === '中证500',
       includeRiskStrategy,
       includeUsVix,
       includeUsFearGreed,

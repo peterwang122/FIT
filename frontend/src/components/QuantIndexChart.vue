@@ -26,6 +26,7 @@ import type {
 } from '../types/quant'
 import type {
   FuturesBasisPoint,
+  IndexBearSwingPoint,
   IndexBasisDeltaPoint,
   IndexBreadthPoint,
   IndexCffexNetShortDeltaPoint,
@@ -53,6 +54,8 @@ import type {
 } from '../types/stock'
 import { DateHighlightPrimitive } from '../utils/dateHighlightPrimitive'
 import { buildQuantFilterDataset } from '../utils/quantIndicators'
+import { BEAR_SWING_FIELDS } from '../utils/bearSwing'
+import { CSI500_SWING_PLOT_FIELDS } from '../utils/csi500Swing'
 
 type PanelKey =
   | 'main'
@@ -74,6 +77,7 @@ type PanelKey =
   | 'marginFinancingNetBuySum'
   | 'turnoverConcentration'
   | 'selfSentiment'
+  | 'bearSwing'
   | 'usVix'
   | 'usFearGreed'
   | 'usHedge'
@@ -136,6 +140,7 @@ type SubPanelControlPreference = {
   marginFinancingNetBuySumWindow: MarginFinancingNetBuySumWindow
   turnoverConcentrationMetric: TurnoverConcentrationMetricKey
   selfSentimentMetric: SelfSentimentMetricKey
+  bearSwingMetric: string
   usCreditMetric: UsCreditMetricKey
   basisMetric: BasisMetricKey
 }
@@ -173,6 +178,7 @@ const ALL_PANEL_KEYS: PanelKey[] = [
   'marginFinancingNetBuySum',
   'turnoverConcentration',
   'selfSentiment',
+  'bearSwing',
   'usVix',
   'usFearGreed',
   'usHedge',
@@ -298,6 +304,7 @@ const props = withDefaults(
     supportsTurnoverConcentrationPanel?: boolean
     supportsMarginTradingPanel?: boolean
     selfSentimentPoints?: IndexSelfSentimentPoint[]
+    bearSwingPoints?: IndexBearSwingPoint[]
     supportsSelfSentimentPanel?: boolean
     supportsCnOptionPutCallPanel?: boolean
     usVixPoints?: IndexUsVixPoint[]
@@ -354,6 +361,7 @@ const props = withDefaults(
     supportsTurnoverConcentrationPanel: false,
     supportsMarginTradingPanel: false,
     selfSentimentPoints: () => [],
+    bearSwingPoints: () => [],
     supportsSelfSentimentPanel: false,
     supportsCnOptionPutCallPanel: false,
     usVixPoints: () => [],
@@ -406,6 +414,7 @@ const marginTradingContainerRef = ref<HTMLDivElement | null>(null)
 const marginFinancingNetBuySumContainerRef = ref<HTMLDivElement | null>(null)
 const turnoverConcentrationContainerRef = ref<HTMLDivElement | null>(null)
 const selfSentimentContainerRef = ref<HTMLDivElement | null>(null)
+const bearSwingContainerRef = ref<HTMLDivElement | null>(null)
 const usVixContainerRef = ref<HTMLDivElement | null>(null)
 const usFearGreedContainerRef = ref<HTMLDivElement | null>(null)
 const usHedgeContainerRef = ref<HTMLDivElement | null>(null)
@@ -432,6 +441,18 @@ const activeMarginTradingMetric = ref<MarginTradingMetricKey>('financing')
 const activeMarginFinancingNetBuySumWindow = ref<MarginFinancingNetBuySumWindow>(20)
 const activeTurnoverConcentrationMetric = ref<TurnoverConcentrationMetricKey>('top5')
 const activeSelfSentimentMetric = ref<SelfSentimentMetricKey>('score')
+const activeBearSwingMetric = ref('bear-bank-tightness')
+const swingFields = computed(() => props.symbolName === '中证500' ? CSI500_SWING_PLOT_FIELDS : BEAR_SWING_FIELDS)
+const swingPanelTitle = computed(() => props.symbolName === '中证500' ? '牛熊波段因子' : '熊市波段因子')
+const bearSwingMetric = computed(() => swingFields.value.find((item) => item.key === activeBearSwingMetric.value) ?? swingFields.value[0]!)
+const bearSwingByDate = computed(() => new Map(props.bearSwingPoints.map((p) => [p.trade_date, p])))
+const bearSwingData = computed(() => sortedCandles.value.map((c) => ({
+  time: c.trade_date as Time,
+  value: toNullableNumber(bearSwingByDate.value.get(c.trade_date)?.values[activeBearSwingMetric.value]),
+})))
+function selectBearSwingMetric() {
+  rememberSubPanelControl({ bearSwingMetric: activeBearSwingMetric.value })
+}
 const activeUsCreditKey = ref<UsCreditMetricKey>('hyOas')
 const activeBasisKey = ref<BasisMetricKey>('adjusted')
 
@@ -519,6 +540,8 @@ function applySubPanelControlPreference() {
   activeSelfSentimentMetric.value = isStoredChoice(preference.selfSentimentMetric, ['score', 'core', 'derivative'])
     ? preference.selfSentimentMetric
     : 'score'
+  activeBearSwingMetric.value = swingFields.value.some((item) => item.key === preference.bearSwingMetric)
+    ? preference.bearSwingMetric! : swingFields.value[0]!.key
   activeUsCreditKey.value = isStoredChoice(preference.usCreditMetric, ['hyOas', 'change5d'])
     ? preference.usCreditMetric
     : 'hyOas'
@@ -565,6 +588,7 @@ let marginFinancingNetBuySumReferenceSeries: LineSeriesApi | null = null
 let turnoverConcentrationSeries: LineSeriesApi | null = null
 let turnoverConcentrationReferenceSeries: LineSeriesApi | null = null
 let selfSentimentSeries: LineSeriesApi | null = null
+let bearSwingSeries: LineSeriesApi | null = null
 let selfSentimentReferenceSeries: LineSeriesApi | null = null
 let usVixSeries: CandleSeriesApi | null = null
 let usFearGreedSeries: LineSeriesApi | null = null
@@ -613,6 +637,7 @@ const visiblePanelOptions = computed<SubPanelOption[]>(() => [
     available: props.supportsTurnoverConcentrationPanel,
   },
   { key: 'selfSentiment', label: '自建情绪', available: props.supportsSelfSentimentPanel },
+  { key: 'bearSwing', label: swingPanelTitle.value, available: ['中证1000', '中证500'].includes(props.symbolName) },
   { key: 'usVix', label: '美股VIX', available: props.supportsUsVixPanel },
   { key: 'usFearGreed', label: '恐贪', available: props.supportsUsFearGreedPanel },
   { key: 'usHedge', label: '对冲代理', available: props.supportsUsHedgeProxyPanel },
@@ -654,6 +679,7 @@ function getPanelContainer(panelKey: PanelKey): HTMLDivElement | null {
   if (panelKey === 'marginFinancingNetBuySum') return marginFinancingNetBuySumContainerRef.value
   if (panelKey === 'turnoverConcentration') return turnoverConcentrationContainerRef.value
   if (panelKey === 'selfSentiment') return selfSentimentContainerRef.value
+  if (panelKey === 'bearSwing') return bearSwingContainerRef.value
   if (panelKey === 'usVix') return usVixContainerRef.value
   if (panelKey === 'usFearGreed') return usFearGreedContainerRef.value
   if (panelKey === 'usHedge') return usHedgeContainerRef.value
@@ -853,6 +879,7 @@ const quantDataset = computed(() =>
       marginTradingPoints: props.marginTradingPoints,
       marginFinancingNetBuySumPoints: props.marginFinancingNetBuySumPoints,
       selfSentimentPoints: props.selfSentimentPoints,
+      bearSwingPoints: props.bearSwingPoints,
       cnMarketFearGreedPoints: props.cnMarketFearGreedPoints,
       cnBaifenweiFearGreedPoints: props.cnBaifenweiFearGreedPoints,
       usTreasuryYieldPoints: props.usTreasuryYieldPoints,
@@ -2869,6 +2896,14 @@ const summaryCards = computed<SummaryCard[]>(() => {
           },
         ]
       : []),
+    ...(isSubPanelVisible('bearSwing') ? [{
+      key: 'bear-swing', title: swingPanelTitle.value, hint: bearSwingMetric.value.label,
+      rows: [
+        { label: bearSwingMetric.value.label, value: bearSwingByDate.value.get(indicator.tradeDate)?.values[activeBearSwingMetric.value] == null
+          ? '-' : formatMetric(bearSwingByDate.value.get(indicator.tradeDate)?.values[activeBearSwingMetric.value]) + bearSwingMetric.value.unit },
+        { label: '信息截止', value: indicator.tradeDate + ' 22:30' },
+      ],
+    }] : []),
     ...(isSubPanelVisible('selfSentiment')
       ? [
           {
@@ -3705,6 +3740,13 @@ function updateAllSeries() {
     panelValueMaps.delete('turnoverConcentration')
   }
 
+  if (isSubPanelVisible('bearSwing') && bearSwingSeries) {
+    bearSwingSeries.setData(bearSwingData.value.map((item) => item.value === null
+      ? { time: item.time } : { time: item.time, value: item.value }))
+    panelValueMaps.set('bearSwing', new Map(bearSwingData.value.filter((p) => p.value !== null).map((p) => [String(p.time), p.value!])))
+  } else {
+    panelValueMaps.delete('bearSwing')
+  }
   if (isSubPanelVisible('selfSentiment')) {
     if (!selfSentimentSeries) return
     const metricConfig = selfSentimentMetricConfig[activeSelfSentimentMetric.value]
@@ -3883,6 +3925,9 @@ function renderCharts() {
     if (isSubPanelVisible('selfSentiment')) {
       charts.selfSentiment = createBaseChart(selfSentimentContainerRef.value!, true)
     }
+    if (isSubPanelVisible('bearSwing')) {
+      charts.bearSwing = createBaseChart(bearSwingContainerRef.value!, true)
+    }
     if (isSubPanelVisible('usVix')) {
       charts.usVix = createBaseChart(usVixContainerRef.value!, true)
     }
@@ -4015,6 +4060,7 @@ function renderCharts() {
           2,
         )
       : null
+    bearSwingSeries = charts.bearSwing ? addLineSeries(charts.bearSwing, '#0f766e', 2) : null
     selfSentimentReferenceSeries = charts.selfSentiment
       ? addReferenceLineSeries(charts.selfSentiment, '#dc2626')
       : null
@@ -4050,6 +4096,7 @@ function renderCharts() {
     if (marginFinancingNetBuySumSeries) primarySeriesMap.set('marginFinancingNetBuySum', marginFinancingNetBuySumSeries)
     if (turnoverConcentrationSeries) primarySeriesMap.set('turnoverConcentration', turnoverConcentrationSeries)
     if (selfSentimentSeries) primarySeriesMap.set('selfSentiment', selfSentimentSeries)
+    if (bearSwingSeries) primarySeriesMap.set('bearSwing', bearSwingSeries)
     if (usVixSeries) primarySeriesMap.set('usVix', usVixSeries)
     if (usFearGreedSeries) primarySeriesMap.set('usFearGreed', usFearGreedSeries)
     if (usHedgeSeries) primarySeriesMap.set('usHedge', usHedgeSeries)
@@ -4102,6 +4149,7 @@ function renderCharts() {
     if (props.supportsSelfSentimentPanel) {
       attachHighlightPrimitive(selfSentimentSeries)
     }
+    attachHighlightPrimitive(bearSwingSeries)
     if (props.supportsUsVixPanel) {
       attachHighlightPrimitive(usVixSeries)
     }
@@ -4178,6 +4226,7 @@ function disposeCharts() {
   turnoverConcentrationSeries = null
   turnoverConcentrationReferenceSeries = null
   selfSentimentSeries = null
+  bearSwingSeries = null
   selfSentimentReferenceSeries = null
   usVixSeries = null
   usFearGreedSeries = null
@@ -4286,6 +4335,7 @@ watch(turnoverConcentrationSeriesData, () => {
 watch(selfSentimentSeriesData, () => {
   if (props.supportsSelfSentimentPanel) updateAllSeries()
 })
+watch(bearSwingData, () => { updateAllSeries() })
 
 watch(usTreasurySpread10y2ySeriesData, () => {
   if (props.supportsUsTreasuryYieldPanel) updateAllSeries()
@@ -4600,6 +4650,17 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="!turnoverConcentrationPoints.length" class="muted">当前范围暂无A股成交集中度数据</p>
       <div ref="turnoverConcentrationContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
+    </div>
+
+    <div v-if="isSubPanelVisible('bearSwing')" class="quant-panel">
+      <div class="quant-panel-head">
+        <h3>{{ swingPanelTitle }}</h3>
+        <select v-model="activeBearSwingMetric" class="input" :aria-label="swingPanelTitle" style="width:auto;max-width:100%" @change="selectBearSwingMetric">
+          <option v-for="item in swingFields" :key="item.key" :value="item.key">{{ item.label }}（{{ item.unit }}）</option>
+        </select>
+      </div>
+      <p v-if="!bearSwingPoints.length" class="muted">当前范围数据不完整</p>
+      <div ref="bearSwingContainerRef" class="quant-panel-chart quant-panel-chart-sub"></div>
     </div>
 
     <div v-if="isSubPanelVisible('selfSentiment')" class="quant-panel">

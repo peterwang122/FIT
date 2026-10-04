@@ -11,6 +11,17 @@ from app.services.research_service import ResearchService
 router = APIRouter()
 
 
+@router.get("/ashare-outlook", response_model=ApiResponse[dict])
+def get_ashare_outlook(_: User = Depends(require_non_guest_user)):
+    try:
+        payload = ResearchService().get_ashare_outlook()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ApiResponse(data=payload)
+
+
 @router.get("/vix-option-analysis", response_model=ApiResponse[dict])
 def get_vix_option_analysis(_: User = Depends(require_non_guest_user)):
     try:

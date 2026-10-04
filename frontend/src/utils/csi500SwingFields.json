@@ -1,0 +1,95 @@
+[
+  {
+    "key": "csi500-index-daily-data-sh000012-close-price",
+    "label": "国债指数收盘点位（跨指数）",
+    "unit": "点",
+    "plot": true
+  },
+  {
+    "key": "csi500-index-daily-data-sh000142-close-price-pct",
+    "label": "上证380稳定收盘历史分位（跨指数）",
+    "unit": "%",
+    "plot": true
+  },
+  {
+    "key": "csi500-index-daily-data-sz399296-close-price-pct",
+    "label": "创成长收盘历史分位（跨指数）",
+    "unit": "%",
+    "plot": true
+  },
+  {
+    "key": "csi500-index-daily-data-sz399416-close-price-pct",
+    "label": "大数据300收盘历史分位（跨指数）",
+    "unit": "%",
+    "plot": true
+  },
+  {
+    "key": "csi500-index-daily-data-sz399997-close-price",
+    "label": "中证白酒收盘点位（跨指数）",
+    "unit": "点",
+    "plot": true
+  },
+  {
+    "key": "csi500-index-daily-data-sz980092-volume-pct",
+    "label": "国证自由现金流成交量历史分位（跨指数）",
+    "unit": "%",
+    "plot": true
+  },
+  {
+    "key": "csi500-index-daily-data-sz980092-volume-pct-available",
+    "label": "国证自由现金流成交量分位数据已预热",
+    "unit": "0/1",
+    "plot": false
+  },
+  {
+    "key": "csi500-index-qvix-daily-data-300etf-qvix-open-price-pct",
+    "label": "300ETF QVIX开盘历史分位（跨指数）",
+    "unit": "%",
+    "plot": true
+  },
+  {
+    "key": "csi500-position-120d-pct",
+    "label": "中证500 120D位置历史分位",
+    "unit": "%",
+    "plot": true
+  },
+  {
+    "key": "csi500-return-1d",
+    "label": "中证500 1D涨跌幅",
+    "unit": "%",
+    "plot": true
+  },
+  {
+    "key": "csi500-position-20d", "label": "中证500 20D价格位置", "unit": "%", "plot": true
+  },
+  {
+    "key": "csi500-position-60d", "label": "中证500 60D价格位置", "unit": "%", "plot": true
+  },
+  {
+    "key": "csi500-position-120d", "label": "中证500 120D价格位置", "unit": "%", "plot": true
+  },
+  {
+    "key": "csi500-option-sse-510500-option-vix-json-downside-skew-25d-pct",
+    "label": "510500期权25Δ下行偏斜历史分位", "unit": "%", "plot": true
+  },
+  {
+    "key": "csi500-option-szse-159922-exchange-option-pc-json-option-turnover-pc-ratio-change-1d",
+    "label": "159922期权成交额P/C 1D有效观测变化", "unit": "比值差", "plot": true
+  },
+  {
+    "key": "csi500-option-szse-159922-exchange-option-pc-json-option-turnover-pc-ratio-change-3d",
+    "label": "159922期权成交额P/C 3D有效观测变化", "unit": "比值差", "plot": true
+  },
+  {
+    "key": "csi500-option-szse-159922-option-vix-json-vix-term-structure-pct",
+    "label": "159922期权隐波期限结构历史分位", "unit": "%", "plot": true
+  },
+  {
+    "key": "csi500-option-szse-159922-option-vix-json-vix-low-change-1d",
+    "label": "159922期权隐波低值1D有效观测变化", "unit": "波动率点", "plot": true
+  },
+  {
+    "key": "csi500-option-szse-159922-exchange-option-pc-json-option-volume-pc-ratio-pct",
+    "label": "159922期权成交量P/C历史分位", "unit": "%", "plot": true
+  }
+]

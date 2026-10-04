@@ -569,6 +569,12 @@ class QuantRiskEvidenceResponse(BaseModel):
     rows: list[QuantRiskEvidenceRowResponse] = Field(default_factory=list)
 
 
+class IndexBearSwingPointResponse(BaseModel):
+    trade_date: str
+    values: dict[str, float | None]
+    as_of_at: str
+
+
 class IndexDashboardResponse(BaseModel):
     index: IndexDashboardIndexResponse
     market: str = "cn"
@@ -599,6 +605,8 @@ class IndexDashboardResponse(BaseModel):
     margin_financing_net_buy_sum_points: list[IndexDashboardMarginFinancingNetBuySumPointResponse] = Field(default_factory=list)
     turnover_concentration_points: list[IndexDashboardTurnoverConcentrationPointResponse] = Field(default_factory=list)
     self_sentiment_points: list[IndexDashboardSelfSentimentPointResponse] = Field(default_factory=list)
+    bear_swing_points: list[IndexBearSwingPointResponse] = Field(default_factory=list)
+    csi500_swing_points: list[IndexBearSwingPointResponse] = Field(default_factory=list)
     us_treasury_yield_points: list[IndexDashboardUsTreasuryYieldPointResponse] = Field(default_factory=list)
     us_credit_spread_points: list[IndexDashboardUsCreditSpreadPointResponse] = Field(default_factory=list)
     risk_strategy_points: list[IndexDashboardRiskStrategyPointResponse] = Field(default_factory=list)
@@ -743,6 +751,7 @@ class QuantStrategyTargetChartResponse(BaseModel):
     candles: list[StockCandle] = Field(default_factory=list)
     highlight_bands: list[QuantStrategyHighlightBandResponse] = Field(default_factory=list)
     risk_strategy_points: list[IndexDashboardRiskStrategyPointResponse] = Field(default_factory=list)
+    data_coverage: dict | None = None
 
 
 class QuantOptionTradeResponse(BaseModel):

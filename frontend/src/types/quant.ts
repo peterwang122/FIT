@@ -79,6 +79,12 @@ export interface QuantChartPayload {
 }
 
 export type QuantFilterFieldKey =
+  | `csi500-${string}`
+  | 'bear-bank-tightness'
+  | 'bear-position60-pct'
+  | 'bear-return-1d'
+  | 'bear-mo-vix-pct'
+  | 'bear-citic14-pct'
   | 'emotion'
   | 'cn-market-fear-greed'
   | 'cn-baifenwei-fear-greed'
@@ -569,6 +575,7 @@ export interface QuantStrategyTargetChartResponse {
   candles: KlineCandle[]
   highlight_bands: QuantHighlightBand[]
   risk_strategy_points: QuantRiskStrategyPoint[]
+  data_coverage?: { start_date: string | null; incomplete_days: number; as_of_time: string } | null
 }
 
 export interface QuantEquityCurvePoint {

@@ -1,5 +1,86 @@
 export type VixBottomStatus = 'true_bottom' | 'false_bottom' | 'true_top' | 'false_top' | 'incomplete'
 
+export interface AshareOutlookCandle {
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  ma60: number | null
+  ma250: number | null
+}
+
+export interface AshareOutlookIndex {
+  index_code: string
+  index_name: string
+  source_date: string
+  data_source: string
+  close: number
+  ma60: number
+  ma120: number
+  ma250: number
+  ma250_slope_20d_pct: number
+  return_20d_pct: number
+  cycle_peak: number
+  cycle_peak_date: string
+  cycle_drawdown_pct: number
+  candles: AshareOutlookCandle[]
+  anchors: Array<{ label: string; date: string; value: number; distance_pct: number; status?: string }>
+  stress_levels: Array<{ peak_drawdown_pct: number; value: number; distance_pct: number }>
+  historical_breaks: {
+    method: string
+    limitations: string
+    summaries: Array<{ window: number; sample_count: number; worst_median_pct: number | null; worst_q25_pct: number | null; worst_q75_pct: number | null; return_median_pct: number | null; loss_over_10pct_count: number }>
+    events: Array<{ date: string; close: number; worst_20d_pct: number | null; worst_60d_pct: number | null; worst_120d_pct: number | null }>
+  }
+}
+
+export interface AshareOutlookReport {
+  version: string
+  title: string
+  as_of_at: string
+  market_date: string
+  research_only: boolean
+  live: boolean
+  summary: Array<{ label: string; value: string; detail: string }>
+  indexes: AshareOutlookIndex[]
+  financing: { reference_trade_date: string; source_date: string | null; lag_trade_days: number | null; status: string } | null
+  history_comparison?: AshareOutlookHistory | null
+  sections: Array<{ id: string; title: string; verdict: string; paragraphs: Array<{ kind: string; text: string; sources: string[] }>; tables?: Array<{ title: string; columns: string[]; rows: string[][]; note: string }> }>
+  watchlist: Array<{ topic: string; baseline: string; improves: string; worsens: string }>
+  sources: Array<{ id: string; title: string; url: string; published_at: string | null; note: string }>
+  global_markets: Array<{ asset_code: string; name: string; value: number; source_date: string; available_at: string | null; change_10obs_pct: number | null; change_20obs_pct: number | null; source: string; source_url: string; note: string }>
+  fx: Array<{ code: string; name: string; value: number; source_date: string; change_20obs_pct: number | null; note: string }>
+  precious_metals: Array<{ date: string; contract: string; value: number; unit: string; source_url: string; note: string }>
+  valuation: Array<{ index_name: string; pe_ttm: number; earnings_yield_pct: number; equity_bond_spread_pp: number; stress: Array<{ pe_change_pct: number; eps_change_pct: number; value: number }> }>
+  monthly_macro: Array<{ series_key: string; name: string; value: number; unit: string; period_end: string; period_kind: string; basis_version: string; available_at: string; source_url: string; change_3m: number | null }>
+  quality: string[]
+  methods: string[]
+  provenance: { snapshot_sha256: string; external_sha256: string; history_snapshot_sha256?: string | null; extension_snapshot_sha256?: string | null; production_writes: boolean }
+}
+
+export interface AshareOutlookHistory {
+  spring_2021: {
+    base_date: string
+    end_date: string
+    note: string
+    rows: Array<{ code: string; name: string; year_return_pct?: number; spring_to_march_pct?: number; spring_to_end_pct?: number; march_to_end_pct?: number; peak_date?: string }>
+    paths: Array<{ code: string; name: string; basis: string; points: Array<{ date: string; value: number }> }>
+  }
+  panels: Array<{ date: string; above_ma60_count: number; above_ma250_count: number; rising_ma250_count: number; positive_20d_count: number }>
+  cases: Array<{ id: string; title: string; start: string; end: string; note: string; rebound_end: string | null; rows: AshareOutlookPeriod[]; rebound_rows: AshareOutlookPeriod[] }>
+  synchronized_breaks: { method: string; note: string; events: Array<{ date: string; return_20d_pct: number | null; lowest_20d_pct: number | null; return_60d_pct: number | null; lowest_60d_pct: number | null; return_120d_pct: number | null; lowest_120d_pct: number | null }> }
+  limitations: string[]
+}
+
+export interface AshareOutlookPeriod {
+  index_code: string
+  name: string
+  return_pct: number | null
+  lowest_from_start_pct: number | null
+  peak_date: string | null
+}
+
 export interface VixOptionRecommendation {
   rule_id: string
   rule_label: string

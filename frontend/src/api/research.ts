@@ -1,5 +1,6 @@
 import { http } from './client'
 import type {
+  AshareOutlookReport,
   Csi1000FuturesReport,
   VixOptionAnalysisReport,
   VixOptionContractKline,
@@ -9,6 +10,11 @@ interface ApiResponse<T> {
   code: number
   message: string
   data: T
+}
+
+export async function fetchAshareOutlook() {
+  const { data } = await http.get<ApiResponse<AshareOutlookReport>>('/research/ashare-outlook')
+  return data.data
 }
 
 export async function fetchVixOptionAnalysis() {

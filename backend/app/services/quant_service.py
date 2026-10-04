@@ -17,6 +17,8 @@ from app.models.user import User
 from app.services.notification_service import NotificationService
 from app.services.stock_service import FUTURES_BASIS_SYMBOL_MAP, StockService
 from app.services.vix_option_strategy_trade_service import VixOptionStrategyTradeService
+from app.services.bear_swing_features import FEATURE_FIELDS as BEAR_SWING_FIELDS, feature_points as bear_feature_points
+from app.services.csi500_swing_features import PUBLIC_FIELDS as CSI500_SWING_FIELDS, VERSION as CSI500_SWING_VERSION, feature_points as csi500_feature_points, rules_status as csi500_rules_status, option_coverage_start as csi500_option_coverage_start
 
 SHANGHAI_INDEX_NAME = "上证指数"
 BEIJING50_INDEX_NAME = "北证50"
@@ -220,7 +222,7 @@ STOCK_STRATEGY_FILTER_KEYS = [
 ]
 INDEX_BREADTH_CACHE_KEY = "fit:quant:index_breadth:v3"
 INDEX_BREADTH_CACHE_TTL_SECONDS = 600
-INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v33"
+INDEX_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:index_dashboard:v34"
 INDEX_DASHBOARD_CACHE_TTL_SECONDS = 600
 RISK_DASHBOARD_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:v11"
 RISK_DASHBOARD_EVIDENCE_CACHE_KEY_PREFIX = "fit:quant:risk_dashboard:evidence:v11"
@@ -1812,6 +1814,9 @@ class QuantService:
                 if self._index_supports_csi1000_reference_vix(target_code, target_name, target_market):
                     keys += CSI1000_REFERENCE_VIX_FILTER_KEYS
                     keys += RISK_STRATEGY_FILTER_KEYS
+                    keys += list(BEAR_SWING_FIELDS)
+                if str(target_code) in {"sh000905", "000905"}:
+                    keys += list(CSI500_SWING_FIELDS)
                 return keys
             if self._is_technical_only_cn_index(target_code, target_name, target_market):
                 keys = [
@@ -4300,6 +4305,8 @@ class QuantService:
             f"{start_date.isoformat() if start_date else 'none'}:"
             f"{end_date.isoformat() if end_date else 'none'}"
         )
+        if normalized_market == "cn" and normalized_index_code == "sh000905":
+            cache_key += ":" + CSI500_SWING_VERSION
         cached = redis_client.get(cache_key)
         if cached:
             try:
@@ -4789,6 +4796,16 @@ class QuantService:
                 for row in rows
                 if _to_float(row.get("self_sentiment_score")) is not None
             ],
+            "bear_swing_points": [
+                point for point in bear_feature_points(self.db)
+                if (resolved_start_date is None or point["trade_date"] >= str(resolved_start_date))
+                and (end_date is None or point["trade_date"] <= str(end_date))
+            ] if normalized_index_code == "sh000852" else [],
+            "csi500_swing_points": [
+                point for point in csi500_feature_points(self.db)
+                if (resolved_start_date is None or point["trade_date"] >= str(resolved_start_date))
+                and (end_date is None or point["trade_date"] <= str(end_date))
+            ] if normalized_market == "cn" and normalized_index_code == "sh000905" else [],
             "us_treasury_yield_points": [],
             "us_credit_spread_points": [],
             "risk_strategy_points": [
@@ -5317,6 +5334,17 @@ class QuantService:
             if filter_key in requested_baifenwei_fields
         }
 
+        bear_values = {}
+        if (target_code in {"sh000852", "000852"} and
+                (required_filter_keys is None or set(BEAR_SWING_FIELDS).intersection(required_filter_keys)) and
+                getattr(self, "db", None) is not None):
+            bear_values = {p["trade_date"]: p["values"] for p in bear_feature_points(self.db)}
+        csi500_values = {}
+        if (target_code in {"sh000905", "000905"} and
+                (required_filter_keys is None or set(CSI500_SWING_FIELDS).intersection(required_filter_keys)) and
+                getattr(self, "db", None) is not None):
+            csi500_values = {p["trade_date"]: p["values"] for p in csi500_feature_points(self.db)}
+
         snapshots: list[dict] = []
         for index, trade_date in enumerate(times):
             vix_values = vix_by_date.get(trade_date, {})
@@ -5327,6 +5355,8 @@ class QuantService:
                     "high": sorted_candles[index]["high"],
                     "low": sorted_candles[index]["low"],
                     "values": {
+                        **bear_values.get(trade_date, {}),
+                        **csi500_values.get(trade_date, {}),
                         "emotion": emotion_map.get(trade_date, 50.0),
                         "cn-market-fear-greed": cn_market_fear_greed_map.get(trade_date),
                         **{
@@ -7088,6 +7118,15 @@ class QuantService:
         target_code = str(payload.get("target_code", "")).strip()
         target_name = str(payload.get("target_name", "")).strip()
 
+        if self._payload_contains_numeric_rules(payload, list(BEAR_SWING_FIELDS)) and not (
+            strategy_type == "index" and target_market == "cn" and target_code in {"sh000852", "000852"}
+        ):
+            raise ValueError("熊市波段研究因子仅支持中证1000指数。")
+        if self._payload_contains_numeric_rules(payload, list(CSI500_SWING_FIELDS)) and not (
+            strategy_type == "index" and target_market == "cn" and target_code in {"sh000905", "000905"}
+        ):
+            raise ValueError("中证500牛熊研究因子仅支持中证500指数。")
+
         if strategy_engine == "risk":
             if strategy_type != "index" or not self._index_supports_risk_strategy(
                 target_code,
@@ -7459,6 +7498,8 @@ class QuantService:
                 f"{STRATEGY_TARGET_CHART_CACHE_KEY_PREFIX}:"
                 f"{owner_user_id}:{strategy_id}:{cache_fingerprint}"
             )
+            if str(strategy.target_code) in {"sh000905", "000905"}:
+                cache_key += ":" + CSI500_SWING_VERSION
             cached = redis_client.get(cache_key)
             if cached:
                 try:
@@ -7506,6 +7547,28 @@ class QuantService:
             "highlight_bands": self._build_strategy_highlight_bands(strategy, snapshots),
             "risk_strategy_points": risk_points,
         }
+        used_fields = self._payload_numeric_rule_fields({
+            "blue_filter_groups": strategy.blue_filter_groups,
+            "red_filter_groups": strategy.red_filter_groups,
+        })
+        if used_fields.intersection(BEAR_SWING_FIELDS):
+            complete_dates = [s["trade_date"] for s in snapshots if all(
+                s["values"].get(key) is not None for key in used_fields)]
+            result["data_coverage"] = {
+                "start_date": complete_dates[0] if complete_dates else None,
+                "incomplete_days": len(snapshots) - len(complete_dates),
+                "as_of_time": "22:30",
+            }
+        if used_fields.intersection(CSI500_SWING_FIELDS):
+            minimum_date = csi500_option_coverage_start(used_fields, strategy.start_date)
+            complete_dates = [s["trade_date"] for s in snapshots if s["trade_date"] >= minimum_date and all(
+                csi500_rules_status(s["values"], groups) is not None
+                for groups in (strategy.red_filter_groups, strategy.blue_filter_groups))]
+            result["data_coverage"] = {
+                "start_date": complete_dates[0] if complete_dates else None,
+                "incomplete_days": len(snapshots) - len(complete_dates),
+                "as_of_time": "22:30",
+            }
         if cache_key:
             redis_client.set(
                 cache_key,

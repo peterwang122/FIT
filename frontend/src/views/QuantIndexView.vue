@@ -15,6 +15,7 @@ import type {
 } from '../types/quant'
 import type {
   FuturesBasisPoint,
+  IndexBearSwingPoint,
   IndexBreadthPoint,
   IndexBasisDeltaPoint,
   IndexCffexNetShortDeltaPoint,
@@ -105,6 +106,7 @@ type IndexDashboardChunkState = {
   marginFinancingNetBuySumPoints: IndexMarginFinancingNetBuySumPoint[]
   turnoverConcentrationPoints: IndexTurnoverConcentrationPoint[]
   selfSentimentPoints: IndexSelfSentimentPoint[]
+  bearSwingPoints: IndexBearSwingPoint[]
   riskStrategyPoints: IndexRiskStrategyPoint[]
   usTreasuryYieldPoints: IndexUsTreasuryYieldPoint[]
   usCreditSpreadPoints: IndexUsCreditSpreadPoint[]
@@ -314,6 +316,8 @@ function buildDashboardChunkState(
     | 'margin_financing_net_buy_sum_points'
     | 'turnover_concentration_points'
     | 'self_sentiment_points'
+    | 'bear_swing_points'
+    | 'csi500_swing_points'
     | 'risk_strategy_points'
     | 'us_treasury_yield_points'
     | 'us_credit_spread_points'
@@ -347,6 +351,7 @@ function buildDashboardChunkState(
     marginFinancingNetBuySumPoints: payload.margin_financing_net_buy_sum_points ?? [],
     turnoverConcentrationPoints: payload.turnover_concentration_points ?? [],
     selfSentimentPoints: payload.self_sentiment_points ?? [],
+    bearSwingPoints: payload.bear_swing_points?.length ? payload.bear_swing_points : payload.csi500_swing_points ?? [],
     riskStrategyPoints: payload.risk_strategy_points ?? [],
     usTreasuryYieldPoints: payload.us_treasury_yield_points ?? [],
     usCreditSpreadPoints: payload.us_credit_spread_points ?? [],
@@ -533,6 +538,7 @@ const marginTradingPoints = ref<IndexMarginTradingPoint[]>([])
 const marginFinancingNetBuySumPoints = ref<IndexMarginFinancingNetBuySumPoint[]>([])
 const turnoverConcentrationPoints = ref<IndexTurnoverConcentrationPoint[]>([])
 const selfSentimentPoints = ref<IndexSelfSentimentPoint[]>([])
+const bearSwingPoints = ref<IndexBearSwingPoint[]>([])
 const riskStrategyPoints = ref<IndexRiskStrategyPoint[]>([])
 const usTreasuryYieldPoints = ref<IndexUsTreasuryYieldPoint[]>([])
 const usCreditSpreadPoints = ref<IndexUsCreditSpreadPoint[]>([])
@@ -638,6 +644,7 @@ const quantFilterDataset = computed(() => {
         marginTradingPoints: marginTradingPoints.value,
         marginFinancingNetBuySumPoints: marginFinancingNetBuySumPoints.value,
         selfSentimentPoints: selfSentimentPoints.value,
+        bearSwingPoints: bearSwingPoints.value,
         riskStrategyPoints: riskStrategyPoints.value,
         cnMarketFearGreedPoints: cnMarketFearGreedPoints.value,
         cnBaifenweiFearGreedPoints: cnBaifenweiFearGreedPoints.value,
@@ -1103,6 +1110,8 @@ function applyDashboardState(targetCode: string, targetName: string, state: Inde
   selfSentimentPoints.value = supportsSelfSentimentPanel.value
     ? state?.selfSentimentPoints ?? []
     : []
+  bearSwingPoints.value = targetMarket.value === 'cn' && ['中证1000', '中证500'].includes(targetName)
+    ? state?.bearSwingPoints ?? [] : []
   riskStrategyPoints.value =
     targetMarket.value === 'cn' && targetName === '中证1000'
       ? state?.riskStrategyPoints ?? []
@@ -1202,6 +1211,8 @@ function mergeDashboardState(
       currentState.selfSentimentPoints,
       payload.self_sentiment_points ?? [],
     ),
+    bearSwingPoints: mergeByTradeDate(currentState.bearSwingPoints,
+      payload.bear_swing_points?.length ? payload.bear_swing_points : payload.csi500_swing_points ?? []),
     riskStrategyPoints: mergeByTradeDate(
       currentState.riskStrategyPoints,
       payload.risk_strategy_points ?? [],
@@ -1493,6 +1504,7 @@ async function switchTargetMarket(nextMarket: QuantTargetMarket, preferredCode?:
     vixPoints.value = []
     relatedVixSeries.value = []
     selfSentimentPoints.value = []
+    bearSwingPoints.value = []
     riskStrategyPoints.value = []
     usVixPoints.value = []
     usFearGreedPoints.value = []
@@ -1672,6 +1684,7 @@ watch(
           :margin-financing-net-buy-sum-points="marginFinancingNetBuySumPoints"
           :turnover-concentration-points="turnoverConcentrationPoints"
           :self-sentiment-points="selfSentimentPoints"
+          :bear-swing-points="bearSwingPoints"
           :us-treasury-yield-points="usTreasuryYieldPoints"
           :us-credit-spread-points="usCreditSpreadPoints"
           :supports-us-vix-panel="supportsUsVixPanel"

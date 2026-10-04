@@ -24,6 +24,9 @@ import AppSidebar from '../components/AppSidebar.vue'
           <RouterLink to="/research/csi1000-futures" class="quant-subnav-link" active-class="active">
             中证1000期货
           </RouterLink>
+          <RouterLink to="/research/ashare-outlook" class="quant-subnav-link" active-class="active">
+            A股市场展望
+          </RouterLink>
         </nav>
       </section>
 
