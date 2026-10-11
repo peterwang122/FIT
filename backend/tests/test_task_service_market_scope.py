@@ -1,5 +1,7 @@
 from datetime import date, datetime, time, timedelta
 
+import pytest
+
 from app.models.scheduled_task import ScheduledTask
 from app.models.scheduled_task_run import ScheduledTaskRun
 import app.services.task_service as task_service_module
@@ -279,7 +281,8 @@ def test_douyin_polling_uses_one_scheduled_run_for_the_whole_window():
     assert len(db.runs) == 1
 
 
-def test_douyin_polling_does_not_overlap_or_continue_after_success():
+@pytest.mark.parametrize("finished_status", ["success", "partial"])
+def test_douyin_polling_does_not_overlap_or_continue_after_success(finished_status):
     task = _make_task(1, "cn_stock")
     task.schedule_time = "19:00"
     task.config_json = {"collector_key": "douyin_coze_emotion_daily"}
@@ -299,7 +302,7 @@ def test_douyin_polling_does_not_overlap_or_continue_after_success():
 
     assert service.enqueue_due_task_runs() == []
 
-    active_run.status = "success"
+    active_run.status = finished_status
     service._now = lambda: datetime(2026, 6, 28, 19, 2)
     assert service.enqueue_due_task_runs() == []
     assert service._compute_next_run_at(task) == datetime(2026, 6, 29, 19, 0)

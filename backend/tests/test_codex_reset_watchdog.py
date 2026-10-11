@@ -200,6 +200,45 @@ def test_restores_codex_slash_commands_after_translation():
     assert restore_slash_commands(source, translated) == "在 Codex 中探索/goal，然后使用/fast。"
 
 
+def test_slash_command_restoration_does_not_modify_urls_or_enumeration():
+    source = "Day 3/ Big update https://t.co/abc"
+    translated = "第3天/重大更新 https://t.co/abc"
+    assert restore_slash_commands(source, translated) == translated
+    assert restore_slash_commands(
+        "https://example.com/docs/goal Use /fast.",
+        "https://example.com/docs/goal 使用/快速。",
+    ) == "https://example.com/docs/goal 使用/fast。"
+
+
+def test_translation_protects_urls_before_calling_provider(tmp_path, monkeypatch):
+    service = CodexResetWatchdogService(state_store=JsonWatchdogStateStore(tmp_path / "state.json"))
+    calls = []
+
+    def translate(text):
+        calls.append(text)
+        return "第3天/重大更新，请使用 FITCOMMAND1TOKEN。 FITLINK0TOKEN"
+
+    monkeypatch.setattr(service, "_translate_with_google", translate)
+    assert service._translate_to_chinese(
+        "Day 3/ Big update, use /fast. https://t.co/abc"
+    ) == "第3天/重大更新，请使用 /fast。 https://t.co/abc"
+    assert calls == ["Day 3/ Big update, use FITCOMMAND1TOKEN. FITLINK0TOKEN"]
+
+
+def test_translation_rejects_provider_that_loses_url(tmp_path, monkeypatch):
+    service = CodexResetWatchdogService(state_store=JsonWatchdogStateStore(tmp_path / "state.json"))
+    monkeypatch.setattr(service, "_translate_with_google", lambda _text: "更新。")
+    monkeypatch.setattr(service, "_translate_with_mymemory", lambda _text: "更新。 FITLINK0TOKEN")
+    assert service._translate_to_chinese("Update https://t.co/abc") == "更新。 https://t.co/abc"
+
+
+def test_mymemory_error_payload_is_not_a_translation():
+    assert extract_mymemory_translation({
+        "responseStatus": 429,
+        "responseData": {"translatedText": "quota exceeded"},
+    }) is None
+
+
 def test_translation_falls_back_when_google_is_rate_limited(tmp_path, monkeypatch):
     service = CodexResetWatchdogService(
         state_store=JsonWatchdogStateStore(tmp_path / "state.json"),
@@ -210,9 +249,9 @@ def test_translation_falls_back_when_google_is_rate_limited(tmp_path, monkeypatc
         raise RuntimeError("429 Too Many Requests")
 
     monkeypatch.setattr(service, "_translate_with_google", fail_google)
-    monkeypatch.setattr(service, "_translate_with_mymemory", lambda _text: "请在 Codex 中使用/目标。")
+    monkeypatch.setattr(service, "_translate_with_mymemory", lambda _text: "请在 Codex 中使用 FITCOMMAND0TOKEN。")
 
-    assert service._translate_to_chinese("Use /goal in Codex.") == "请在 Codex 中使用/goal。"
+    assert service._translate_to_chinese("Use /goal in Codex.") == "请在 Codex 中使用 /goal。"
 
 
 def test_archives_translation_once_and_reuses_it(tmp_path):
@@ -354,6 +393,85 @@ def test_history_keeps_latest_thirty_items(tmp_path):
     assert history["archived_count"] == 30
     assert history["items"][0]["item_id"] == "34"
     assert history["items"][-1]["item_id"] == "5"
+
+
+def test_does_not_retranslate_items_evicted_from_history(tmp_path):
+    items = [
+        _item(str(index), f"Public update {index}", (datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(hours=index)).isoformat())
+        for index in range(55)
+    ]
+    translated = []
+
+    def translate(text):
+        translated.append(text)
+        return "中文动态"
+
+    service = CodexResetWatchdogService(
+        state_store=JsonWatchdogStateStore(tmp_path / "state.json"),
+        fetcher=lambda: items,
+        translator=translate,
+    )
+    service.check()
+    assert len(translated) == 30
+    assert translated[0] == "Public update 54"
+    assert "Public update 24" not in translated
+    service.check()
+    assert len(translated) == 30
+
+
+def test_retries_missing_translation_even_when_item_leaves_feed(tmp_path):
+    older = _item("1", "Earlier update", "2026-10-01T00:00:00Z")
+    newer = _item("2", "Latest update", "2026-10-02T00:00:00Z")
+    batches = iter([[older], [newer]])
+    calls = []
+
+    def translate(text):
+        calls.append(text)
+        if len(calls) == 1:
+            raise RuntimeError("429 Too Many Requests")
+        return "中文动态"
+
+    service = CodexResetWatchdogService(
+        state_store=JsonWatchdogStateStore(tmp_path / "state.json"),
+        fetcher=lambda: next(batches),
+        translator=translate,
+    )
+    service.check()
+    assert service.list_history()["items"][0]["translation_error"]
+    service.check()
+    assert calls == ["Earlier update", "Latest update", "Earlier update"]
+    assert all(item["translation_zh"] and not item["translation_error"] for item in service.list_history()["items"])
+
+
+def test_retranslates_corrupted_url_without_duplicate_notifications(tmp_path):
+    store = JsonWatchdogStateStore(tmp_path / "state.json")
+    item = _item("1", "Codex update https://t.co/abc", "2026-10-01T00:00:00Z")
+    service = CodexResetWatchdogService(state_store=store, fetcher=lambda: [item], translator=lambda _text: "更新 https://t.co/abc")
+    service.check()
+    state = store.load()
+    state["items"]["1"]["translation_zh"] = "更新 https:/abc.co/abc"
+    store.save(state)
+    result = service.check()
+    assert result["new_items"] == result["notifications_created"] == 0
+    assert service.list_history()["items"][0]["translation_zh"] == "更新 https://t.co/abc"
+
+
+def test_translation_refresh_failure_does_not_remove_existing_text(tmp_path):
+    store = JsonWatchdogStateStore(tmp_path / "state.json")
+    item = _item("1", "Codex update https://t.co/abc", "2026-10-01T00:00:00Z")
+    service = CodexResetWatchdogService(
+        state_store=store, fetcher=lambda: [item],
+        translator=lambda _text: "更新 https://t.co/abc",
+    )
+    service.check()
+    state = store.load()
+    state["items"]["1"].pop("translation_version")
+    store.save(state)
+    service.translator = lambda _text: (_ for _ in ()).throw(RuntimeError("429"))
+    service.check()
+    archived = service.list_history()["items"][0]
+    assert archived["translation_zh"] == "更新 https://t.co/abc"
+    assert archived["translation_error"] == "429"
 
 
 def test_codex_history_route_is_root_only(monkeypatch):

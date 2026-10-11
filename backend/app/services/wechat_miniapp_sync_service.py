@@ -6,6 +6,7 @@ import secrets
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 import requests
 from pypinyin import Style, lazy_pinyin
@@ -373,7 +374,7 @@ class WechatMiniappSyncService:
             )
         return records
 
-    def build_notification_event(self) -> dict | None:
+    def build_notification_event(self, *, refresh_request_id: str | None = None) -> dict | None:
         root = self.db.query(User).filter(User.role == "root").order_by(User.id.asc()).first()
         if root is None:
             return None
@@ -389,24 +390,38 @@ class WechatMiniappSyncService:
         )
         if task is None or not task.enabled:
             return None
-        run = (
-            self.db.query(ScheduledTaskRun)
-            .filter(
-                ScheduledTaskRun.scheduled_task_id == task.id,
-                ScheduledTaskRun.trigger_type.in_(("schedule", "manual")),
-                ScheduledTaskRun.status == "success",
+        if refresh_request_id is not None:
+            if not re.fullmatch(r"[a-f0-9]{32}", refresh_request_id):
+                raise ValueError("invalid manual sync request id")
+            from app.services.task_service import TaskService
+
+            now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+            task_service = TaskService(self.db)
+            scope = task.market_scope
+            basis_trade_date = task_service._notification_basis_trade_date(scope, now)
+            if not task_service.market_calendar.is_trading_day(scope, basis_trade_date):
+                basis_trade_date = task_service.market_calendar.previous_trading_day(scope, basis_trade_date)
+            event_id = f"event_manual_{refresh_request_id}"
+            result_date = now.date().isoformat()
+            completed_at = now.isoformat() + "+08:00"
+        else:
+            run = (
+                self.db.query(ScheduledTaskRun)
+                .filter(
+                    ScheduledTaskRun.scheduled_task_id == task.id,
+                    ScheduledTaskRun.trigger_type.in_(("schedule", "manual")),
+                    ScheduledTaskRun.status == "success",
+                )
+                .order_by(ScheduledTaskRun.scheduled_for.desc(), ScheduledTaskRun.id.desc())
+                .first()
             )
-            .order_by(ScheduledTaskRun.scheduled_for.desc(), ScheduledTaskRun.id.desc())
-            .first()
-        )
-        if run is None or run.scheduled_for.date() < date.today() - timedelta(days=7):
-            return None
-        basis_match = re.search(r"based on trade date (\d{4}-\d{2}-\d{2})", run.summary or "")
-        basis_trade_date = (
-            date.fromisoformat(basis_match.group(1))
-            if basis_match
-            else run.scheduled_for.date()
-        )
+            if run is None or run.scheduled_for.date() < date.today() - timedelta(days=7):
+                return None
+            basis_match = re.search(r"based on trade date (\d{4}-\d{2}-\d{2})", run.summary or "")
+            basis_trade_date = date.fromisoformat(basis_match.group(1)) if basis_match else run.scheduled_for.date()
+            event_id = f"event_{task.id}_{run.id}"
+            result_date = run.scheduled_for.date().isoformat()
+            completed_at = (run.finished_at or run.scheduled_for).isoformat()
         strategy_ids = [
             int(value)
             for value in (task.config_json or {}).get("strategy_ids", [])
@@ -455,18 +470,17 @@ class WechatMiniappSyncService:
             summary = f"{prefix}：{detail}"[:20]
         else:
             summary = "今日无有效项目"
-        event_id = f"event_{task.id}_{run.id}"
         payload = {
-            "date": run.scheduled_for.date().isoformat(),
+            "date": result_date,
             "event_id": event_id,
             "basis_date": basis_trade_date.isoformat(),
-            "completed_at": (run.finished_at or run.scheduled_for).isoformat(),
+            "completed_at": completed_at,
             "summary": summary,
             "total_count": len(summaries),
             "effective_count": len(effective_aliases),
             "mail": {
                 "title": "每日数据结果",
-                "sent_date": run.scheduled_for.date().isoformat(),
+                "sent_date": result_date,
                 "basis_date": basis_trade_date.isoformat(),
                 "items": safe_items,
                 "summary": (
@@ -475,7 +489,45 @@ class WechatMiniappSyncService:
                 ),
             },
         }
+        if refresh_request_id is not None:
+            payload["delivery_mode"] = "silent"
+            payload["refreshed_at"] = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
         return {"_id": event_id, **payload, "content_hash": _content_hash(payload)}
+
+    def _manual_sync_command(self, action: str, request_id: str | None = None) -> dict:
+        body = json.dumps({"dataset": "manual_notification_sync", "action": action, "request_id": request_id}, separators=(",", ":"))
+        response = self.http.post(
+            settings.wechat_miniapp_ingest_url,
+            data=body.encode("utf-8"),
+            headers=self._signed_headers(body),
+            timeout=settings.wechat_miniapp_request_timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("body"), str):
+            payload = json.loads(payload["body"])
+        if payload.get("ok") is not True:
+            raise RuntimeError(str(payload.get("error") or "manual sync command failed"))
+        return payload.get("data") or {}
+
+    def process_manual_notification_sync(self) -> dict:
+        if not self.enabled:
+            return {"status": "disabled"}
+        request = self._manual_sync_command("poll").get("request")
+        if not request:
+            return {"status": "idle"}
+        request_id = request["request_id"]
+        try:
+            event = self.build_notification_event(refresh_request_id=request_id)
+            if event is None:
+                raise RuntimeError("the configured daily notification task is unavailable")
+            # This dataset never calls the message sender, even on retries.
+            report = self.push("notification_display", [event])
+            completed = self._manual_sync_command("complete", request_id)
+            return {"status": completed.get("status", "completed"), "report": report}
+        except Exception:
+            self._manual_sync_command("fail", request_id)
+            raise
 
     def _signed_headers(self, body: str) -> dict[str, str]:
         timestamp = str(int(datetime.now().timestamp()))

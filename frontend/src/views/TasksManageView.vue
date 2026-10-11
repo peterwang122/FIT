@@ -39,6 +39,14 @@ type TaskDraft = {
   strategy_ids: number[]
 }
 
+function formatRunStatus(status: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    queued: '等待执行', running: '运行中', success: '完成',
+    partial: '部分完成', failed: '失败', skipped: '已跳过',
+  }
+  return status ? labels[status] || status : '尚未执行'
+}
+
 type SourceStrategyInfo = {
   id: number | null
   name: string
@@ -1087,7 +1095,8 @@ onUnmounted(() => {
             <template v-if="item.target_code && item.target_name"> / {{ item.target_code }} / {{ item.target_name }}</template>
           </span>
           <span v-else>{{ item.strategy_names.length }} 条策略 / {{ item.target_email || '未设置邮箱' }}</span>
-          <span>{{ item.manual_only ? '仅手动' : item.enabled ? '启用中' : '已停用' }} / {{ item.last_run_status || '尚未执行' }}</span>
+          <span>{{ item.manual_only ? '仅手动' : item.enabled ? '启用中' : '已停用' }} / {{ formatRunStatus(item.last_run_status) }}</span>
+          <span v-if="item.last_run_status === 'partial'">{{ item.last_run_summary }}</span>
         </button>
       </div>
       <p v-else class="muted">
@@ -1294,7 +1303,7 @@ onUnmounted(() => {
           <div class="progress-section-head">
             <div class="progress-section-copy">
               <h3>最近执行记录</h3>
-              <p class="muted">查看任务最近一次触发、完成状态以及失败原因。</p>
+              <p class="muted">查看任务完成状态、已保存结果、缺失项及失败原因。</p>
             </div>
           </div>
 
@@ -1303,7 +1312,7 @@ onUnmounted(() => {
             <article v-for="run in runs" :key="run.id" class="timeline-item">
               <div class="timeline-date">{{ run.scheduled_for?.slice(0, 16).replace('T', ' ') || '-' }}</div>
               <div class="timeline-body">
-                <h4>{{ run.trigger_type === 'manual' ? '手动执行' : '定时执行' }} / {{ run.status }}</h4>
+                <h4>{{ run.trigger_type === 'manual' ? '手动执行' : '定时执行' }} / {{ formatRunStatus(run.status) }}</h4>
                 <p class="muted">{{ run.summary || run.error_message || '暂无摘要信息' }}</p>
               </div>
             </article>

@@ -35,6 +35,20 @@ export interface AshareOutlookIndex {
   }
 }
 
+export interface AshareReviewArticle {
+  version: string
+  formatted_on: string
+  title: string
+  article_type: string
+  publication_note: string
+  evidence_refreshed: boolean
+  keywords: string[]
+  abstract: Array<{ label: string; text: string }>
+  introduction: Array<{ text: string; sources: string[] }>
+  method_sections: Array<{ title: string; text: string }>
+  chapters: Array<{ id: string; title: string; sections: Array<{ id: string; title: string }> }>
+}
+
 export interface AshareOutlookReport {
   version: string
   title: string
@@ -42,11 +56,13 @@ export interface AshareOutlookReport {
   market_date: string
   research_only: boolean
   live: boolean
+  editorial_revision?: { reviewed_on: string; evidence_refreshed: boolean }
+  review_article?: AshareReviewArticle
   summary: Array<{ label: string; value: string; detail: string }>
   indexes: AshareOutlookIndex[]
   financing: { reference_trade_date: string; source_date: string | null; lag_trade_days: number | null; status: string } | null
   history_comparison?: AshareOutlookHistory | null
-  sections: Array<{ id: string; title: string; verdict: string; paragraphs: Array<{ kind: string; text: string; sources: string[] }>; tables?: Array<{ title: string; columns: string[]; rows: string[][]; note: string }> }>
+  sections: Array<{ id: string; title: string; verdict: string; paragraphs: Array<{ title?: string; kind: string; text: string; sources: string[] }>; tables?: Array<{ title: string; columns: string[]; rows: string[][]; note: string }> }>
   watchlist: Array<{ topic: string; baseline: string; improves: string; worsens: string }>
   sources: Array<{ id: string; title: string; url: string; published_at: string | null; note: string }>
   global_markets: Array<{ asset_code: string; name: string; value: number; source_date: string; available_at: string | null; change_10obs_pct: number | null; change_20obs_pct: number | null; source: string; source_url: string; note: string }>

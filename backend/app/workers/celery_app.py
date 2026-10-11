@@ -27,6 +27,7 @@ celery_app.conf.update(
         "tasks.sync_wechat_miniapp": {"queue": "wechat-miniapp"},
         "tasks.sync_wechat_miniapp_data": {"queue": "wechat-miniapp"},
         "tasks.sync_wechat_miniapp_notification": {"queue": "wechat-miniapp"},
+        "tasks.process_wechat_manual_notification_sync": {"queue": "wechat-miniapp"},
     },
     imports=(
         "app.tasks.collector",
@@ -35,6 +36,12 @@ celery_app.conf.update(
         "app.tasks.wechat_miniapp",
     ),
     beat_schedule={
+        "process-wechat-manual-notification-requests": {
+            # Poll only for user requests; no calculation/upload when idle.
+            "task": "tasks.process_wechat_manual_notification_sync",
+            "schedule": crontab(minute="*"),
+            "options": {"queue": "wechat-miniapp", "expires": 55},
+        },
         "dispatch-scheduled-tasks-every-minute": {
             "task": "tasks.dispatch_due_scheduled_tasks",
             "schedule": crontab(minute="*"),

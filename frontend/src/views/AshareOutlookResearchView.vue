@@ -9,8 +9,21 @@ const report = ref<AshareOutlookReport | null>(null)
 const loading = ref(true)
 const error = ref('')
 const indexCode = ref('sh000985')
+const synthesis = computed(() => report.value?.sections.find(s => s.id === 'synthesis'))
+const article = computed(() => report.value?.review_article)
+const chapters = computed(() => {
+  const sections = new Map(report.value?.sections.map(s => [s.id, s]) ?? [])
+  const structure = article.value?.chapters ?? [{ id: 'market', title: '研究正文', sections: report.value?.sections ?? [] }]
+  return structure.map((chapter, n) => ({ ...chapter, number: n + 1,
+    sections: chapter.sections.flatMap((entry, s) => {
+      const evidence = sections.get(entry.id)
+      return evidence ? [{ ...evidence, title: entry.title, number: `${n + 1}.${s + 1}` }] : []
+    }),
+  }))
+})
 const selected = computed(() => report.value?.indexes.find(i => i.index_code === indexCode.value) ?? report.value?.indexes[0])
 const sourceMap = computed(() => new Map(report.value?.sources.map(s => [s.id, s]) ?? []))
+const referenceNumbers = computed(() => new Map(report.value?.sources.map((s, n) => [s.id, n + 1]) ?? []))
 const number = (value: number | null | undefined, digits = 2) => value == null ? '待验证' : value.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 const percent = (value: number | null | undefined) => value == null ? '待验证' : `${value > 0 ? '+' : ''}${number(value)}%`
 const dateTime = (value: string | null | undefined) => value ? value.replace('T', ' ').replace('+08:00', ' 北京时间') : '发布时间未核验'
@@ -37,47 +50,78 @@ onMounted(load)
     </div>
     <template v-else-if="report && selected">
       <header class="report-head">
-        <div><h3>{{ report.title }}</h3><p class="muted">研究截止 {{ dateTime(report.as_of_at) }} · A股行情 {{ report.market_date }}</p></div>
-        <span class="version">日期固定研究 · 非交易信号</span>
+        <p class="article-type">{{ article?.article_type ?? '日期固定研究' }}</p>
+        <h3>{{ article?.title ?? report.title }}</h3>
+        <p class="article-publication">{{ article?.publication_note ?? '研究用途 · 非交易信号' }}</p>
+        <dl class="article-metadata">
+          <div><dt>证据截止</dt><dd>{{ dateTime(report.as_of_at) }}</dd></div>
+          <div><dt>A股行情</dt><dd>{{ report.market_date }}</dd></div>
+          <div v-if="article"><dt>文章整理</dt><dd>{{ article.formatted_on }}（未刷新证据）</dd></div>
+          <div><dt>数据版本</dt><dd>{{ report.version }}</dd></div>
+        </dl>
       </header>
-      <section class="summary-band" aria-label="研究结论">
-        <div v-for="item in report.summary" :key="item.label"><span>{{ item.label }}</span><strong>{{ item.value }}</strong><p>{{ item.detail }}</p></div>
+      <section v-if="article" id="outlook-abstract" class="article-abstract" aria-label="摘要">
+        <h4>摘要</h4>
+        <p v-for="item in article.abstract" :key="item.label"><strong>{{ item.label }}</strong>{{ item.text }}</p>
+        <p class="article-keywords"><strong>关键词</strong>{{ article.keywords.join('；') }}</p>
       </section>
       <p class="quality-notice">国庆休市期间外盘信息单列，不回填9月30日。融资使用前一交易日数据：{{ report.financing?.source_date ?? '缺失' }}<template v-if="report.financing?.status === 'available_lagged'">（正常发布滞后，可用）</template>。旧风险总分未重算；价格区间为条件情景，不保证底部。</p>
-
-      <section class="chart-band">
-        <div class="section-heading">
-          <h4>价格结构与已发生的低点</h4>
-          <div class="index-switch" role="group" aria-label="研究指数">
-            <button v-for="index in report.indexes" :key="index.index_code" :aria-pressed="indexCode === index.index_code" :class="{ active: indexCode === index.index_code }" type="button" @click="indexCode = index.index_code">{{ index.index_name }}</button>
-          </div>
-        </div>
-        <AshareOutlookChart :index="selected" />
-        <div class="chart-facts"><span>{{ selected.index_name }} {{ number(selected.close) }}</span><span>本轮最高 {{ number(selected.cycle_peak) }} · {{ selected.cycle_peak_date }}</span><span>高点回撤 {{ percent(selected.cycle_drawdown_pct) }}</span><span>MA250 20日斜率 {{ percent(selected.ma250_slope_20d_pct) }}</span></div>
-        <small class="muted">来源 {{ selected.data_source }} · {{ selected.source_date }}；价格指数，不含分红。均线不是未来支撑保证。</small>
+      <section v-if="synthesis" class="conclusion-lead" aria-label="综合主判断">
+        <span>核心判断</span><p>{{ synthesis.verdict }}</p>
+        <a :href="article ? '#outlook-chapter-conclusion' : '#outlook-synthesis'">综合结论与判断依据</a>
       </section>
-      <div class="table-scroll">
-        <table><caption>五条宽基的共同日期比较</caption><thead><tr><th>指数</th><th>收盘</th><th>MA60</th><th>MA120</th><th>MA250</th><th>20日涨跌</th><th>距本轮高点</th></tr></thead>
-          <tbody><tr v-for="index in report.indexes" :key="index.index_code"><th>{{ index.index_name }}</th><td>{{ number(index.close) }}</td><td>{{ number(index.ma60) }}</td><td>{{ number(index.ma120) }}</td><td>{{ number(index.ma250) }}</td><td>{{ percent(index.return_20d_pct) }}</td><td>{{ percent(index.cycle_drawdown_pct) }}</td></tr></tbody>
-        </table>
-      </div>
-
       <div class="reading-layout">
         <nav class="contents" aria-label="研究目录">
-          <a v-for="section in report.sections" :key="section.id" :href="`#outlook-${section.id}`">{{ section.title }}</a>
-          <a href="#outlook-watchlist">条件检查清单</a><a href="#outlook-sources">来源与数据边界</a>
+          <span class="contents-label">文章目录</span>
+          <a v-if="article" href="#outlook-abstract">摘要</a>
+          <a v-for="chapter in chapters" :key="chapter.id" :href="`#outlook-chapter-${chapter.id}`">{{ chapter.number }} {{ chapter.title }}</a>
+          <a href="#outlook-watchlist">附录：条件检查清单</a><a href="#outlook-sources">参考文献</a>
         </nav>
         <article class="report-body">
-          <section v-for="section in report.sections" :id="`outlook-${section.id}`" :key="section.id" class="research-section">
-            <h4>{{ section.title }}</h4><p class="verdict">{{ section.verdict }}</p>
-            <p v-for="(paragraph, n) in section.paragraphs" :key="n" class="research-paragraph">
-              <span class="kind" :class="{ hypothesis: paragraph.kind === '情景' }">{{ paragraph.kind }}</span>{{ paragraph.text }}
-              <span v-if="paragraph.sources.length" class="citations"><a v-for="id in paragraph.sources" :key="id" :href="sourceMap.get(id)?.url" target="_blank" rel="noopener noreferrer">{{ sourceMap.get(id)?.title }}</a></span>
-            </p>
+          <section v-for="chapter in chapters" :id="`outlook-chapter-${chapter.id}`" :key="chapter.id" class="article-chapter">
+            <h4>{{ chapter.number }} {{ chapter.title }}</h4>
+            <template v-if="chapter.id === 'introduction' && article">
+              <p v-for="(paragraph, n) in article.introduction" :key="n" class="research-paragraph">
+                {{ paragraph.text }}<sup v-if="paragraph.sources.length" class="citations"><a v-for="id in paragraph.sources" :key="id" :href="`#outlook-reference-${referenceNumbers.get(id)}`" :title="sourceMap.get(id)?.title" :aria-label="`参考文献${referenceNumbers.get(id)}：${sourceMap.get(id)?.title}`">[{{ referenceNumbers.get(id) }}]</a></sup>
+              </p>
+            </template>
+            <template v-if="chapter.id === 'methods' && article">
+              <section v-for="(method, n) in article.method_sections" :key="method.title" class="method-section">
+                <h5>{{ chapter.number }}.{{ n + 1 }} {{ method.title }}</h5><p class="research-paragraph">{{ method.text }}</p>
+              </section>
+              <details><summary>复算方法与证据指纹</summary><ul><li v-for="m in report.methods" :key="m">{{ m }}</li></ul><p class="fingerprint">数据库快照 SHA256 {{ report.provenance.snapshot_sha256 }}</p><p class="fingerprint">外部快照 SHA256 {{ report.provenance.external_sha256 }}</p><p v-if="report.provenance.history_snapshot_sha256" class="fingerprint">历史补充快照 SHA256 {{ report.provenance.history_snapshot_sha256 }}</p><p v-if="report.provenance.extension_snapshot_sha256" class="fingerprint">扩展快照 SHA256 {{ report.provenance.extension_snapshot_sha256 }}</p><p>版本 {{ report.version }} · 未写入生产数据</p></details>
+            </template>
+            <template v-if="chapter.id === 'market'">
+              <figure class="chart-band">
+                <div class="section-heading">
+                  <figcaption>图1 代表宽基的价格结构与已发生的低点</figcaption>
+                  <div class="index-switch" role="group" aria-label="研究指数">
+                    <button v-for="index in report.indexes" :key="index.index_code" :aria-pressed="indexCode === index.index_code" :class="{ active: indexCode === index.index_code }" type="button" @click="indexCode = index.index_code">{{ index.index_name }}</button>
+                  </div>
+                </div>
+                <AshareOutlookChart :index="selected" />
+                <div class="chart-facts"><span>{{ selected.index_name }} {{ number(selected.close) }}</span><span>本轮最高 {{ number(selected.cycle_peak) }} · {{ selected.cycle_peak_date }}</span><span>高点回撤 {{ percent(selected.cycle_drawdown_pct) }}</span><span>MA250 20日斜率 {{ percent(selected.ma250_slope_20d_pct) }}</span></div>
+                <small class="muted">来源 {{ selected.data_source }} · {{ selected.source_date }}；价格指数，不含分红。均线不是未来支撑保证。</small>
+              </figure>
+              <div class="table-scroll">
+                <table><caption>表3-1 五条宽基的共同日期比较</caption><thead><tr><th>指数</th><th>收盘</th><th>MA60</th><th>MA120</th><th>MA250</th><th>20日涨跌</th><th>距本轮高点</th></tr></thead>
+                  <tbody><tr v-for="index in report.indexes" :key="index.index_code"><th>{{ index.index_name }}</th><td>{{ number(index.close) }}</td><td>{{ number(index.ma60) }}</td><td>{{ number(index.ma120) }}</td><td>{{ number(index.ma250) }}</td><td>{{ percent(index.return_20d_pct) }}</td><td>{{ percent(index.cycle_drawdown_pct) }}</td></tr></tbody>
+                </table>
+              </div>
+            </template>
+          <section v-for="section in chapter.sections" :id="`outlook-${section.id}`" :key="section.id" class="research-section">
+            <h5 class="subsection-title">{{ section.number }} {{ section.title }}</h5><p class="verdict">{{ section.verdict }}</p>
+            <div v-for="(paragraph, n) in section.paragraphs" :key="n">
+              <h6 v-if="paragraph.title" class="evidence-title">{{ paragraph.title }}</h6>
+              <p class="research-paragraph">
+                <span class="kind" :class="{ hypothesis: paragraph.kind === '情景' }">{{ paragraph.kind }}</span>{{ paragraph.text }}
+                <sup v-if="paragraph.sources.length" class="citations"><a v-for="id in paragraph.sources" :key="id" :href="`#outlook-reference-${referenceNumbers.get(id)}`" :title="sourceMap.get(id)?.title" :aria-label="`参考文献${referenceNumbers.get(id)}：${sourceMap.get(id)?.title}`">[{{ referenceNumbers.get(id) }}]</a></sup>
+              </p>
+            </div>
 
             <div v-for="(evidence, n) in section.tables ?? []" :key="n" class="extension-evidence">
               <div class="table-scroll"><table>
-                <caption>{{ evidence.title }}</caption>
+                <caption>表{{ section.number }}-{{ n + 1 }} {{ evidence.title }}</caption>
                 <thead><tr><th v-for="(column, c) in evidence.columns" :key="c" scope="col">{{ column }}</th></tr></thead>
                 <tbody><tr v-for="(row, r) in evidence.rows" :key="r"><template v-for="(cell, c) in row" :key="c"><th v-if="c === 0" scope="row">{{ cell }}</th><td v-else>{{ cell }}</td></template></tr></tbody>
               </table></div>
@@ -85,7 +129,7 @@ onMounted(load)
             </div>
 
             <template v-if="section.id === 'history' && report.history_comparison">
-              <AshareHistoricalComparison :comparison="report.history_comparison.spring_2021" />
+              <figure class="history-figure"><figcaption>图2 2021年春节后的风格分化与接力</figcaption><AshareHistoricalComparison :comparison="report.history_comparison.spring_2021" /></figure>
               <div class="table-scroll"><table><caption>2021年：全年与春节后分别计算，不混用起点</caption>
                 <thead><tr><th>资产</th><th>全年涨跌</th><th>春节前至3月9日</th><th>春节前至年底</th><th>3月9日至年底</th><th>全年日内高点日期</th></tr></thead><tbody>
                   <tr v-for="row in report.history_comparison.spring_2021.rows" :key="row.code"><th>{{ row.name }}</th><td>{{ percent(row.year_return_pct) }}</td><td>{{ percent(row.spring_to_march_pct) }}</td><td>{{ percent(row.spring_to_end_pct) }}</td><td>{{ percent(row.march_to_end_pct) }}</td><td>{{ row.peak_date ?? '缺失' }}</td></tr>
@@ -149,14 +193,16 @@ onMounted(load)
               </tbody></table></div></details>
             </template>
           </section>
+          </section>
           <section id="outlook-watchlist" class="research-section">
-            <h4>条件检查清单</h4><p class="muted">用于更新研究结论，不是新策略，也未连接停买或通知。</p>
+            <h4>附录：条件检查清单</h4><p class="muted">用于更新研究结论，不是新策略，也未连接停买或通知。</p>
             <div class="table-scroll"><table><thead><tr><th>模块</th><th>当前基线</th><th>改善证据</th><th>恶化证据</th></tr></thead><tbody><tr v-for="w in report.watchlist" :key="w.topic"><th>{{ w.topic }}</th><td>{{ w.baseline }}</td><td>{{ w.improves }}</td><td>{{ w.worsens }}</td></tr></tbody></table></div>
           </section>
           <section id="outlook-sources" class="research-section">
-            <h4>来源与数据边界</h4><ul class="quality-list"><li v-for="q in report.quality" :key="q">{{ q }}</li></ul>
-            <details><summary>{{ report.sources.length }}个来源、发布日期与口径说明</summary><div class="source-list"><div v-for="source in report.sources" :key="source.id"><a :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a><span>{{ dateTime(source.published_at) }}</span><p>{{ source.note }}</p></div></div></details>
-            <details><summary>复算方法与证据指纹</summary><ul><li v-for="m in report.methods" :key="m">{{ m }}</li></ul><p class="fingerprint">数据库快照 SHA256 {{ report.provenance.snapshot_sha256 }}</p><p class="fingerprint">外部快照 SHA256 {{ report.provenance.external_sha256 }}</p><p v-if="report.provenance.history_snapshot_sha256" class="fingerprint">历史补充快照 SHA256 {{ report.provenance.history_snapshot_sha256 }}</p><p>版本 {{ report.version }} · 未写入生产数据</p></details>
+            <h4>参考文献</h4>
+            <p class="muted">{{ report.sources.length }}项来源记录；动态数据库页面不代表历史首次发布版本均已认证。</p>
+            <ol class="source-list"><li v-for="(source, n) in report.sources" :id="`outlook-reference-${n + 1}`" :key="source.id"><a :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a><span>{{ dateTime(source.published_at) }}</span><p>{{ source.note }}</p></li></ol>
+            <details><summary>数据边界与质量说明</summary><ul class="quality-list"><li v-for="q in report.quality" :key="q">{{ q }}</li></ul></details>
           </section>
         </article>
       </div>
@@ -166,18 +212,29 @@ onMounted(load)
 
 <style scoped>
 .outlook-research { min-width: 0; padding: 8px 2px 28px; color: #334155; }
-.report-head, .section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-h3 { margin: 0 0 8px; font-size: 21px; font-weight: 650; }
+.report-head { padding: 12px 0 20px; border-bottom: 2px solid #2563eb; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+h3 { margin: 10px 0 12px; font-size: 24px; line-height: 1.6; font-weight: 650; max-width: 980px; }
 h4 { margin: 0 0 12px; font-size: 17px; }
-.report-head p { margin: 0; font-size: 12px; }
-.version { color: #64748b; font-size: 12px; }
-.summary-band { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 22px 0 12px; border-top: 2px solid #2563eb; border-bottom: 1px solid #dbe3ec; background: #f3f7fc; }
-.summary-band > div { padding: 15px 18px; }
-.summary-band span { display: block; color: #64748b; font-size: 12px; margin-bottom: 6px; }
-.summary-band strong { font-size: 16px; color: #1e3a8a; line-height: 1.6; }
-.summary-band p { font-size: 13px; line-height: 1.7; margin: 7px 0 0; }
+.article-type { margin: 0; font-size: 12px; color: #2563eb; }
+.article-publication { margin: 0; font-size: 12px; color: #64748b; }
+.article-metadata { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 18px 0 0; font-size: 12px; line-height: 1.7; }
+.article-metadata div { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.article-metadata dt { color: #64748b; }
+.article-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.article-abstract { padding: 24px 0 8px; }
+.article-abstract p { margin: 0 0 10px; font-size: 14px; line-height: 1.9; }
+.article-abstract strong { color: #334155; margin-right: 12px; }
+.article-abstract .article-keywords { margin-top: 18px; font-size: 12px; color: #64748b; }
 .quality-notice { border-left: 3px solid #d97706; padding: 7px 12px; font-size: 12px; line-height: 1.7; color: #92400e; }
-.chart-band { padding: 20px 0; border-bottom: 1px solid #dbe3ec; }
+.conclusion-lead { padding: 12px 0 20px; border-bottom: 1px solid #dbe3ec; }
+.conclusion-lead span { display: block; font-size: 12px; color: #64748b; margin-bottom: 6px; }
+.conclusion-lead p { color: #1e3a8a; font-size: 14px; font-weight: 600; line-height: 1.85; margin: 0 0 8px; }
+.conclusion-lead a { font-size: 13px; }
+.evidence-title { margin: 24px 0 8px; color: #334155; font-size: 15px; line-height: 1.7; }
+.chart-band { margin: 0; padding: 10px 0 20px; border-bottom: 1px solid #dbe3ec; }
+figcaption { font-size: 13px; line-height: 1.7; font-weight: 600; margin-bottom: 10px; }
+.history-figure { margin: 20px 0; }
 .index-switch { display: inline-flex; flex-wrap: wrap; gap: 3px; padding: 3px; background: #eaf0f7; border-radius: 5px; }
 .index-switch button { border: 0; padding: 7px 11px; border-radius: 3px; background: transparent; color: #475569; font: inherit; font-size: 12px; cursor: pointer; }
 .index-switch button.active { background: #fff; color: #1d4ed8; box-shadow: 0 1px 3px #cbd5e1; }
@@ -192,27 +249,32 @@ tbody th { font-weight: 500; }
 td { min-width: 65px; }
 td small, th small { display: block; color: #64748b; font-weight: 400; }
 .stress-row { color: #92400e; }
-.reading-layout { display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: 30px; margin-top: 22px; align-items: start; }
+.reading-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 32px; margin-top: 30px; align-items: start; }
 .contents { position: sticky; top: 90px; display: flex; flex-direction: column; gap: 3px; max-height: calc(100vh - 115px); overflow-y: auto; border-right: 1px solid #dbe3ec; padding-right: 12px; }
+.contents-label { font-size: 11px; color: #64748b; margin: 0 0 8px 4px; }
 .contents a { padding: 7px 4px; font-size: 12px; line-height: 1.6; }
 a { color: #2563eb; text-decoration: none; }
 a:hover { text-decoration: underline; }
 .report-body { min-width: 0; }
-.research-section { padding: 10px 0 26px; margin-bottom: 20px; border-bottom: 1px solid #dbe3ec; scroll-margin-top: 90px; }
+.article-chapter { padding: 8px 0 22px; margin-bottom: 26px; border-bottom: 1px solid #dbe3ec; scroll-margin-top: 90px; }
+.research-section { padding: 10px 0 22px; scroll-margin-top: 90px; }
+.subsection-title, .method-section h5 { font-size: 15px; line-height: 1.7; margin: 10px 0 12px; }
 .verdict { color: #1e3a8a; font-size: 14px; font-weight: 600; line-height: 1.8; margin: 0 0 16px; }
 .research-paragraph { font-size: 14px; line-height: 1.95; margin: 0 0 17px; }
 .kind { margin-right: 8px; font-size: 11px; color: #64748b; border-bottom: 1px solid #94a3b8; }
 .kind.hypothesis { color: #b45309; border-color: #d97706; }
-.citations { display: block; margin-top: 5px; font-size: 11px; line-height: 1.7; }
-.citations a { display: inline-block; margin-right: 12px; }
+.citations { margin-left: 4px; font-size: 10px; line-height: 1; }
+.citations a { margin-right: 3px; overflow-wrap: anywhere; }
 summary { font-size: 13px; color: #1d4ed8; cursor: pointer; padding: 12px 0; }
 .quality-list, details ul { padding-left: 20px; font-size: 13px; line-height: 1.9; }
-.source-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding: 12px 0; font-size: 12px; }
+.source-list { padding-left: 25px; font-size: 12px; }
+.source-list li { padding: 10px 0 14px 3px; border-bottom: 1px solid #e2e8f0; overflow-wrap: anywhere; scroll-margin-top: 90px; line-height: 1.8; }
+.source-list li::marker { color: #64748b; }
 .source-list span { display: block; color: #64748b; margin-top: 5px; }
 .source-list p { line-height: 1.7; margin: 5px 0 0; }
 .fingerprint { font-size: 11px; color: #64748b; overflow-wrap: anywhere; }
 .state { padding: 28px 0; } .error { color: #b91c1c; }
-@media (max-width: 1350px) { .reading-layout { grid-template-columns: 180px minmax(0, 1fr); gap: 20px; } .summary-band > div { padding: 12px; } .summary-band strong { font-size: 14px; } }
-@media (max-width: 1050px) { .reading-layout { display: block; } .contents { position: static; max-height: none; display: flex; flex-direction: row; flex-wrap: wrap; border: 0; border-bottom: 1px solid #dbe3ec; padding: 0 0 15px; margin-bottom: 24px; gap: 4px 16px; } .contents a { max-width: 100%; } }
-@media (max-width: 700px) { .summary-band { grid-template-columns: 1fr; } .summary-band > div + div { border-top: 1px solid #dbe3ec; } h3 { font-size: 18px; } .source-list { grid-template-columns: 1fr; } table { min-width: 550px; } .research-paragraph { font-size: 13px; } }
+@media (max-width: 1350px) { .reading-layout { grid-template-columns: 170px minmax(0, 1fr); gap: 24px; } h3 { font-size: 22px; } }
+@media (max-width: 1050px) { .reading-layout { display: block; } .contents { position: static; max-height: none; display: flex; flex-direction: row; flex-wrap: wrap; border: 0; border-bottom: 1px solid #dbe3ec; padding: 0 0 15px; margin-bottom: 24px; gap: 4px 16px; } .contents-label { width: 100%; } .contents a { max-width: 100%; } }
+@media (max-width: 700px) { h3 { font-size: 19px; } .article-metadata { display: grid; gap: 6px; } table { min-width: 550px; } .research-paragraph, .article-abstract p { font-size: 13px; } .article-abstract { padding-top: 18px; } }
 </style>

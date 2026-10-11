@@ -111,6 +111,46 @@ def _make_run(task_id=1):
     )
 
 
+@pytest.mark.parametrize("protected", [False, True])
+def test_douyin_partial_finishes_with_saved_values_and_missing_items(monkeypatch, protected):
+    task = _make_collection_task("douyin_coze_emotion_daily")
+    task.schedule_time = "19:00"
+    run = _make_run(task.id)
+    rows = [
+        {"emotion_value": 9 if protected else 10, "data_source": "manual_task_center" if protected else "douyin_local_asr", "source_file": "douyin:123"},
+        {"emotion_value": 13, "data_source": "douyin_local_asr", "source_file": "douyin:123"},
+    ]
+    service = TaskService(_FakeSession(tasks=[task], runs=[run], execute_rows=rows))
+    service._now = lambda: datetime(2026, 4, 30, 20, 0)
+    cleared = []
+    monkeypatch.setattr(service.stock_service, "clear_index_emotions_cache", lambda: cleared.append("emotion"))
+    monkeypatch.setattr(service.quant_service, "clear_index_dashboard_cache", lambda market: cleared.append(market))
+    monkeypatch.setattr(task_service_module, "run_daily_collection_request", lambda **_: {
+        "upstream_response": {"result": {"status": "PARTIAL", "target_date": "2026-04-30", "video_id": "123", "values": {"zz500_emotion": 10, "zz1000_emotion": 13}}}
+    })
+    result = service.execute_run(run.id)
+    assert result["status"] == task.last_run_status == "partial"
+    assert run.finished_at is not None and not run.error_message
+    assert "2/4项" in run.summary and "中证1000=13" in run.summary
+    assert "上证50、沪深300" in run.summary and "本轮已结束" in run.summary
+    assert cleared == ["emotion", "cn"]
+    if protected:
+        assert "中证500=9" in run.summary and "保留已有人工/Excel数据：中证500" in run.summary
+
+
+@pytest.mark.parametrize("row", [None, {"emotion_value": 10, "data_source": "douyin_local_asr", "source_file": "douyin:999"}, {"emotion_value": 11, "data_source": "douyin_local_asr", "source_file": "douyin:123"}])
+def test_douyin_partial_rejects_unpersisted_or_mismatched_results(monkeypatch, row):
+    task = _make_collection_task("douyin_coze_emotion_daily")
+    run = _make_run(task.id)
+    service = TaskService(_FakeSession(tasks=[task], runs=[run], execute_rows=[row]))
+    monkeypatch.setattr(task_service_module, "run_daily_collection_request", lambda **_: {
+        "upstream_response": {"result": {"status": "PARTIAL", "target_date": "2026-04-30", "video_id": "123", "values": {"zz500_emotion": 10}}}
+    })
+    with pytest.raises(RuntimeError, match="抖音部分结果"):
+        service.execute_run(run.id)
+    assert run.status == "failed"
+
+
 def test_collection_validation_fails_when_target_trade_date_is_missing():
     service = TaskService(
         _FakeSession(execute_rows=[{"target_count": 0, "latest_date": date(2026, 4, 29)}])
@@ -251,7 +291,14 @@ def test_douyin_no_update_before_deadline_reports_next_check(monkeypatch):
     }
 
 
-def test_douyin_detected_content_processing_failure_stops_daily_polling(monkeypatch):
+@pytest.mark.parametrize(
+    "error_message",
+    [
+        "文案日期 2026-06-27 与作品发布日期 2026-06-28 不一致",
+        "本次转写指标不完整：已确认 2/4 项（中证500=10、中证1000=13）；尚无可核验数值：上证50、沪深300",
+    ],
+)
+def test_douyin_detected_content_processing_failure_stops_daily_polling(monkeypatch, error_message):
     task = _make_collection_task("douyin_coze_emotion_daily")
     task.schedule_time = "19:00"
     run = _make_run(task.id)
@@ -272,7 +319,7 @@ def test_douyin_detected_content_processing_failure_stops_daily_polling(monkeypa
                     "status": "UPDATE_FOUND_FAILED",
                     "target_date": "2026-06-28",
                     "video_id": "123",
-                    "error": "文案日期 2026-06-27 与作品发布日期 2026-06-28 不一致",
+                    "error": error_message,
                 },
             },
         },
@@ -283,10 +330,11 @@ def test_douyin_detected_content_processing_failure_stops_daily_polling(monkeypa
     assert result["status"] == "failed"
     assert result["summary"].startswith("已发现当天新作品")
     assert "今日轮询已停止" in result["summary"]
+    assert error_message in result["summary"]
     assert task.last_run_status == "failed"
 
 
-def test_douyin_incomplete_extraction_continues_daily_polling(monkeypatch):
+def test_douyin_incomplete_extraction_is_terminal_without_a_verified_subset(monkeypatch):
     task = _make_collection_task("douyin_coze_emotion_daily")
     task.schedule_time = "19:00"
     run = _make_run(task.id)
@@ -313,14 +361,18 @@ def test_douyin_incomplete_extraction_continues_daily_polling(monkeypatch):
         },
     )
 
-    with pytest.raises(TaskRunPollingPending, match="同一条运行记录"):
-        service.execute_run(run.id)
+    result = service.execute_run(run.id)
 
-    assert run.status == "running"
+    assert result["status"] == "failed"
+    assert "今日轮询已停止" in run.summary
     assert "文案缺少上证50情绪指标" in run.summary
 
 
-def test_douyin_transient_processing_failure_continues_daily_polling(monkeypatch):
+@pytest.mark.parametrize(
+    "error_message",
+    ["等待 Coze 视频文案超时", "本地 ASR 子进程转写超时"],
+)
+def test_douyin_transient_processing_failure_continues_daily_polling(monkeypatch, error_message):
     task = _make_collection_task("douyin_coze_emotion_daily")
     task.schedule_time = "19:00"
     run = _make_run(task.id)
@@ -341,7 +393,7 @@ def test_douyin_transient_processing_failure_continues_daily_polling(monkeypatch
                     "status": "UPDATE_FOUND_RETRYABLE",
                     "target_date": "2026-06-28",
                     "video_id": "123",
-                    "error": "等待 Coze 视频文案超时",
+                    "error": error_message,
                 },
             },
         },
@@ -351,12 +403,25 @@ def test_douyin_transient_processing_failure_continues_daily_polling(monkeypatch
         service.execute_run(run.id)
 
     assert run.status == "running"
-    assert "等待 Coze 视频文案超时" in run.summary
+    assert error_message in run.summary
 
 
-def test_douyin_success_requires_four_rows_and_clears_caches(monkeypatch):
+@pytest.mark.parametrize(
+    ("processing_status", "extraction_method"),
+    [
+        ("SUCCESS", "coze_transcript+local_parser"),
+        ("SUCCESS", "local_turbo_asr+local_parser"),
+        ("RECOVERED", "local_turbo_asr+local_parser"),
+        ("ALREADY_PROCESSED", "local_turbo_asr+local_parser"),
+    ],
+)
+def test_douyin_success_requires_four_rows_and_clears_caches(
+    monkeypatch, processing_status, extraction_method
+):
     task = _make_collection_task("douyin_coze_emotion_daily")
+    task.enabled = False
     run = _make_run(task.id)
+    run.trigger_type = "manual"
     run.scheduled_for = datetime(2026, 6, 28, 20, 55)
     db = _FakeSession(
         tasks=[task],
@@ -380,9 +445,10 @@ def test_douyin_success_requires_four_rows_and_clears_caches(monkeypatch):
             "upstream_response": {
                 "task_name": "douyin_coze_emotion_daily",
                 "result": {
-                    "status": "SUCCESS",
+                    "status": processing_status,
                     "target_date": "2026-06-28",
                     "video_id": "123",
+                    "extraction_method": extraction_method,
                     "values": {
                         "sz50_emotion": 51,
                         "hs300_emotion": 52,
@@ -397,8 +463,61 @@ def test_douyin_success_requires_four_rows_and_clears_caches(monkeypatch):
     result = service.execute_run(run.id)
 
     assert result["status"] == "success"
+    assert task.enabled is False
+    assert task.schedule_time == "09:00"
     assert cleared == ["emotion", "dashboard:cn"]
     assert "上证50=51" in result["summary"]
+
+
+def test_douyin_local_asr_success_with_incomplete_persistence_fails_without_clearing_caches(
+    monkeypatch,
+):
+    task = _make_collection_task("douyin_coze_emotion_daily")
+    run = _make_run(task.id)
+    run.scheduled_for = datetime(2026, 10, 8, 20, 55)
+    db = _FakeSession(
+        tasks=[task],
+        runs=[run],
+        execute_rows=[{"target_count": 3, "latest_date": date(2026, 10, 8)}],
+    )
+    service = TaskService(db)
+    cleared = []
+    monkeypatch.setattr(service.stock_service, "clear_index_emotions_cache", lambda: cleared.append("emotion"))
+    monkeypatch.setattr(
+        service.quant_service,
+        "clear_index_dashboard_cache",
+        lambda market: cleared.append(f"dashboard:{market}"),
+    )
+    monkeypatch.setattr(
+        task_service_module,
+        "run_daily_collection_request",
+        lambda **_kwargs: {
+            "status": "ok",
+            "upstream_status": "SUCCESS",
+            "upstream_response": {
+                "task_name": "douyin_coze_emotion_daily",
+                "result": {
+                    "status": "SUCCESS",
+                    "target_date": "2026-10-08",
+                    "video_id": "7694264298039014619",
+                    "extraction_method": "local_turbo_asr+local_parser",
+                    "values": {
+                        "sz50_emotion": 23,
+                        "hs300_emotion": 13,
+                        "zz500_emotion": 8,
+                        "zz1000_emotion": 9,
+                    },
+                },
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="目标交易日 2026-10-08 数据未完整入库"):
+        service.execute_run(run.id)
+
+    assert run.status == "failed"
+    assert task.last_run_status == "failed"
+    assert cleared == []
 
 
 def test_execute_run_succeeds_when_target_rows_exist(monkeypatch):

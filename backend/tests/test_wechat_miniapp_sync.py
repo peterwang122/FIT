@@ -267,3 +267,87 @@ def test_daily_notification_sync_runs_only_after_successful_root_email(monkeypat
         SimpleNamespace(task_type="notification", name="其他通知"),
         root,
     ) is False
+
+
+def test_manual_refresh_recomputes_current_config_without_reading_email_runs(monkeypatch):
+    from app.services import task_service
+
+    basis_date = date.today() - timedelta(days=1)
+    class _TaskService:
+        def __init__(self, _db):
+            self.market_calendar = SimpleNamespace(is_trading_day=lambda *_args: True)
+
+        def _notification_basis_trade_date(self, scope, now):
+            assert scope == "cn_stock"
+            return basis_date
+
+    class _QuantService:
+        def __init__(self, _db):
+            pass
+
+        def list_strategy_notification_summaries(self, strategy_ids, owner_id, basis_trade_date):
+            assert strategy_ids == [8]
+            assert owner_id == 1
+            assert basis_trade_date == basis_date
+            return [{"strategy_id": 8, "signal_text": "蓝", "latest_trade_date": basis_date}]
+
+    monkeypatch.setattr(task_service, "TaskService", _TaskService)
+    monkeypatch.setattr(module, "QuantService", _QuantService)
+    db = _NotificationDb([
+        SimpleNamespace(id=1),
+        SimpleNamespace(id=11, enabled=True, market_scope="cn_stock", config_json={"strategy_ids": [8]}),
+        [SimpleNamespace(id=8, name="沪深300买入计划", strategy_type="index", target_code="sh000300", target_name="沪深300")],
+    ])
+    event = WechatMiniappSyncService(db).build_notification_event(refresh_request_id="a" * 32)
+    assert event["event_id"] == "event_manual_" + "a" * 32
+    assert event["delivery_mode"] == "silent"
+    assert event["mail"]["items"][0]["name"] == "300阶段计划"
+    assert event["basis_date"] == basis_date.isoformat()
+    assert event["effective_count"] == 1
+
+
+def test_manual_request_uses_only_silent_dataset_and_marks_completion(monkeypatch):
+    service = WechatMiniappSyncService(SimpleNamespace())
+    monkeypatch.setattr(WechatMiniappSyncService, "enabled", property(lambda _self: True))
+    commands = []
+    uploads = []
+    request_id = "b" * 32
+
+    def command(action, request_id=None):
+        commands.append(action)
+        return {"request": {"request_id": "b" * 32}} if action == "poll" else {"status": "completed"}
+
+    monkeypatch.setattr(service, "_manual_sync_command", command)
+    monkeypatch.setattr(service, "build_notification_event", lambda **kwargs: {"_id": "event_manual_" + kwargs["refresh_request_id"], "delivery_mode": "silent"})
+    monkeypatch.setattr(service, "push", lambda dataset, items: uploads.append((dataset, items)) or {"written": 1})
+    assert service.process_manual_notification_sync()["status"] == "completed"
+    assert commands == ["poll", "complete"]
+    assert uploads[0][0] == "notification_display"
+    assert uploads[0][1][0]["_id"] == "event_manual_" + request_id
+
+
+def test_manual_poll_without_request_does_not_build_or_upload(monkeypatch):
+    service = WechatMiniappSyncService(SimpleNamespace())
+    monkeypatch.setattr(WechatMiniappSyncService, "enabled", property(lambda _self: True))
+    monkeypatch.setattr(service, "_manual_sync_command", lambda *_args: {"request": None})
+    monkeypatch.setattr(service, "build_notification_event", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected recompute")))
+    assert service.process_manual_notification_sync() == {"status": "idle"}
+
+
+def test_failed_manual_upload_is_marked_failed_not_completed(monkeypatch):
+    import pytest
+
+    service = WechatMiniappSyncService(SimpleNamespace())
+    monkeypatch.setattr(WechatMiniappSyncService, "enabled", property(lambda _self: True))
+    commands = []
+
+    def command(action, request_id=None):
+        commands.append(action)
+        return {"request": {"request_id": "c" * 32}}
+
+    monkeypatch.setattr(service, "_manual_sync_command", command)
+    monkeypatch.setattr(service, "build_notification_event", lambda **_kwargs: {"delivery_mode": "silent"})
+    monkeypatch.setattr(service, "push", lambda *_args: (_ for _ in ()).throw(RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        service.process_manual_notification_sync()
+    assert commands == ["poll", "fail"]

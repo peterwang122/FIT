@@ -9,7 +9,7 @@ const runtime = process.env.CODEX_NODE_MODULES ?? '/Users/wanghequan/.cache/code
 const { chromium } = createRequire(resolve(runtime, 'playwright/package.json'))('playwright')
 const report = JSON.parse(readFileSync(resolve(root, 'docs/research/ashare_outlook_2026-10-04.json'), 'utf8'))
 const baseUrl = process.env.FIT_BROWSER_URL ?? 'http://127.0.0.1:5173'
-const folder = resolve(root, 'runtime/reports/ashare_outlook/2026-10-04/browser/financing-t1-v5')
+const folder = resolve(root, 'runtime/reports/ashare_outlook/2026-10-04/browser/review-article-v1')
 mkdirSync(folder, { recursive: true })
 const result = { mode: 'isolated browser with fixture auth/API; not production deployment proof',
   report_version: report.version, checked_at: new Date().toISOString(), viewports: [] }
@@ -70,7 +70,7 @@ try {
     await fixture(page, state)
     await page.goto(`${baseUrl}/research/ashare-outlook`, { waitUntil: 'networkidle' })
     try {
-      await page.getByRole('heading', { name: report.title }).waitFor()
+      await page.getByRole('heading', { name: report.review_article.title }).waitFor()
     } catch (error) {
       await page.screenshot({ path: resolve(folder, `failure-${width}.png`) })
       console.log(JSON.stringify({ url: page.url(), title: await page.title(), body: (await page.locator('body').innerText()).slice(0, 3000), state, errors }))
@@ -81,13 +81,29 @@ try {
     assert.equal(await page.locator('.research-section').count(), report.sections.length + 2)
     assert.equal(await page.locator('.extension-evidence').count(), report.sections.reduce((n, s) => n + (s.tables?.length ?? 0), 0))
     await page.locator('#outlook-synthesis').waitFor()
-    assert.equal(await page.locator('.research-paragraph').count(), report.sections.reduce((n, s) => n + s.paragraphs.length, 0))
+    assert.equal(await page.locator('.research-paragraph').count(), report.sections.reduce((n, s) => n + s.paragraphs.length, 0)
+      + report.review_article.introduction.length + report.review_article.method_sections.length)
+    assert.equal(await page.locator('.article-chapter').count(), 8)
+    assert.equal(await page.locator('.article-abstract p').count(), 5)
+    assert.equal(await page.locator('.source-list > li').count(), report.sources.length)
+    assert.ok((await page.locator('.report-head').innerText()).includes('未经同行评审'))
+    const synthesis = report.sections.find(section => section.id === 'synthesis')
+    assert.equal(await page.locator('.conclusion-lead p').innerText(), synthesis.verdict)
+    assert.equal(await page.locator('#outlook-synthesis .evidence-title').count(), synthesis.paragraphs.filter(p => p.title).length)
+    assert.equal(await page.locator('#outlook-synthesis .extension-evidence tbody tr').count(), 10)
+    assert.ok((await page.locator('.report-head').innerText()).includes('未刷新证据'))
     const dimensions = await layout(page)
     assert.ok(dimensions.scrollWidth <= width, JSON.stringify(dimensions))
     assert.ok(dimensions.chartWidth > 200)
     const colored = await coloredPixels(page)
     assert.ok(colored > 80, `Blank chart: ${width}, ${colored}`)
     await page.screenshot({ path: resolve(folder, `top-${width}x${height}.png`) })
+    await page.getByRole('link', { name: '综合结论与判断依据', exact: true }).click()
+    await page.waitForFunction(() => {
+      const section = document.querySelector('#outlook-chapter-conclusion')
+      return Math.abs(section.getBoundingClientRect().top - parseFloat(getComputedStyle(section).scrollMarginTop)) <= 1
+    })
+    await page.screenshot({ path: resolve(folder, `synthesis-lead-${width}x${height}.png`) })
 
     for (const index of report.indexes) {
       const button = page.getByRole('button', { name: index.index_name, exact: true })
@@ -134,7 +150,7 @@ try {
     assert.ok((await layout(page)).scrollWidth <= width, 'Historical tables must not overflow the page')
     assert.equal(state.reportRequests, 1)
 
-    await page.locator('.contents a[href="#outlook-money"]').click()
+    await page.locator('.contents a[href="#outlook-chapter-domestic"]').click()
     await page.locator('#outlook-money').scrollIntoViewIfNeeded()
     assert.ok((await page.locator('#outlook-money').innerText()).includes('M1同比'))
     await page.screenshot({ path: resolve(folder, `macro-${width}x${height}.png`) })
@@ -143,7 +159,7 @@ try {
       await section.evaluate(element => element.scrollIntoView({ block: 'start', behavior: 'instant' }))
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       assert.ok(await section.locator('.extension-evidence').count() > 0)
-      assert.ok((await section.locator('h4').boundingBox()).y >= 84, `${sectionId} heading must clear the fixed header`)
+      assert.ok((await section.locator('.subsection-title').boundingBox()).y >= 84, `${sectionId} heading must clear the fixed header`)
       assert.ok((await layout(page)).scrollWidth <= width, `${sectionId} must not overflow the page`)
       await page.screenshot({ path: resolve(folder, `${sectionId}-${width}x${height}.png`) })
     }
@@ -158,8 +174,11 @@ try {
     await page.locator('#outlook-limits summary').click()
     assert.ok(await page.locator('#outlook-limits details').getAttribute('open') !== null)
     assert.ok((await page.locator('#outlook-limits').innerText()).includes('待验证'))
-    await page.locator('#outlook-sources summary').first().click()
-    assert.equal(await page.locator('.source-list > div').count(), report.sources.length)
+    const citation = page.locator('#outlook-history .citations a').first()
+    const referenceId = await citation.getAttribute('href')
+    await citation.click()
+    assert.ok((await page.locator(referenceId).boundingBox()).y >= 84, 'Cited reference must clear the fixed header')
+    assert.equal(await page.locator('.source-list > li').count(), report.sources.length)
     assert.ok((await page.locator('.source-list').innerText()).includes('发布时间未核验'))
     assert.deepEqual(errors, [])
     result.viewports.push({ width, height, ...dimensions, colored_pixels: colored, all_indexes_switched: true,
@@ -177,7 +196,7 @@ try {
   assert.ok((await page.getByRole('alert').innerText()).includes('研究文件暂不可用'))
   state.fail = false
   await page.getByRole('button', { name: '重新加载' }).click()
-  await page.getByRole('heading', { name: report.title }).waitFor()
+  await page.getByRole('heading', { name: report.review_article.title }).waitFor()
   result.error_retry_verified = true
   await context.close()
 

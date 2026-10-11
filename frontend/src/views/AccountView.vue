@@ -619,6 +619,7 @@ onMounted(async () => {
                   <span>中文翻译</span>
                   <p>{{ item.translation_zh }}</p>
                 </div>
+                <p v-else class="muted">翻译暂未完成，后台会继续重试。</p>
                 <a
                   v-if="item.url"
                   class="codex-history-link"

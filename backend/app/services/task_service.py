@@ -1,3 +1,4 @@
+import math
 import re
 import smtplib
 from dataclasses import dataclass, field
@@ -36,6 +37,10 @@ MANUAL_DOUYIN_EMOTION_FIELDS = {
 
 class TaskRunSkipped(RuntimeError):
     pass
+
+
+class TaskRunPartial(RuntimeError):
+    """A verified subset was saved; this run is finished with missing data."""
 
 
 class TaskRunTerminalFailure(RuntimeError):
@@ -1301,7 +1306,7 @@ class TaskService:
                 ScheduledTaskRun.trigger_type == "schedule",
                 ScheduledTaskRun.scheduled_for >= day_start,
                 ScheduledTaskRun.scheduled_for < day_end,
-                ScheduledTaskRun.status.in_(("queued", "running", "success", "failed")),
+                ScheduledTaskRun.status.in_(("queued", "running", "success", "partial", "failed")),
             )
             .order_by(ScheduledTaskRun.id.desc())
             .limit(5)
@@ -1320,7 +1325,7 @@ class TaskService:
                 continue
             status = str(getattr(run, "status", "") or "").strip().lower()
             summary = str(getattr(run, "summary", "") or "").strip()
-            has_success = has_success or status == "success" or (
+            has_success = has_success or status in {"success", "partial"} or (
                 status == "failed" and summary.startswith(DOUYIN_POLL_TERMINAL_SUMMARY_PREFIX)
             )
             has_active = has_active or status in {"queued", "running"}
@@ -2753,6 +2758,49 @@ class TaskService:
             f"物理最新行 {latest.get('trade_date') or '--'} 缺失：{', '.join(missing)}"
         )
 
+    def _douyin_partial_summary(self, result: dict, target_date: date) -> str:
+        values = result.get("values")
+        video_id = str(result.get("video_id") or "").strip()
+        if (
+            str(result.get("target_date") or "") != target_date.isoformat()
+            or not video_id.isdigit()
+            or not isinstance(values, dict)
+            or not 0 < len(values) < 4
+            or not set(values).issubset(MANUAL_DOUYIN_EMOTION_FIELDS)
+        ):
+            raise ValueError("抖音部分结果的日期、作品或指标不合法")
+        saved, protected = [], []
+        for field_name, label in MANUAL_DOUYIN_EMOTION_FIELDS.items():
+            if field_name not in values:
+                continue
+            value = values[field_name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
+                raise ValueError(f"抖音部分结果 {label} 数值不合法")
+            row = self.db.execute(
+                text(
+                    f"SELECT emotion_value, data_source, source_file FROM {_quoted_identifier(settings.excel_index_emotion_table_name)} "
+                    f"WHERE {_quoted_identifier(settings.excel_index_emotion_date_column)} = :target_date "
+                    f"AND {_quoted_identifier(settings.excel_index_emotion_name_column)} = :index_name"
+                ),
+                {"target_date": target_date, "index_name": label},
+            ).mappings().first()
+            if not row or row.get("emotion_value") is None:
+                raise RuntimeError(f"抖音部分结果尚未入库：{label}")
+            actual = float(row["emotion_value"])
+            source = str(row.get("data_source") or "").lower()
+            if source in {"excel", "manual_task_center"}:
+                protected.append(label)
+            elif source not in {"douyin_local_asr", "douyin_coze"} or row.get("source_file") != f"douyin:{video_id}" or abs(actual - value) > 0.005:
+                raise RuntimeError(f"抖音部分结果入库来源或数值不一致：{label}")
+            saved.append(f"{label}={actual:g}")
+        missing = "、".join(label for field, label in MANUAL_DOUYIN_EMOTION_FIELDS.items() if field not in values)
+        preserved = f"保留已有人工/Excel数据：{'、'.join(protected)}；" if protected else ""
+        return (
+            f"部分完成（{len(values)}/4项）：日期 {target_date}，作品 {video_id}；"
+            f"已入库：{'、'.join(saved)}；作品未提供可核验数值：{missing}，缺项未补值；"
+            f"{preserved}本轮已结束，停止对同一文案重复转写。"
+        )
+
     def _execute_collection_task(
         self,
         task: ScheduledTask,
@@ -3034,28 +3082,19 @@ class TaskService:
                 f"{label}截至 23:30 港交所日市况报告仍未完整：目标交易日 {target_date}，"
                 f"已发布 {available}，应有 {expected}。"
             )
+        if collector_key == "douyin_coze_emotion_daily" and result_status == "PARTIAL":
+            summary = self._douyin_partial_summary(result_value, explicit_target_trade_date)
+            self.stock_service.clear_index_emotions_cache()
+            self.quant_service.clear_index_dashboard_cache("cn")
+            raise TaskRunPartial(summary)
         douyin_processing_error = (
             str(result_value.get("error") or "").strip()
             if isinstance(result_value, dict)
             else ""
         )
-        douyin_incomplete_extraction = (
-            collector_key == "douyin_coze_emotion_daily"
-            and result_status == "UPDATE_FOUND_FAILED"
-            and any(
-                marker in douyin_processing_error
-                for marker in (
-                    "文案缺少",
-                    "图文 OCR 缺少情绪指标",
-                    "情绪指标存在歧义",
-                    "正式情绪表仅有",
-                )
-            )
-        )
         if (
             collector_key == "douyin_coze_emotion_daily"
             and result_status == "UPDATE_FOUND_FAILED"
-            and not douyin_incomplete_extraction
         ):
             target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
             video_id = str(result_value.get("video_id") or "-")
@@ -3066,10 +3105,7 @@ class TaskService:
             )
         if (
             collector_key == "douyin_coze_emotion_daily"
-            and (
-                result_status == "UPDATE_FOUND_RETRYABLE"
-                or douyin_incomplete_extraction
-            )
+            and result_status == "UPDATE_FOUND_RETRYABLE"
         ):
             target_date = str(result_value.get("target_date") or explicit_target_trade_date or "-")
             video_id = str(result_value.get("video_id") or "-")
@@ -3226,7 +3262,7 @@ class TaskService:
             raise LookupError("scheduled task not found")
 
         started_at = self._now()
-        self._mark_run_state(run, task, status="running", started_at=started_at)
+        self._mark_run_state(run, task, status="running", started_at=started_at, summary=run.summary or "正在执行，等待采集结果。")
 
         try:
             if task.task_type == "collection":
@@ -3242,6 +3278,12 @@ class TaskService:
                 )
             else:
                 raise ValueError("unsupported task type")
+        except TaskRunPartial as exc:
+            self._mark_run_state(
+                run, task, status="partial", summary=str(exc), error_message="", finished_at=self._now()
+            )
+            self.db.refresh(run)
+            return self._serialize_run(run)
         except TaskRunSkipped as exc:
             finished_at = self._now()
             summary = str(exc)

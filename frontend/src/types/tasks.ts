@@ -1,7 +1,7 @@
 import type { QuantStrategyType } from './quant'
 
 export type ScheduledTaskType = 'collection' | 'notification'
-export type ScheduledTaskRunStatus = 'queued' | 'running' | 'success' | 'failed' | 'skipped'
+export type ScheduledTaskRunStatus = 'queued' | 'running' | 'success' | 'partial' | 'failed' | 'skipped'
 export type ScheduledTaskTriggerType = 'schedule' | 'manual'
 export type TaskMarketScope = 'cn_stock' | 'hk_index' | 'us_index'
 export type CollectionCollectorKey =

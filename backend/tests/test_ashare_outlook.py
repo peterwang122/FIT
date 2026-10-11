@@ -25,6 +25,9 @@ from ashare_outlook_external import parse_rows
 from ashare_outlook_history import compare, period, prepared
 from ashare_outlook_extensions import forward, monthly_change, strict_financing, valuation_parts, visible_months
 from ashare_outlook_supplement import etf_metrics, parse_ah, policy_metrics, refreshed_global_metrics
+from ashare_outlook_synthesis import apply_synthesis
+from ashare_outlook_article import with_review_article
+from build_ashare_outlook import markdown
 
 
 def history(count=600):
@@ -142,7 +145,7 @@ def test_dated_report_is_complete_and_source_linked():
     assert not any(r["item"] == "9月30日深市融资" for r in report["supplement"]["remaining"])
     assert report["extensions"]["financing"]["windows"][0]["net_buy_cny"] == pytest.approx(-42976866522)
     assert report["extensions"]["strategy_comparison"]["signal_data_quality"]["strict_replay_complete"] is False
-    assert report["version"] == "ashare-outlook-2026-10-04-v5"
+    assert report["version"] == "ashare-outlook-2026-10-04-v6"
     supplement = report["supplement"]
     assert supplement["ah"]["market_day"] == {"date": "2026-09-30", "value": 124.53}
     assert supplement["ah"]["latest"] == {"date": "2026-10-02", "value": 126.77}
@@ -169,6 +172,78 @@ def test_dated_report_is_complete_and_source_linked():
     rates_table = next(s for s in report["sections"] if s["id"] == "shock_types")["tables"][0]
     assert rates_table["rows"][0][1].endswith("%")
     assert rates_table["rows"][0][3].endswith("bp")
+
+
+def test_expanded_synthesis_preserves_evidence_and_other_sections():
+    original = json.loads((ROOT / "docs/research/ashare-outlook-2026-10-04-v5.json").read_text())
+    revised = with_review_article(apply_synthesis(copy.deepcopy(original)))
+    stored = ResearchService().get_ashare_outlook()
+    assert revised == stored
+    edited_keys = {"version", "editorial_revision", "summary", "sections", "review_article"}
+    assert {k: v for k, v in revised.items() if k not in edited_keys} == {
+        k: v for k, v in original.items() if k not in edited_keys
+    }
+    assert revised["summary"][1:] == original["summary"][1:]
+    assert revised["as_of_at"] == original["as_of_at"]
+    assert revised["editorial_revision"] == {"reviewed_on": "2026-10-05", "evidence_refreshed": False}
+    assert [s for s in revised["sections"] if s["id"] not in ("synthesis", "regime")] == [
+        s for s in original["sections"] if s["id"] not in ("synthesis", "regime")
+    ]
+    assert apply_synthesis(copy.deepcopy(revised)) == revised
+
+
+def test_synthesis_has_ten_dimensions_counterevidence_and_historical_comparison():
+    report = ResearchService().get_ashare_outlook()
+    synthesis = next(s for s in report["sections"] if s["id"] == "synthesis")
+    titles = [p.get("title", "") for p in synthesis["paragraphs"]]
+    assert len([t for t in titles if t.startswith(tuple("一二三四五六七八九十"))]) == 10
+    assert "历史对照：为什么既不能照搬2021，也不能排除2020" in titles
+    assert "判断边界：反证不等于牛市延续的证明" in titles
+    assert "什么证据会改变判断" in titles
+    assert len(synthesis["tables"][0]["rows"]) == 10
+    assert "缓冲与反证" in synthesis["tables"][0]["columns"]
+    assert "尚不足以正式确认" in synthesis["verdict"]
+    assert synthesis["verdict"] == next(s for s in report["sections"] if s["id"] == "regime")["verdict"]
+    output = markdown(report)
+    assert "#### 一、价格与接力：风险已跨风格扩散" in output
+    assert "#### 什么证据会改变判断" in output
+    assert output == (ROOT / "docs/research/ASHARE_OUTLOOK_2026-10-04.md").read_text()
+
+
+def test_review_format_preserves_every_observation_and_original_conclusion():
+    stored = ResearchService().get_ashare_outlook()
+    evidence = {k: v for k, v in stored.items() if k != "review_article"}
+    before = copy.deepcopy(evidence)
+    formatted = with_review_article(evidence)
+    assert evidence == before
+    assert {k: v for k, v in formatted.items() if k != "review_article"} == before
+    assert with_review_article(formatted) == formatted == stored
+    article = formatted["review_article"]
+    assert article["evidence_refreshed"] is False
+    assert "未经同行评审" in article["publication_note"]
+    assert "不是系统性文献综述" in article["method_sections"][0]["text"]
+    ids = [s["id"] for chapter in article["chapters"] for s in chapter["sections"]]
+    assert len(ids) == len(set(ids)) == len(stored["sections"])
+    assert set(ids) == {s["id"] for s in stored["sections"]}
+    assert ids[-1] == "synthesis"
+    assert next(s for s in stored["sections"] if s["id"] == "synthesis")["verdict"] in article["abstract"][-1]["text"]
+    output = markdown(stored)
+    assert output.startswith(f"# {article['title']}")
+    assert output.index("## 2 资料与研究方法") < output.index("## 3 历史周期")
+    assert output.index("## 7 研究局限") < output.index("## 8 综合结论")
+    for n, source in enumerate(stored["sources"], 1):
+        assert f'<a id="reference-{n}"></a> [{n}] [{source["title"]}]' in output
+
+
+@pytest.mark.parametrize("mutation", ["remove_section", "unknown_source"])
+def test_review_rejects_silent_evidence_loss_or_unverified_framing(mutation):
+    evidence = copy.deepcopy(ResearchService().get_ashare_outlook())
+    if mutation == "remove_section":
+        evidence["sections"].pop()
+    else:
+        evidence["sources"] = [s for s in evidence["sources"] if s["id"] != "csi2021"]
+    with pytest.raises(ValueError):
+        with_review_article(evidence)
 
 
 @pytest.mark.parametrize("mutation", ["future", "unknown_source", "live", "shape", "historical_future", "historical_cutoff",
@@ -231,6 +306,8 @@ def test_report_api_permission_and_serialization():
     response = client.get("/research/ashare-outlook")
     assert response.status_code == 200
     assert response.json()["data"]["market_date"] == "2026-09-30"
+    assert response.json()["data"]["editorial_revision"]["evidence_refreshed"] is False
+    assert response.json()["data"]["sections"][0]["paragraphs"][0]["title"].startswith("主判断")
 
 
 def test_financing_windows_do_not_compress_missing_sessions():

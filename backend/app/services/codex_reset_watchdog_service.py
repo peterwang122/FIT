@@ -16,6 +16,7 @@ from app.core.config import settings
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 WATCHDOG_HISTORY_LIMIT = 30
+WATCHDOG_TRANSLATION_VERSION = 2
 WATCHDOG_SOURCE_HANDLE = "thsottiaux"
 WATCHDOG_CANONICAL_URL_PATTERN = re.compile(
     r"^https://(?:www\.)?x\.com/thsottiaux/status/(?P<item_id>\d+)(?:[/?#].*)?$",
@@ -27,6 +28,7 @@ SLASH_COMMAND_PATTERN = re.compile(
 TRANSLATED_SLASH_COMMAND_PATTERN = re.compile(
     r"(?<!/)/[^\s,，。.!！？;；:：)）\]】}]+"
 )
+URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"，。！？；（）]+")
 
 
 @dataclass(frozen=True)
@@ -231,6 +233,8 @@ def extract_translation(payload: object) -> str | None:
 def extract_mymemory_translation(payload: object) -> str | None:
     if not isinstance(payload, dict):
         return None
+    if payload.get("responseStatus", 200) != 200:
+        return None
     response_data = payload.get("responseData")
     if not isinstance(response_data, dict):
         return None
@@ -245,14 +249,17 @@ def extract_mymemory_translation(payload: object) -> str | None:
 
 def restore_slash_commands(source_text: str, translated_text: str) -> str:
     """Keep Codex commands executable when a translation provider localizes them."""
-    source_commands = SLASH_COMMAND_PATTERN.findall(source_text)
+    source_commands = SLASH_COMMAND_PATTERN.findall(URL_PATTERN.sub(" ", source_text))
     if not source_commands:
         return translated_text
 
     command_index = 0
+    translated_urls = [(match.start(), match.end()) for match in URL_PATTERN.finditer(translated_text)]
 
     def replace_command(match: re.Match[str]) -> str:
         nonlocal command_index
+        if any(start <= match.start() < end for start, end in translated_urls):
+            return match.group(0)
         if command_index >= len(source_commands):
             return match.group(0)
         restored = source_commands[command_index]
@@ -322,16 +329,7 @@ class CodexResetWatchdogService:
             same_source_text = isinstance(existing, dict) and existing.get("text") == item.text
             translation_zh = existing.get("translation_zh") if same_source_text else None
             translated_at = existing.get("translated_at") if same_source_text else None
-            translation_error = None
-            if not translation_zh and self.translator is not None:
-                try:
-                    translation_zh = self.translator(item.text)
-                    if translation_zh:
-                        translated_at = archived_at
-                    else:
-                        translation_error = "翻译服务未返回有效译文"
-                except Exception as exc:
-                    translation_error = _excerpt(str(exc), 300)
+            translation_error = existing.get("translation_error") if same_source_text else None
             finding = classify_reset_finding(item.text)
             archived_items[item.item_id] = {
                 "item_id": item.item_id,
@@ -342,12 +340,38 @@ class CodexResetWatchdogService:
                 "translation_zh": translation_zh,
                 "translated_at": translated_at,
                 "translation_error": translation_error,
+                "translation_version": existing.get("translation_version") if same_source_text else None,
+                "translation_provider": existing.get("translation_provider") if same_source_text else None,
                 "reset_status": finding.status if finding else None,
                 "reset_evidence": finding.evidence if finding else None,
                 "archived_at": existing_archived_at or archived_at,
             }
 
         newest_items = sorted(archived_items.values(), key=_history_item_sort_key)[-WATCHDOG_HISTORY_LIMIT:]
+        # Only translate retained history, including failures no longer in the feed.
+        for archived in reversed(newest_items):
+            translation = archived.get("translation_zh")
+            source_urls = URL_PATTERN.findall(archived["text"])
+            needs_refresh = bool(
+                translation and source_urls and (
+                    archived.get("translation_version") != WATCHDOG_TRANSLATION_VERSION
+                    or any(url not in translation for url in source_urls)
+                )
+            )
+            if (translation and not needs_refresh) or self.translator is None:
+                continue
+            try:
+                translated = self.translator(archived["text"])
+                if translated:
+                    archived["translation_zh"] = translated
+                    archived["translated_at"] = archived_at
+                    archived["translation_version"] = WATCHDOG_TRANSLATION_VERSION
+                    archived["translation_provider"] = "automatic"
+                    archived["translation_error"] = None
+                else:
+                    archived["translation_error"] = "翻译服务未返回有效译文"
+            except Exception as exc:
+                archived["translation_error"] = _excerpt(str(exc), 300)
         state["items"] = {str(item["item_id"]): item for item in newest_items}
 
     def _translate_with_google(self, text: str) -> str:
@@ -405,13 +429,32 @@ class CodexResetWatchdogService:
 
     def _translate_to_chinese(self, text: str) -> str | None:
         provider_errors: list[str] = []
+        protected_tokens: dict[str, str] = {}
+
+        def protect_url(match: re.Match[str]) -> str:
+            token = f"FITLINK{len(protected_tokens)}TOKEN"
+            protected_tokens[token] = match.group(0)
+            return token
+
+        protected_text = URL_PATTERN.sub(protect_url, text)
+
+        def protect_command(match: re.Match[str]) -> str:
+            token = f"FITCOMMAND{len(protected_tokens)}TOKEN"
+            protected_tokens[token] = match.group(0)
+            return token
+
+        protected_text = SLASH_COMMAND_PATTERN.sub(protect_command, protected_text)
         for provider_name, translator in (
             ("Google", self._translate_with_google),
             ("MyMemory", self._translate_with_mymemory),
         ):
             try:
-                translated = translator(text)
-                return restore_slash_commands(text, translated)
+                translated = translator(protected_text)
+                for token, original in protected_tokens.items():
+                    if token not in translated:
+                        raise ValueError("translation response lost a protected URL or command")
+                    translated = translated.replace(token, original)
+                return _normalize_text(translated)
             except Exception as exc:  # noqa: BLE001
                 provider_errors.append(f"{provider_name}: {exc}")
         raise RuntimeError("all translation providers failed; " + "; ".join(provider_errors))

@@ -41,6 +41,11 @@ def sync_wechat_miniapp_data():
     return _run_with_lock(lambda service: service.sync(full=False, include_notification=False))
 
 
+@celery_app.task(name="tasks.process_wechat_manual_notification_sync", expires=55)
+def process_wechat_manual_notification_sync():
+    return _run_with_lock(lambda service: service.process_manual_notification_sync())
+
+
 @celery_app.task(bind=True, name="tasks.sync_wechat_miniapp_notification")
 def sync_wechat_miniapp_notification(self):
     try:

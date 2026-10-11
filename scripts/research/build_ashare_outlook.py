@@ -11,6 +11,8 @@ from ashare_outlook_content import SECTIONS, SOURCES, WATCHLIST
 from ashare_outlook_history import compare
 from ashare_outlook_extensions import SOURCES as EXTENSION_SOURCES, SECTOR_CODES, calculate_extensions, sections_for
 from ashare_outlook_supplement import apply_supplement, calculate_supplement, merge_sector_evidence
+from ashare_outlook_synthesis import apply_synthesis
+from ashare_outlook_article import with_review_article
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -173,50 +175,88 @@ def build(snapshot, external, snapshot_hash, external_hash, history_extra=None, 
         evidence = calculate_supplement(supplement_folder, calendar, cutoff, report["market_date"],
                                         extension_extra["data"]["indexes"], SECTOR_CODES, data["global_assets"])
         report = apply_supplement(report, evidence)
+        report = apply_synthesis(report)
+        report = with_review_article(report)
     return report
 
 
 def markdown(report):
     source_map = {s["id"]: s for s in report["sources"]}
-    lines = [f"# {report['title']}", "", f"截至：{report['as_of_at']}；A股来源日：{report['market_date']}。", "",
+    article = report.get("review_article")
+    references = {s["id"]: i for i, s in enumerate(report["sources"], 1)}
+    lines = [f"# {article['title'] if article else report['title']}", "", f"截至：{report['as_of_at']}；A股来源日：{report['market_date']}。", "",
              "研究用途，不构成确定价格预测、买卖指令或投资收益保证。", ""]
-    for item in report["summary"]:
-        lines.extend([f"## {item['label']}：{item['value']}", item["detail"], ""])
-    lines += ["## 宽基价格证据", "|指数|收盘|MA60|MA120|MA250|本轮高点回撤|20日涨跌|", "|---|---:|---:|---:|---:|---:|---:|"]
+    if article:
+        lines += [f"{article['article_type']}；{article['publication_note']}。", "",
+                  f"文章整理：{article['formatted_on']}；仅调整编排，未刷新证据。", "", "## 摘要", ""]
+        for item in article["abstract"]:
+            lines += [f"**{item['label']}：** {item['text']}", ""]
+        lines += ["**关键词：** " + "；".join(article["keywords"]), "", "## 1 引言", ""]
+        for para in article["introduction"]:
+            citations = " ".join(f"[{references[k]}](#reference-{references[k]})" for k in para["sources"])
+            lines += [f"{para['text']} {citations}".rstrip(), ""]
+        lines += ["## 2 资料与研究方法", ""]
+        for i, method in enumerate(article["method_sections"], 1):
+            lines += [f"### 2.{i} {method['title']}", "", method["text"], ""]
+        lines += ["## 3 历史周期与本轮市场结构", ""]
+    else:
+        for item in report["summary"]:
+            lines.extend([f"## {item['label']}：{item['value']}", item["detail"], ""])
+    lines += ["**表3-1 五条宽基的共同日期比较**" if article else "## 宽基价格证据", "", "|指数|收盘|MA60|MA120|MA250|本轮高点回撤|20日涨跌|", "|---|---:|---:|---:|---:|---:|---:|"]
     for r in report["indexes"]:
         lines.append(f"|{r['index_name']}|{r['close']:.2f}|{r['ma60']:.2f}|{r['ma120']:.2f}|{r['ma250']:.2f}|{r['cycle_drawdown_pct']:.2f}%|{r['return_20d_pct']:.2f}%|")
-    for section in report["sections"]:
-        lines += ["", f"## {section['title']}", section["verdict"], ""]
+    section_map = {s["id"]: s for s in report["sections"]}
+    sections = report["sections"]
+    headings, chapter_heads = {}, {}
+    if article:
+        sections = []
+        for c, chapter in enumerate(article["chapters"], 1):
+            for n, entry in enumerate(chapter["sections"], 1):
+                sections.append(section_map[entry["id"]])
+                headings[entry["id"]] = f"### {c}.{n} {entry['title']}"
+                if n == 1 and c != 3:
+                    chapter_heads[entry["id"]] = f"## {c} {chapter['title']}"
+    for section in sections:
+        if section["id"] in chapter_heads:
+            lines += ["", chapter_heads[section["id"]], ""]
+        lines += ["", headings.get(section["id"], f"## {section['title']}"), section["verdict"], ""]
         for para in section["paragraphs"]:
-            citations = " ".join(f"[{source_map[k]['title']}]({source_map[k]['url']})" for k in para["sources"])
-            lines += [f"**{para['kind']}** {para['text']} {citations}", ""]
+            if para.get("title"):
+                lines += [f"{'####' if article else '###'} {para['title']}", ""]
+            citations = " ".join(
+                f"[{references[k]}](#reference-{references[k]})" if article else f"[{source_map[k]['title']}]({source_map[k]['url']})"
+                for k in para["sources"]
+            )
+            lines += [f"**{para['kind']}** {para['text']} {citations}".rstrip(), ""]
         for t in section.get("tables", []):
-            lines += [f"### {t['title']}", "|" + "|".join(t["columns"]) + "|", "|" + "|".join("---" for _ in t["columns"]) + "|"]
+            lines += [f"{'####' if article else '###'} {t['title']}", "|" + "|".join(t["columns"]) + "|", "|" + "|".join("---" for _ in t["columns"]) + "|"]
             lines += ["|" + "|".join(cell.replace("|", "/") for cell in row) + "|" for row in t["rows"]]
             lines += [t["note"], ""]
         if section["id"] == "history":
             h = report["history_comparison"]
             fmt = lambda v: "数据缺失" if v is None else f"{v:+.2f}%"
-            lines += ["### 2021年错位见顶与接力", h["spring_2021"]["note"], "",
+            subheading = "####" if article else "###"
+            lines += [f"{subheading} 2021年错位见顶与接力", h["spring_2021"]["note"], "",
                       "|资产|全年涨跌|春节前至3月9日|春节前至年底|3月9日至年底|全年日内高点日期|", "|---|---:|---:|---:|---:|---|"]
             for r in h["spring_2021"]["rows"]:
                 lines.append(f"|{r['name']}|{fmt(r.get('year_return_pct'))}|{fmt(r.get('spring_to_march_pct'))}|{fmt(r.get('spring_to_end_pct'))}|{fmt(r.get('march_to_end_pct'))}|{r.get('peak_date', '缺失')}|")
-            lines += ["", "### 相同口径的宽基参与状态", "每个分母均为五条宽基，不是个股广度。", "",
+            lines += ["", f"{subheading} 相同口径的宽基参与状态", "每个分母均为五条宽基，不是个股广度。", "",
                       "|交易日|MA60上方|MA250上方|MA250仍上行|近20日上涨|", "|---|---:|---:|---:|---:|"]
             for r in h["panels"]:
                 lines.append(f"|{r['date']}|{r['above_ma60_count']}/5|{r['above_ma250_count']}/5|{r['rising_ma250_count']}/5|{r['positive_20d_count']}/5|")
-            lines += ["", "### 多轮次情境对照", "不等长的事后区间，只展示已发生路径，不能按收益排序推断下一轮概率。", "",
+            lines += ["", f"{subheading} 多轮次情境对照", "不等长的事后区间，只展示已发生路径，不能按收益排序推断下一轮概率。", "",
                       "|案例|共同起止|上证|全指|沪深300|中证500|中证1000|", "|---|---|---:|---:|---:|---:|---:|"]
             for case in h["cases"]:
                 lines.append(f"|{case['title']}|{case['start']}至{case['end']}|" + "|".join(fmt(r['return_pct']) for r in case['rows']) + "|")
                 if case["rebound_end"]:
                     lines.append(f"|其中：反弹阶段|{case['start']}至{case['rebound_end']}|" + "|".join(fmt(r['return_pct']) for r in case['rebound_rows']) + "|")
-            lines += ["", "### 五宽基同步失守后的全部事件", h["synchronized_breaks"]["method"], h["synchronized_breaks"]["note"], "",
+            lines += ["", f"{subheading} 五宽基同步失守后的全部事件", h["synchronized_breaks"]["method"], h["synchronized_breaks"]["note"], "",
                       "|触发日|20日期末|20日最低价变化|60日期末|60日最低价变化|120日期末|120日最低价变化|", "|---|---:|---:|---:|---:|---:|---:|"]
             for r in h["synchronized_breaks"]["events"]:
                 lines.append(f"|{r['date']}|" + "|".join(fmt(r[f'{key}_{w}d_pct']) for w in (20, 60, 120) for key in ('return', 'lowest')) + "|")
             lines += ["", *[f"- {v}" for v in h["limitations"]], ""]
-    lines += ["## 各指数观察锚与压力刻度", "压力刻度不是底部预测；原值保留在JSON，以下仅显示到两位小数。", ""]
+    lines += ["## 附录A：补充数据与复算结果" if article else "## 各指数观察锚与压力刻度",
+              "压力刻度不是底部预测；原值保留在JSON，以下仅显示到两位小数。", ""]
     for r in report["indexes"]:
         lines += [f"### {r['index_name']}", "|类别|日期/压力假设|点位|距当前收盘|", "|---|---|---:|---:|"]
         for a in r["anchors"]:
@@ -226,29 +266,30 @@ def markdown(report):
         lines += ["", "|后续窗口|完整事件数|最低价变化中位|最低价变化Q25/Q75|期末收益中位|最低价较事件低逾10%数|", "|---|---:|---:|---|---:|---:|"]
         for h in r["historical_breaks"]["summaries"]:
             lines.append(f"|{h['window']}交易日|{h['sample_count']}|{h['worst_median_pct']:.2f}%|{h['worst_q25_pct']:.2f}% / {h['worst_q75_pct']:.2f}%|{h['return_median_pct']:.2f}%|{h['loss_over_10pct_count']}|")
-    lines += ["", "## 全球市场比较", "变化按同序列有效观测数；NAV非含分红总回报。不同来源日不冒充同日。", "",
+    lines += ["", "### A.1 全球市场比较" if article else "## 全球市场比较", "变化按同序列有效观测数；NAV非含分红总回报。不同来源日不冒充同日。", "",
               "|资产|原值|近10观测变化|近20观测变化|来源日|", "|---|---:|---:|---:|---|"]
     for g in report["global_markets"]:
         value = "仅比较同序列变动" if g["asset_code"] == "COPPER_HG" else f"{g['value']:.4f}"
         lines.append(f"|{g['name']}|{value}|{g['change_10obs_pct']:.2f}%|{g['change_20obs_pct']:.2f}%|{g['source_date']}|")
-    lines += ["", "## 外汇盘中快照", "|指标|原值|近20观测变化|来源日|", "|---|---:|---:|---|"]
+    lines += ["", "### A.2 外汇盘中快照" if article else "## 外汇盘中快照", "|指标|原值|近20观测变化|来源日|", "|---|---:|---:|---|"]
     for fx in report["fx"]:
         lines.append(f"|{fx['name']}|{fx['value']:.4f}|{fx['change_20obs_pct']:.2f}%|{fx['source_date']}|")
-    lines += ["", "## 官方人民币贵金属合约", "|合约|收盘原值|单位|交易日|", "|---|---:|---|---|"]
+    lines += ["", "### A.3 官方人民币贵金属合约" if article else "## 官方人民币贵金属合约", "|合约|收盘原值|单位|交易日|", "|---|---:|---|---|"]
     for metal in report["precious_metals"]:
         lines.append(f"|{metal['contract']}|{metal['value']}|{metal['unit']}|{metal['date']}|")
-    lines += ["", "## 盈利与估值压力敏感性", "假设不是公允价值，PE与EPS变化分别列示。", "",
+    lines += ["", "### A.4 盈利与估值压力敏感性" if article else "## 盈利与估值压力敏感性", "假设不是公允价值，PE与EPS变化分别列示。", "",
               "|指数|PE变化|EPS变化|条件点位|", "|---|---:|---:|---:|"]
     for v in report["valuation"]:
         for stress in v["stress"]:
             lines.append(f"|{v['index_name']}|{stress['pe_change_pct']}%|{stress['eps_change_pct']}%|{stress['value']:.2f}|")
-    lines += ["", "## 情景检查清单", "|模块|当前基线|改善条件|恶化条件|", "|---|---|---|---|"]
+    lines += ["", "### A.5 情景检查清单" if article else "## 情景检查清单", "|模块|当前基线|改善条件|恶化条件|", "|---|---|---|---|"]
     for w in report["watchlist"]:
         lines.append(f"|{w['topic']}|{w['baseline']}|{w['improves']}|{w['worsens']}|")
-    lines += ["", "## 数据边界", *[f"- {q}" for q in report["quality"]], "", "## 来源与日期"]
-    for s in report["sources"]:
-        lines.append(f"- [{s['title']}]({s['url']})；{s['published_at']}；{s['note']}")
-    lines += ["", "## 复算指纹", f"数据库快照 SHA256：`{report['provenance']['snapshot_sha256']}`", f"外部快照 SHA256：`{report['provenance']['external_sha256']}`",
+    lines += ["", "### A.6 数据边界" if article else "## 数据边界", *[f"- {q}" for q in report["quality"]], "", "## 参考文献" if article else "## 来源与日期"]
+    for i, s in enumerate(report["sources"], 1):
+        prefix = f'<a id="reference-{i}"></a> [{i}]' if article else "-"
+        lines.append(f"{prefix} [{s['title']}]({s['url']})；{s['published_at'] or '发布时间未核验'}；{s['note']}\n")
+    lines += ["", "## 附录B：复算指纹" if article else "## 复算指纹", f"数据库快照 SHA256：`{report['provenance']['snapshot_sha256']}`", f"外部快照 SHA256：`{report['provenance']['external_sha256']}`",
               f"扩展快照 SHA256：`{report['provenance']['extension_snapshot_sha256']}`", ""]
     return "\n".join(lines)
 
@@ -257,7 +298,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, default=ROOT / "runtime/reports/ashare_outlook/2026-10-04")
     parser.add_argument("--output", type=Path, default=ROOT / "docs/research")
+    parser.add_argument("--format-review", action="store_true", help="Format the stored evidence only; do not recollect or recalculate")
     args = parser.parse_args()
+    if args.format_review:
+        path = args.output / "ashare_outlook_2026-10-04.json"
+        report = with_review_article(json.loads(path.read_text(encoding="utf-8")))
+        path.write_text(json.dumps(report, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n", encoding="utf-8")
+        (args.output / "ASHARE_OUTLOOK_2026-10-04.md").write_text(markdown(report), encoding="utf-8")
+        print(json.dumps({"formatted": str(path), "evidence_refreshed": False, "version": report["version"]}))
+        return
     raw, ext = (args.input / "snapshot.json").read_bytes(), (args.input / "external.json").read_bytes()
     hist = (args.input / "history_snapshot.json").read_bytes() if (args.input / "history_snapshot.json").exists() else None
     extension = (args.input / "extension_snapshot.json").read_bytes() if (args.input / "extension_snapshot.json").exists() else None
